@@ -20,13 +20,13 @@ class RateLimiter {
 
  private:
   using Clock = std::chrono::steady_clock;
-  void Refill(Clock::time_point now);  // requires mutex_
+  void Refill(Clock::time_point now);  // requires mMutex
 
-  std::mutex mutex_;
-  const double rate_;
-  const double burst_;
-  double tokens_;
-  Clock::time_point last_;
+  std::mutex mMutex;
+  const double mRate;
+  const double mBurst;
+  double mTokens;
+  Clock::time_point mLast;
 };
 
 }  // namespace kestrel::util

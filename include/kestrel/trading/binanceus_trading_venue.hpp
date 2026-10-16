@@ -41,8 +41,8 @@ class BinanceUSTradingVenue : public TradingVenue {
   types::Result<std::vector<types::Balance>> GetBalances() override;
 
  private:
-  config::BinanceUSCredentials credentials_;
-  std::shared_ptr<data::DataSource> data_source_;  // for tick/lot rules via ApplySymbolRules
+  config::BinanceUSCredentials mCredentials;
+  std::shared_ptr<data::DataSource> mDataSource;  // for tick/lot rules via ApplySymbolRules
 };
 
 }  // namespace kestrel::trading

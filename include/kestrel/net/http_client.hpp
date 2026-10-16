@@ -46,7 +46,7 @@ class CprHttpClient : public HttpClient {
   types::Result<HttpResponse> Send(const HttpRequest& request) override;
 
  private:
-  std::chrono::milliseconds timeout_;
+  std::chrono::milliseconds mTimeout;
 };
 
 }  // namespace kestrel::net

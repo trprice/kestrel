@@ -14,10 +14,16 @@ namespace {
 
 void ReadDecimal(const json& item, const char* key, std::optional<types::Decimal>& out) {
   const auto it = item.find(key);
-  if (it == item.end() || it->is_null()) return;
-  if (auto d = util::JsonDecimal(*it)) {
+  if (it == item.end() || it->is_null())
+  {
+    return;
+  }
+  if (auto d = util::JsonDecimal(*it))
+  {
     out = *d;
-  } else {
+  }
+  else
+  {
     spdlog::warn("kraken ticker: bad '{}' value: {}", key, d.error().message);
   }
 }
@@ -26,15 +32,25 @@ void ReadDecimal(const json& item, const char* key, std::optional<types::Decimal
 
 std::vector<types::Quote> KrakenTickerMerger::Apply(const json& message, types::Timestamp received) {
   std::vector<types::Quote> out;
-  if (!message.is_object() || message.value("channel", "") != "ticker") return out;
+  if (!message.is_object() || message.value("channel", "") != "ticker")
+  {
+    return out;
+  }
   const auto data = message.find("data");
-  if (data == message.end() || !data->is_array()) return out;
+  if (data == message.end() || !data->is_array())
+  {
+    return out;
+  }
 
-  std::lock_guard lock(mutex_);
+  std::lock_guard lock(mMutex);
   for (const auto& item : *data) {
-    if (!item.is_object() || !item.contains("symbol") || !item["symbol"].is_string()) continue;
+    if (!item.is_object() || !item.contains("symbol") || !item["symbol"].is_string())
+    {
+      continue;
+    }
     auto symbol = FromKrakenSymbol(item["symbol"].get<std::string>());
-    if (!symbol) {
+    if (!symbol)
+    {
       spdlog::warn("kraken ticker: {}", symbol.error().message);
       continue;
     }
@@ -48,10 +64,14 @@ std::vector<types::Quote> KrakenTickerMerger::Apply(const json& message, types::
     ReadDecimal(item, "ask_qty", update.ask_size);
     ReadDecimal(item, "last", update.last);
     // The v2 ticker carries no last-trade size, so last_size stays unset.
-    if (item.contains("timestamp") && item["timestamp"].is_string()) {
-      if (auto t = types::ParseIso8601(item["timestamp"].get<std::string>())) update.exchange_time = *t;
+    if (item.contains("timestamp") && item["timestamp"].is_string())
+    {
+      if (auto t = types::ParseIso8601(item["timestamp"].get<std::string>()))
+      {
+        update.exchange_time = *t;
+      }
     }
-    auto& merged = state_[update.symbol];
+    auto& merged = mState[update.symbol];
     merged.MergeFrom(update);
     out.push_back(merged);
   }
@@ -59,30 +79,30 @@ std::vector<types::Quote> KrakenTickerMerger::Apply(const json& message, types::
 }
 
 void KrakenTickerMerger::Reset() {
-  std::lock_guard lock(mutex_);
-  state_.clear();
+  std::lock_guard lock(mMutex);
+  mState.clear();
 }
 
 KrakenQuoteStream::KrakenQuoteStream(std::string url, std::vector<std::string> ws_symbols,
                                      QuoteCallback callback)
-    : url_(std::move(url)),
-      symbols_(std::move(ws_symbols)),
-      callback_(std::move(callback)),
-      socket_(std::make_unique<ix::WebSocket>()) {}
+    : mUrl(std::move(url)),
+      mSymbols(std::move(ws_symbols)),
+      mCallback(std::move(callback)),
+      mSocket(std::make_unique<ix::WebSocket>()) {}
 
 KrakenQuoteStream::~KrakenQuoteStream() { Stop(); }
 
 void KrakenQuoteStream::Start() {
-  socket_->setUrl(url_);
-  socket_->setPingInterval(20);
-  socket_->enableAutomaticReconnection();
-  socket_->setMinWaitBetweenReconnectionRetries(500);
-  socket_->setMaxWaitBetweenReconnectionRetries(30'000);  // backoff doubles up to this
-  socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
+  mSocket->setUrl(mUrl);
+  mSocket->setPingInterval(20);
+  mSocket->enableAutomaticReconnection();
+  mSocket->setMinWaitBetweenReconnectionRetries(500);
+  mSocket->setMaxWaitBetweenReconnectionRetries(30'000);  // backoff doubles up to this
+  mSocket->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
     switch (msg->type) {
       case ix::WebSocketMessageType::Open:
-        spdlog::info("kraken ws: connected to {}", url_);
-        merger_.Reset();
+        spdlog::info("kraken ws: connected to {}", mUrl);
+        mMerger.Reset();
         Subscribe();  // subscriptions don't survive a reconnect
         break;
       case ix::WebSocketMessageType::Message:
@@ -99,34 +119,40 @@ void KrakenQuoteStream::Start() {
         break;
     }
   });
-  socket_->start();
+  mSocket->start();
 }
 
 void KrakenQuoteStream::Stop() {
-  if (socket_) socket_->stop();
+  if (mSocket)
+  {
+    mSocket->stop();
+  }
 }
 
 void KrakenQuoteStream::Subscribe() {
-  json request = {{"method", "subscribe"}, {"params", {{"channel", "ticker"}, {"symbol", symbols_}}}};
-  socket_->send(request.dump());
+  json request = {{"method", "subscribe"}, {"params", {{"channel", "ticker"}, {"symbol", mSymbols}}}};
+  mSocket->send(request.dump());
 }
 
 void KrakenQuoteStream::OnMessage(const std::string& text) {
   auto parsed = util::ParseJson(text);
-  if (!parsed) {
+  if (!parsed)
+  {
     spdlog::warn("kraken ws: unparseable message: {}", parsed.error().message);
     return;
   }
   const json& msg = *parsed;
-  if (msg.is_object() && msg.value("method", "") == "subscribe") {
-    if (!msg.value("success", false)) {
+  if (msg.is_object() && msg.value("method", "") == "subscribe")
+  {
+    if (!msg.value("success", false))
+    {
       spdlog::error("kraken ws: subscription rejected: {}", msg.value("error", "unknown error"));
     }
     return;
   }
-  for (const auto& quote : merger_.Apply(msg, types::Now())) {
+  for (const auto& quote : mMerger.Apply(msg, types::Now())) {
     try {
-      callback_(quote);
+      mCallback(quote);
     } catch (const std::exception& e) {
       spdlog::error("kraken ws: quote callback threw: {}", e.what());
     }

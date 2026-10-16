@@ -15,7 +15,8 @@ std::string Hmac(const EVP_MD* md, std::string_view key, std::string_view messag
   unsigned char out[EVP_MAX_MD_SIZE];
   unsigned int len = 0;
   if (!HMAC(md, key.data(), static_cast<int>(key.size()),
-            reinterpret_cast<const unsigned char*>(message.data()), message.size(), out, &len)) {
+            reinterpret_cast<const unsigned char*>(message.data()), message.size(), out, &len))
+  {
     throw std::runtime_error("OpenSSL HMAC failed");
   }
   return std::string(reinterpret_cast<char*>(out), len);
@@ -58,14 +59,18 @@ std::string Base64Encode(std::string_view bytes) {
 }
 
 types::Result<std::string> Base64Decode(std::string_view text) {
-  if (text.size() % 4 != 0) {
+  if (text.size() % 4 != 0)
+  {
     return types::MakeError(types::ErrorCategory::kParse, "invalid base64 length");
   }
   std::string out(text.size() / 4 * 3, '\0');
   const int n = EVP_DecodeBlock(reinterpret_cast<unsigned char*>(out.data()),
                                 reinterpret_cast<const unsigned char*>(text.data()),
                                 static_cast<int>(text.size()));
-  if (n < 0) return types::MakeError(types::ErrorCategory::kParse, "invalid base64");
+  if (n < 0)
+  {
+    return types::MakeError(types::ErrorCategory::kParse, "invalid base64");
+  }
   std::size_t size = static_cast<std::size_t>(n);
   // EVP_DecodeBlock counts padding bytes as output; trim them.
   for (std::size_t i = 0; i < 2 && i < text.size() && text[text.size() - 1 - i] == '='; ++i) --size;

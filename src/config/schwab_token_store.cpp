@@ -14,8 +14,11 @@ using types::ErrorCategory;
 using types::MakeError;
 
 types::Result<SchwabTokens> SchwabTokenStore::Load() const {
-  std::ifstream in(path_);
-  if (!in) return MakeError(ErrorCategory::kNotFound, "no Schwab token file at " + path_.string());
+  std::ifstream in(mPath);
+  if (!in)
+  {
+    return MakeError(ErrorCategory::kNotFound, "no Schwab token file at " + mPath.string());
+  }
   std::stringstream buf;
   buf << in.rdbuf();
   try {
@@ -25,13 +28,19 @@ types::Result<SchwabTokens> SchwabTokenStore::Load() const {
     t.refresh_token = j.at("refresh_token").get<std::string>();
     auto access = types::ParseIso8601(j.at("access_expires_at").get<std::string>());
     auto refresh = types::ParseIso8601(j.at("refresh_expires_at").get<std::string>());
-    if (!access) return std::unexpected(access.error());
-    if (!refresh) return std::unexpected(refresh.error());
+    if (!access)
+    {
+      return std::unexpected(access.error());
+    }
+    if (!refresh)
+    {
+      return std::unexpected(refresh.error());
+    }
     t.access_expires_at = *access;
     t.refresh_expires_at = *refresh;
     return t;
   } catch (const nlohmann::json::exception& e) {
-    return MakeError(ErrorCategory::kParse, "corrupt Schwab token file " + path_.string() + ": " + e.what());
+    return MakeError(ErrorCategory::kParse, "corrupt Schwab token file " + mPath.string() + ": " + e.what());
   }
 }
 
@@ -40,26 +49,36 @@ types::Result<void> SchwabTokenStore::Save(const SchwabTokens& t) const {
                             {"refresh_token", t.refresh_token},
                             {"access_expires_at", types::FormatIso8601(t.access_expires_at)},
                             {"refresh_expires_at", types::FormatIso8601(t.refresh_expires_at)}};
-  auto tmp = path_;
+  auto tmp = mPath;
   tmp += ".tmp";
   {
     std::ofstream probe(tmp, std::ios::trunc);  // create, then lock down before writing secrets
-    if (!probe) return MakeError(ErrorCategory::kInternal, "cannot write " + tmp.string());
+    if (!probe)
+    {
+      return MakeError(ErrorCategory::kInternal, "cannot write " + tmp.string());
+    }
   }
   ::chmod(tmp.c_str(), S_IRUSR | S_IWUSR);
   {
     std::ofstream out(tmp, std::ios::trunc);
     out << j.dump(2) << '\n';
-    if (!out) return MakeError(ErrorCategory::kInternal, "failed writing " + tmp.string());
+    if (!out)
+    {
+      return MakeError(ErrorCategory::kInternal, "failed writing " + tmp.string());
+    }
   }
   std::error_code ec;
-  std::filesystem::rename(tmp, path_, ec);
-  if (ec) return MakeError(ErrorCategory::kInternal, "cannot replace " + path_.string() + ": " + ec.message());
+  std::filesystem::rename(tmp, mPath, ec);
+  if (ec)
+  {
+    return MakeError(ErrorCategory::kInternal, "cannot replace " + mPath.string() + ": " + ec.message());
+  }
   return {};
 }
 
 SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens, types::Timestamp now) {
-  if (now >= tokens.refresh_expires_at) {
+  if (now >= tokens.refresh_expires_at)
+  {
     spdlog::error(
         "SCHWAB RE-AUTHORIZATION REQUIRED: the refresh token expired at {}. Trading and market data "
         "are unavailable until you re-authorize in a browser and store the new tokens.",
@@ -67,7 +86,8 @@ SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens, types::Tim
     return SchwabTokenHealth::kReauthorizationRequired;
   }
   const auto remaining = tokens.refresh_expires_at - now;
-  if (remaining < std::chrono::hours(24)) {
+  if (remaining < std::chrono::hours(24))
+  {
     spdlog::warn("Schwab refresh token expires in {} minutes (at {}); re-authorize soon to avoid an outage.",
                  std::chrono::duration_cast<std::chrono::minutes>(remaining).count(),
                  types::FormatIso8601(tokens.refresh_expires_at));

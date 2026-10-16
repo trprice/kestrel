@@ -38,12 +38,12 @@ class Decimal {
   // fractional places are rounded to nearest.
   static Result<Decimal> Parse(std::string_view text);
 
-  std::int64_t Mantissa() const { return mantissa_; }
-  int Scale() const { return scale_; }
+  std::int64_t Mantissa() const { return mMantissa; }
+  int Scale() const { return mScale; }
 
-  bool IsZero() const { return mantissa_ == 0; }
-  bool IsNegative() const { return mantissa_ < 0; }
-  int Sign() const { return (mantissa_ > 0) - (mantissa_ < 0); }
+  bool IsZero() const { return mMantissa == 0; }
+  bool IsNegative() const { return mMantissa < 0; }
+  int Sign() const { return (mMantissa > 0) - (mMantissa < 0); }
   Decimal Abs() const;
 
   // "123.4500" at scale 4. Always plain notation.
@@ -74,8 +74,8 @@ class Decimal {
   friend std::strong_ordering operator<=>(const Decimal& a, const Decimal& b);
 
  private:
-  std::int64_t mantissa_ = 0;
-  int scale_ = 0;
+  std::int64_t mMantissa = 0;
+  int mScale = 0;
 };
 
 std::ostream& operator<<(std::ostream& os, const Decimal& d);

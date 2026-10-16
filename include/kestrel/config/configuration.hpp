@@ -56,15 +56,15 @@ class Configuration {
 
   virtual Provider GetProvider() const = 0;
 
-  const std::vector<types::Symbol>& GetSymbols() const { return common_.symbols; }
-  Mode GetMode() const { return common_.mode; }
-  const trading::PaperOptions& GetPaperOptions() const { return common_.paper; }
+  const std::vector<types::Symbol>& GetSymbols() const { return mCommon.symbols; }
+  Mode GetMode() const { return mCommon.mode; }
+  const trading::PaperOptions& GetPaperOptions() const { return mCommon.paper; }
 
  protected:
-  explicit Configuration(CommonSettings common) : common_(std::move(common)) {}
+  explicit Configuration(CommonSettings common) : mCommon(std::move(common)) {}
 
  private:
-  CommonSettings common_;
+  CommonSettings mCommon;
 };
 
 class KrakenConfiguration : public Configuration {
@@ -73,20 +73,20 @@ class KrakenConfiguration : public Configuration {
   static types::Result<KrakenConfiguration> Parse(std::string_view toml_text, const LoadOptions& options);
 
   Provider GetProvider() const override { return Provider::kKraken; }
-  const std::string& RestUrl() const { return rest_url_; }
-  const std::string& WsUrl() const { return ws_url_; }
+  const std::string& RestUrl() const { return mRestUrl; }
+  const std::string& WsUrl() const { return mWsUrl; }
   // Env: KESTREL_KRAKEN_API_KEY / KESTREL_KRAKEN_API_SECRET, or [kraken] in
   // the secrets file. Empty when not configured; only live mode requires it.
-  const std::optional<KrakenCredentials>& Credentials() const { return credentials_; }
+  const std::optional<KrakenCredentials>& Credentials() const { return mCredentials; }
 
  private:
   KrakenConfiguration(CommonSettings c, std::string rest, std::string ws, std::optional<KrakenCredentials> cr)
-      : Configuration(std::move(c)), rest_url_(std::move(rest)), ws_url_(std::move(ws)),
-        credentials_(std::move(cr)) {}
+      : Configuration(std::move(c)), mRestUrl(std::move(rest)), mWsUrl(std::move(ws)),
+        mCredentials(std::move(cr)) {}
   friend class ConfigParser;
-  std::string rest_url_;
-  std::string ws_url_;
-  std::optional<KrakenCredentials> credentials_;
+  std::string mRestUrl;
+  std::string mWsUrl;
+  std::optional<KrakenCredentials> mCredentials;
 };
 
 class BinanceUSConfiguration : public Configuration {
@@ -95,20 +95,20 @@ class BinanceUSConfiguration : public Configuration {
   static types::Result<BinanceUSConfiguration> Parse(std::string_view toml_text, const LoadOptions& options);
 
   Provider GetProvider() const override { return Provider::kBinanceUS; }
-  const std::string& RestUrl() const { return rest_url_; }
-  const std::string& WsUrl() const { return ws_url_; }
+  const std::string& RestUrl() const { return mRestUrl; }
+  const std::string& WsUrl() const { return mWsUrl; }
   // Env: KESTREL_BINANCEUS_API_KEY / KESTREL_BINANCEUS_API_SECRET, or
   // [binanceus] in the secrets file.
-  const std::optional<BinanceUSCredentials>& Credentials() const { return credentials_; }
+  const std::optional<BinanceUSCredentials>& Credentials() const { return mCredentials; }
 
  private:
   BinanceUSConfiguration(CommonSettings c, std::string rest, std::string ws, std::optional<BinanceUSCredentials> cr)
-      : Configuration(std::move(c)), rest_url_(std::move(rest)), ws_url_(std::move(ws)),
-        credentials_(std::move(cr)) {}
+      : Configuration(std::move(c)), mRestUrl(std::move(rest)), mWsUrl(std::move(ws)),
+        mCredentials(std::move(cr)) {}
   friend class ConfigParser;
-  std::string rest_url_;
-  std::string ws_url_;
-  std::optional<BinanceUSCredentials> credentials_;
+  std::string mRestUrl;
+  std::string mWsUrl;
+  std::optional<BinanceUSCredentials> mCredentials;
 };
 
 class SchwabConfiguration : public Configuration {
@@ -117,23 +117,23 @@ class SchwabConfiguration : public Configuration {
   static types::Result<SchwabConfiguration> Parse(std::string_view toml_text, const LoadOptions& options);
 
   Provider GetProvider() const override { return Provider::kSchwab; }
-  const std::string& RedirectUri() const { return redirect_uri_; }
+  const std::string& RedirectUri() const { return mRedirectUri; }
   // Where OAuth tokens are persisted (see SchwabTokenStore). Not a secret
   // itself, but the file it names is, so keep it out of version control.
-  const std::filesystem::path& TokenFile() const { return token_file_; }
+  const std::filesystem::path& TokenFile() const { return mTokenFile; }
   // Env: KESTREL_SCHWAB_APP_KEY / KESTREL_SCHWAB_APP_SECRET, or [schwab] in
   // the secrets file.
-  const std::optional<SchwabCredentials>& Credentials() const { return credentials_; }
+  const std::optional<SchwabCredentials>& Credentials() const { return mCredentials; }
 
  private:
   SchwabConfiguration(CommonSettings c, std::string redirect, std::filesystem::path token_file,
                       std::optional<SchwabCredentials> cr)
-      : Configuration(std::move(c)), redirect_uri_(std::move(redirect)),
-        token_file_(std::move(token_file)), credentials_(std::move(cr)) {}
+      : Configuration(std::move(c)), mRedirectUri(std::move(redirect)),
+        mTokenFile(std::move(token_file)), mCredentials(std::move(cr)) {}
   friend class ConfigParser;
-  std::string redirect_uri_;
-  std::filesystem::path token_file_;
-  std::optional<SchwabCredentials> credentials_;
+  std::string mRedirectUri;
+  std::filesystem::path mTokenFile;
+  std::optional<SchwabCredentials> mCredentials;
 };
 
 // Reads [general] provider from the file and returns the matching subclass.

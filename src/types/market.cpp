@@ -4,16 +4,43 @@
 namespace kestrel::types {
 
 void Quote::MergeFrom(const Quote& update) {
-  if (!update.symbol.empty()) symbol = update.symbol;
-  if (!update.venue.empty()) venue = update.venue;
+  if (!update.symbol.empty())
+  {
+    symbol = update.symbol;
+  }
+  if (!update.venue.empty())
+  {
+    venue = update.venue;
+  }
   received_time = update.received_time;
-  if (update.exchange_time) exchange_time = update.exchange_time;
-  if (update.bid) bid = update.bid;
-  if (update.bid_size) bid_size = update.bid_size;
-  if (update.ask) ask = update.ask;
-  if (update.ask_size) ask_size = update.ask_size;
-  if (update.last) last = update.last;
-  if (update.last_size) last_size = update.last_size;
+  if (update.exchange_time)
+  {
+    exchange_time = update.exchange_time;
+  }
+  if (update.bid)
+  {
+    bid = update.bid;
+  }
+  if (update.bid_size)
+  {
+    bid_size = update.bid_size;
+  }
+  if (update.ask)
+  {
+    ask = update.ask;
+  }
+  if (update.ask_size)
+  {
+    ask_size = update.ask_size;
+  }
+  if (update.last)
+  {
+    last = update.last;
+  }
+  if (update.last_size)
+  {
+    last_size = update.last_size;
+  }
 }
 
 std::string_view ToString(Side s) { return s == Side::kBuy ? "buy" : "sell"; }

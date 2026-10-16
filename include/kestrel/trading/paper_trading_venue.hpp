@@ -71,7 +71,7 @@ class PaperTradingVenue : public TradingVenue {
   struct Candidate;
   struct PositionState;
 
-  // All of these require mutex_ to be held.
+  // All of these require mMutex to be held.
   std::optional<Candidate> Evaluate(const Order& order, const types::Quote& quote, bool placing) const;
   bool Execute(Order& order, const Candidate& candidate, types::Liquidity liquidity);
   void Close(Order& order, types::OrderState state, std::string reason);
@@ -81,21 +81,21 @@ class PaperTradingVenue : public TradingVenue {
   void Adjust(std::map<std::string, types::Decimal>& book, const std::string& asset,
               const types::Decimal& delta);
 
-  std::shared_ptr<data::DataSource> data_source_;
-  const PaperOptions options_;
-  const std::function<types::Timestamp()> clock_;
+  std::shared_ptr<data::DataSource> mDataSource;
+  const PaperOptions mOptions;
+  const std::function<types::Timestamp()> mClock;
 
-  mutable std::mutex mutex_;
-  std::map<std::string, Order> orders_;  // by order id; ids sort in creation order
-  std::vector<types::Fill> fills_;
-  std::map<std::string, types::Decimal> total_;
-  std::map<std::string, types::Decimal> locked_;
-  std::map<types::Symbol, PositionState> positions_;
-  std::map<types::Symbol, types::Quote> quotes_;
-  std::uint64_t next_order_ = 1;
-  std::uint64_t next_fill_ = 1;
+  mutable std::mutex mMutex;
+  std::map<std::string, Order> mOrders;  // by order id; ids sort in creation order
+  std::vector<types::Fill> mFills;
+  std::map<std::string, types::Decimal> mTotal;
+  std::map<std::string, types::Decimal> mLocked;
+  std::map<types::Symbol, PositionState> mPositions;
+  std::map<types::Symbol, types::Quote> mQuotes;
+  std::uint64_t mNextOrder = 1;
+  std::uint64_t mNextFill = 1;
 
-  std::unique_ptr<data::Subscription> subscription_;  // last: destroyed first
+  std::unique_ptr<data::Subscription> mSubscription;  // last: destroyed first
 };
 
 }  // namespace kestrel::trading

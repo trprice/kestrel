@@ -33,9 +33,15 @@ auto Retry(const RetryPolicy& policy, Fn&& fn, const Sleeper& sleep = DefaultSle
     -> std::invoke_result_t<Fn&> {
   for (int attempt = 1;; ++attempt) {
     auto result = fn();
-    if (result || !result.error().IsTransient() || attempt >= policy.max_attempts) return result;
+    if (result || !result.error().IsTransient() || attempt >= policy.max_attempts)
+    {
+      return result;
+    }
     auto delay = BackoffDelay(policy, attempt);
-    if (result.error().retry_after) delay = std::max(delay, *result.error().retry_after);
+    if (result.error().retry_after)
+    {
+      delay = std::max(delay, *result.error().retry_after);
+    }
     sleep(delay);
   }
 }

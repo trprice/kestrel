@@ -26,7 +26,10 @@ constexpr std::array<Entry, 17> kTable{{
 
 const Entry& Lookup(Timeframe tf) {
   for (const auto& e : kTable)
-    if (e.tf == tf) return e;
+    if (e.tf == tf)
+    {
+      return e;
+    }
   return kTable[0];
 }
 
@@ -42,13 +45,19 @@ std::string_view ToString(Timeframe tf) { return Lookup(tf).name; }
 
 Result<Timeframe> ParseTimeframe(std::string_view text) {
   for (const auto& e : kTable)
-    if (e.name == text) return e.tf;
+    if (e.name == text)
+    {
+      return e.tf;
+    }
   return MakeError(ErrorCategory::kInvalidArgument, "unknown timeframe '" + std::string(text) + "'");
 }
 
 std::optional<std::chrono::seconds> FixedDuration(Timeframe tf) {
   const long s = Lookup(tf).seconds;
-  if (s == 0) return std::nullopt;
+  if (s == 0)
+  {
+    return std::nullopt;
+  }
   return std::chrono::seconds(s);
 }
 

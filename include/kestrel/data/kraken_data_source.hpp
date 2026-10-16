@@ -61,12 +61,12 @@ class KrakenDataSource : public DataSource {
   types::Result<nlohmann::json> Call(const std::string& method,
                                      std::map<std::string, std::string> query);
 
-  std::shared_ptr<net::HttpClient> http_;
-  Options options_;
-  util::RateLimiter limiter_;
+  std::shared_ptr<net::HttpClient> mHttp;
+  Options mOptions;
+  util::RateLimiter mLimiter;
 
-  std::mutex cache_mutex_;
-  std::map<types::Symbol, types::SymbolInfo> symbol_cache_;
+  std::mutex mCacheMutex;
+  std::map<types::Symbol, types::SymbolInfo> mSymbolCache;
 };
 
 }  // namespace kestrel::data

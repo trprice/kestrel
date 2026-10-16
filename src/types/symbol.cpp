@@ -7,7 +7,10 @@ namespace kestrel::types {
 namespace {
 
 bool ValidAsset(std::string_view s) {
-  if (s.empty() || s.size() > 16) return false;
+  if (s.empty() || s.size() > 16)
+  {
+    return false;
+  }
   return std::ranges::all_of(s, [](unsigned char c) {
     return std::isupper(c) || std::isdigit(c) || c == '.';
   });
@@ -24,7 +27,8 @@ Result<Symbol> NormalizeSymbol(std::string_view text) {
     const auto c = static_cast<unsigned char>(raw);
     out.push_back(raw == '-' || raw == '_' ? '/' : static_cast<char>(std::toupper(c)));
   }
-  if (auto parts = SplitSymbol(out); !parts) {
+  if (auto parts = SplitSymbol(out); !parts)
+  {
     return std::unexpected(parts.error());
   }
   return out;
@@ -32,15 +36,18 @@ Result<Symbol> NormalizeSymbol(std::string_view text) {
 
 Result<SymbolParts> SplitSymbol(std::string_view symbol) {
   const auto slash = symbol.find('/');
-  if (slash == std::string_view::npos) {
-    if (!ValidAsset(symbol)) {
+  if (slash == std::string_view::npos)
+  {
+    if (!ValidAsset(symbol))
+    {
       return MakeError(ErrorCategory::kInvalidArgument, "invalid symbol '" + std::string(symbol) + "'");
     }
     return SymbolParts{std::string(symbol), std::nullopt};
   }
   const auto base = symbol.substr(0, slash);
   const auto quote = symbol.substr(slash + 1);
-  if (!ValidAsset(base) || !ValidAsset(quote) || quote.find('/') != std::string_view::npos) {
+  if (!ValidAsset(base) || !ValidAsset(quote) || quote.find('/') != std::string_view::npos)
+  {
     return MakeError(ErrorCategory::kInvalidArgument, "invalid symbol '" + std::string(symbol) + "'");
   }
   return SymbolParts{std::string(base), std::string(quote)};

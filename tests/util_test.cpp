@@ -79,7 +79,10 @@ TEST(Retry, RetriesTransientErrorsThenSucceeds) {
   auto result = util::Retry(
       p,
       [&]() -> types::Result<int> {
-        if (++calls < 3) return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        if (++calls < 3)
+        {
+          return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
         return 42;
       },
       [&](std::chrono::milliseconds d) { sleeps.push_back(d); });

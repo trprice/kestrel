@@ -31,7 +31,10 @@ types::Result<std::string_view> BinanceUSInterval(types::Timeframe tf) {
 
 types::Result<std::vector<types::Bar>> BinanceUSDataSource::GetBars(const types::Symbol&, types::Timeframe tf,
                                                                     types::Timestamp, types::Timestamp) {
-  if (auto i = BinanceUSInterval(tf); !i) return std::unexpected(i.error());
+  if (auto i = BinanceUSInterval(tf); !i)
+  {
+    return std::unexpected(i.error());
+  }
   return MakeError(ErrorCategory::kNotImplemented, "BinanceUSDataSource::GetBars is not implemented yet");
 }
 

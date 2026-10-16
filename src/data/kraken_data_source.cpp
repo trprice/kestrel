@@ -43,28 +43,38 @@ Result<int> KrakenInterval(types::Timeframe tf) {
 
 ErrorCategory ClassifyKrakenError(std::string_view code) {
   if (StartsWith(code, "EAPI:Rate limit") || StartsWith(code, "EGeneral:Too many requests") ||
-      StartsWith(code, "EOrder:Rate limit") || StartsWith(code, "EGeneral:Temporary lockout")) {
+      StartsWith(code, "EOrder:Rate limit") || StartsWith(code, "EGeneral:Temporary lockout"))
+  {
     return ErrorCategory::kRateLimit;
   }
-  if (StartsWith(code, "EService:") || StartsWith(code, "EGeneral:Internal error")) {
+  if (StartsWith(code, "EService:") || StartsWith(code, "EGeneral:Internal error"))
+  {
     return ErrorCategory::kServer;
   }
   if (StartsWith(code, "EAPI:Invalid key") || StartsWith(code, "EAPI:Invalid signature") ||
-      StartsWith(code, "EAPI:Invalid nonce") || StartsWith(code, "EGeneral:Permission denied")) {
+      StartsWith(code, "EAPI:Invalid nonce") || StartsWith(code, "EGeneral:Permission denied"))
+  {
     return ErrorCategory::kAuth;
   }
-  if (StartsWith(code, "EQuery:Unknown asset pair") || StartsWith(code, "EOrder:Unknown order")) {
+  if (StartsWith(code, "EQuery:Unknown asset pair") || StartsWith(code, "EOrder:Unknown order"))
+  {
     return ErrorCategory::kNotFound;
   }
-  if (StartsWith(code, "EOrder:Insufficient funds")) return ErrorCategory::kInsufficientFunds;
-  if (StartsWith(code, "EGeneral:Invalid arguments")) return ErrorCategory::kInvalidArgument;
+  if (StartsWith(code, "EOrder:Insufficient funds"))
+  {
+    return ErrorCategory::kInsufficientFunds;
+  }
+  if (StartsWith(code, "EGeneral:Invalid arguments"))
+  {
+    return ErrorCategory::kInvalidArgument;
+  }
   return ErrorCategory::kRejected;
 }
 
 KrakenDataSource::KrakenDataSource(std::shared_ptr<net::HttpClient> http, Options options)
-    : http_(std::move(http)),
-      options_(std::move(options)),
-      limiter_(options_.requests_per_second, options_.request_burst) {}
+    : mHttp(std::move(http)),
+      mOptions(std::move(options)),
+      mLimiter(mOptions.requests_per_second, mOptions.request_burst) {}
 
 KrakenDataSource::KrakenDataSource(std::shared_ptr<net::HttpClient> http)
     : KrakenDataSource(std::move(http), Options{}) {}
@@ -74,39 +84,62 @@ KrakenDataSource::KrakenDataSource()
 
 Result<json> KrakenDataSource::Call(const std::string& method, std::map<std::string, std::string> query) {
   net::HttpRequest request;
-  request.url = options_.rest_base_url + "/0/public/" + method;
+  request.url = mOptions.rest_base_url + "/0/public/" + method;
   request.query = std::move(query);
 
   return util::Retry(
-      options_.retry,
+      mOptions.retry,
       [&]() -> Result<json> {
-        limiter_.Acquire();
-        auto response = http_->Send(request);
-        if (!response) {
-          if (response.error().category == ErrorCategory::kRateLimit) limiter_.Penalize();
+        mLimiter.Acquire();
+        auto response = mHttp->Send(request);
+        if (!response)
+        {
+          if (response.error().category == ErrorCategory::kRateLimit)
+          {
+            mLimiter.Penalize();
+          }
           spdlog::debug("kraken {}: {}", method, response.error().ToString());
           return std::unexpected(response.error());
         }
         auto body = util::ParseJson(response->body);
-        if (!body) return std::unexpected(body.error());
-        if (!body->is_object()) return MakeError(ErrorCategory::kParse, "kraken: response is not an object");
+        if (!body)
+        {
+          return std::unexpected(body.error());
+        }
+        if (!body->is_object())
+        {
+          return MakeError(ErrorCategory::kParse, "kraken: response is not an object");
+        }
 
-        if (const auto errors = body->find("error"); errors != body->end() && errors->is_array()) {
+        if (const auto errors = body->find("error"); errors != body->end() && errors->is_array())
+        {
           for (const auto& e : *errors) {
-            if (!e.is_string()) continue;
+            if (!e.is_string())
+            {
+              continue;
+            }
             const auto code = e.get<std::string>();
-            if (code.empty() || code[0] != 'E') continue;  // 'W' entries are warnings
+            if (code.empty() || code[0] != 'E')
+            {
+              continue;  // 'W' entries are warnings
+            }
             const auto category = ClassifyKrakenError(code);
-            if (category == ErrorCategory::kRateLimit) limiter_.Penalize();
+            if (category == ErrorCategory::kRateLimit)
+            {
+              mLimiter.Penalize();
+            }
             auto err = MakeError(category, "kraken " + method + ": " + code, response->status, code);
             return err;
           }
         }
         const auto result = body->find("result");
-        if (result == body->end()) return MakeError(ErrorCategory::kParse, "kraken: response has no result");
+        if (result == body->end())
+        {
+          return MakeError(ErrorCategory::kParse, "kraken: response has no result");
+        }
         return *result;
       },
-      options_.sleeper);
+      mOptions.sleeper);
 }
 
 Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& symbol,
@@ -115,13 +148,22 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
                                                           types::Timestamp end) {
   using namespace std::chrono;
   auto interval = KrakenInterval(timeframe);
-  if (!interval) return std::unexpected(interval.error());
+  if (!interval)
+  {
+    return std::unexpected(interval.error());
+  }
   auto pair = ToKrakenSymbol(symbol);
-  if (!pair) return std::unexpected(pair.error());
-  if (end < start) return MakeError(ErrorCategory::kInvalidArgument, "GetBars: end precedes start");
+  if (!pair)
+  {
+    return std::unexpected(pair.error());
+  }
+  if (end < start)
+  {
+    return MakeError(ErrorCategory::kInvalidArgument, "GetBars: end precedes start");
+  }
 
   const seconds bar_length = *types::FixedDuration(timeframe);
-  const types::Timestamp now = options_.clock();
+  const types::Timestamp now = mOptions.clock();
 
   std::vector<types::Bar> bars;
   types::Timestamp since = start;
@@ -129,18 +171,28 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
     auto result = Call("OHLC", {{"pair", *pair},
                                 {"interval", std::to_string(*interval)},
                                 {"since", std::to_string(types::ToEpochSeconds(since))}});
-    if (!result) return std::unexpected(result.error());
+    if (!result)
+    {
+      return std::unexpected(result.error());
+    }
 
     // The result holds one array of candles under the pair's key, plus "last".
     const json* candles = nullptr;
     for (const auto& [key, value] : result->items()) {
-      if (key != "last" && value.is_array()) candles = &value;
+      if (key != "last" && value.is_array())
+      {
+        candles = &value;
+      }
     }
-    if (!candles) return MakeError(ErrorCategory::kParse, "kraken OHLC: no candle array in response");
+    if (!candles)
+    {
+      return MakeError(ErrorCategory::kParse, "kraken OHLC: no candle array in response");
+    }
 
     std::vector<types::Bar> page;
     for (const auto& row : *candles) {
-      if (!row.is_array() || row.size() < 7 || !row[0].is_number_integer()) {
+      if (!row.is_array() || row.size() < 7 || !row[0].is_number_integer())
+      {
         return MakeError(ErrorCategory::kParse, "kraken OHLC: malformed candle");
       }
       // [time, open, high, low, close, vwap, volume, count]
@@ -149,7 +201,10 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
       auto o = util::JsonDecimal(row[1]), h = util::JsonDecimal(row[2]), l = util::JsonDecimal(row[3]),
            c = util::JsonDecimal(row[4]), v = util::JsonDecimal(row[6]);
       for (const auto* d : {&o, &h, &l, &c, &v}) {
-        if (!*d) return std::unexpected(d->error());
+        if (!*d)
+        {
+          return std::unexpected(d->error());
+        }
       }
       bar.open = *o;
       bar.high = *h;
@@ -158,11 +213,15 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
       bar.volume = *v;
       page.push_back(bar);
     }
-    if (page.empty()) break;
+    if (page.empty())
+    {
+      break;
+    }
 
     // A full window whose oldest bar is after `start` means the range reaches
     // past the 720 bars Kraken retains.
-    if (bars.empty() && page.size() >= kMaxBarsPerRequest && page.front().open_time > start) {
+    if (bars.empty() && page.size() >= kMaxBarsPerRequest && page.front().open_time > start)
+    {
       return MakeError(ErrorCategory::kUnsupported,
                        "kraken retains only the latest " + std::to_string(kMaxBarsPerRequest) +
                            " " + std::string(types::ToString(timeframe)) +
@@ -173,15 +232,22 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
     for (const auto& bar : page) {
       const bool forming = bar.open_time + bar_length > now;
       if (bar.open_time >= start && bar.open_time < end && !forming &&
-          (bars.empty() || bar.open_time > bars.back().open_time)) {
+          (bars.empty() || bar.open_time > bars.back().open_time))
+      {
         bars.push_back(bar);
       }
     }
 
     // Done when the page reached the end of the range or made no progress.
-    if (last_open + bar_length >= end || last_open + bar_length > now) break;
+    if (last_open + bar_length >= end || last_open + bar_length > now)
+    {
+      break;
+    }
     const types::Timestamp next = last_open + seconds(1);
-    if (next <= since) break;
+    if (next <= since)
+    {
+      break;
+    }
     since = next;
   }
   return bars;
@@ -189,46 +255,78 @@ Result<std::vector<types::Bar>> KrakenDataSource::GetBars(const types::Symbol& s
 
 Result<std::unique_ptr<Subscription>> KrakenDataSource::StreamQuotes(
     const std::vector<std::string>& symbols, QuoteCallback callback) {
-  if (symbols.empty()) return MakeError(ErrorCategory::kInvalidArgument, "StreamQuotes: no symbols");
-  if (!callback) return MakeError(ErrorCategory::kInvalidArgument, "StreamQuotes: no callback");
+  if (symbols.empty())
+  {
+    return MakeError(ErrorCategory::kInvalidArgument, "StreamQuotes: no symbols");
+  }
+  if (!callback)
+  {
+    return MakeError(ErrorCategory::kInvalidArgument, "StreamQuotes: no callback");
+  }
   std::vector<std::string> ws_symbols;
   for (const auto& s : symbols) {
     auto native = ToKrakenSymbol(s);
-    if (!native) return std::unexpected(native.error());
+    if (!native)
+    {
+      return std::unexpected(native.error());
+    }
     ws_symbols.push_back(*native);
   }
-  auto stream = std::make_unique<KrakenQuoteStream>(options_.ws_url, std::move(ws_symbols), std::move(callback));
+  auto stream = std::make_unique<KrakenQuoteStream>(mOptions.ws_url, std::move(ws_symbols), std::move(callback));
   stream->Start();
   return std::unique_ptr<Subscription>(std::move(stream));
 }
 
 Result<types::SymbolInfo> KrakenDataSource::GetSymbolInfo(const types::Symbol& symbol) {
   {
-    std::lock_guard lock(cache_mutex_);
-    if (const auto it = symbol_cache_.find(symbol); it != symbol_cache_.end()) return it->second;
+    std::lock_guard lock(mCacheMutex);
+    if (const auto it = mSymbolCache.find(symbol); it != mSymbolCache.end())
+    {
+      return it->second;
+    }
   }
   auto pair = ToKrakenSymbol(symbol);
-  if (!pair) return std::unexpected(pair.error());
+  if (!pair)
+  {
+    return std::unexpected(pair.error());
+  }
   auto result = Call("AssetPairs", {{"pair", *pair}});
-  if (!result) return std::unexpected(result.error());
-  if (!result->is_object() || result->empty()) {
+  if (!result)
+  {
+    return std::unexpected(result.error());
+  }
+  if (!result->is_object() || result->empty())
+  {
     return MakeError(ErrorCategory::kNotFound, "kraken: no asset pair metadata for " + symbol);
   }
   const json& meta = result->begin().value();
 
   auto field = [&](const char* name) -> Result<types::Decimal> {
     const auto it = meta.find(name);
-    if (it == meta.end()) return MakeError(ErrorCategory::kParse, std::string("kraken AssetPairs: missing ") + name);
+    if (it == meta.end())
+    {
+      return MakeError(ErrorCategory::kParse, std::string("kraken AssetPairs: missing ") + name);
+    }
     return util::JsonDecimal(*it);
   };
   auto tick = field("tick_size");
   auto min_size = field("ordermin");
   auto lot_decimals = field("lot_decimals");
-  if (!tick) return std::unexpected(tick.error());
-  if (!min_size) return std::unexpected(min_size.error());
-  if (!lot_decimals) return std::unexpected(lot_decimals.error());
+  if (!tick)
+  {
+    return std::unexpected(tick.error());
+  }
+  if (!min_size)
+  {
+    return std::unexpected(min_size.error());
+  }
+  if (!lot_decimals)
+  {
+    return std::unexpected(lot_decimals.error());
+  }
   const auto decimals = lot_decimals->Mantissa() / 1;
-  if (decimals < 0 || decimals > types::Decimal::kMaxScale) {
+  if (decimals < 0 || decimals > types::Decimal::kMaxScale)
+  {
     return MakeError(ErrorCategory::kParse, "kraken AssetPairs: bad lot_decimals");
   }
 
@@ -238,8 +336,8 @@ Result<types::SymbolInfo> KrakenDataSource::GetSymbolInfo(const types::Symbol& s
   info.lot_size = types::Decimal(1, static_cast<int>(decimals));
   info.min_order_size = *min_size;
   {
-    std::lock_guard lock(cache_mutex_);
-    symbol_cache_[symbol] = info;
+    std::lock_guard lock(mCacheMutex);
+    mSymbolCache[symbol] = info;
   }
   return info;
 }

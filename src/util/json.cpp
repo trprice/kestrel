@@ -23,7 +23,7 @@ class ExactNumberSax : public nlohmann::json_sax<json> {
 
   bool start_object(std::size_t) override { return Open(json::object()); }
   bool key(string_t& k) override {
-    key_ = k;
+    mKey = k;
     return true;
   }
   bool end_object() override { return Close(); }
@@ -35,47 +35,56 @@ class ExactNumberSax : public nlohmann::json_sax<json> {
 
  private:
   json* Slot(json&& value) {
-    if (stack_.empty()) {
+    if (mStack.empty())
+    {
       root = std::move(value);
       return &root;
     }
-    json* top = stack_.back();
-    if (top->is_array()) {
+    json* top = mStack.back();
+    if (top->is_array())
+    {
       top->push_back(std::move(value));
       return &top->back();
     }
-    return &((*top)[key_] = std::move(value));
+    return &((*top)[mKey] = std::move(value));
   }
   bool Add(json&& v) {
     Slot(std::move(v));
     return true;
   }
   bool Open(json&& container) {
-    stack_.push_back(Slot(std::move(container)));
+    mStack.push_back(Slot(std::move(container)));
     return true;
   }
   bool Close() {
-    stack_.pop_back();
+    mStack.pop_back();
     return true;
   }
 
-  std::vector<json*> stack_;
-  std::string key_;
+  std::vector<json*> mStack;
+  std::string mKey;
 };
 
 }  // namespace
 
 types::Result<nlohmann::json> ParseJson(std::string_view text) {
   ExactNumberSax sax;
-  if (!json::sax_parse(text, &sax)) {
+  if (!json::sax_parse(text, &sax))
+  {
     return types::MakeError(types::ErrorCategory::kParse, "malformed JSON");
   }
   return std::move(sax.root);
 }
 
 types::Result<types::Decimal> JsonDecimal(const nlohmann::json& value) {
-  if (value.is_string()) return types::Decimal::Parse(value.get_ref<const std::string&>());
-  if (value.is_number_integer()) return types::Decimal(value.get<std::int64_t>(), 0);
+  if (value.is_string())
+  {
+    return types::Decimal::Parse(value.get_ref<const std::string&>());
+  }
+  if (value.is_number_integer())
+  {
+    return types::Decimal(value.get<std::int64_t>(), 0);
+  }
   return types::MakeError(types::ErrorCategory::kParse, "expected a numeric JSON value");
 }
 

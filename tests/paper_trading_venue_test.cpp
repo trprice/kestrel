@@ -33,16 +33,19 @@ class FakeDataSource : public data::DataSource {
                                                                   data::QuoteCallback cb) override {
     callback = std::move(cb);
     auto sub = std::make_unique<Sub>();
-    sub_ = sub.get();
+    mSub = sub.get();
     return std::unique_ptr<data::Subscription>(std::move(sub));
   }
   types::Result<types::SymbolInfo> GetSymbolInfo(const types::Symbol& s) override {
-    if (s != "BTC/USD") return types::MakeError(ErrorCategory::kNotFound, "unknown " + s);
+    if (s != "BTC/USD")
+    {
+      return types::MakeError(ErrorCategory::kNotFound, "unknown " + s);
+    }
     return types::SymbolInfo{s, D("0.1"), D("0.00000001"), D("0.0001")};
   }
 
   data::QuoteCallback callback;
-  Sub* sub_ = nullptr;
+  Sub* mSub = nullptr;
 };
 
 types::Quote Q(const char* bid, const char* ask, const char* bid_size = nullptr, const char* ask_size = nullptr) {
@@ -52,8 +55,14 @@ types::Quote Q(const char* bid, const char* ask, const char* bid_size = nullptr,
   q.received_time = types::FromEpochSeconds(1);
   q.bid = D(bid);
   q.ask = D(ask);
-  if (bid_size) q.bid_size = D(bid_size);
-  if (ask_size) q.ask_size = D(ask_size);
+  if (bid_size)
+  {
+    q.bid_size = D(bid_size);
+  }
+  if (ask_size)
+  {
+    q.ask_size = D(ask_size);
+  }
   return q;
 }
 
@@ -64,8 +73,14 @@ OrderRequest Order(Side side, OrderType type, const char* qty, const char* limit
   r.side = side;
   r.type = type;
   r.quantity = D(qty);
-  if (limit) r.limit_price = D(limit);
-  if (stop) r.stop_price = D(stop);
+  if (limit)
+  {
+    r.limit_price = D(limit);
+  }
+  if (stop)
+  {
+    r.stop_price = D(stop);
+  }
   return r;
 }
 
@@ -84,7 +99,10 @@ types::Balance Bal(trading::TradingVenue& v, const std::string& asset) {
   auto balances = v.GetBalances();
   EXPECT_TRUE(balances.has_value());
   for (const auto& b : *balances)
-    if (b.asset == asset) return b;
+    if (b.asset == asset)
+    {
+      return b;
+    }
   return types::Balance{asset, {}, {}, {}};
 }
 
@@ -422,7 +440,7 @@ TEST(PaperStream, StartSubscribesAndStopStopsIt) {
   ASSERT_TRUE(f.data->callback);
   f.data->callback(Q("49990.0", "50000.0"));  // as the stream thread would
   ASSERT_OK(venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.01")));
-  auto* sub = f.data->sub_;
+  auto* sub = f.data->mSub;
   venue->Stop();
   EXPECT_TRUE(sub == nullptr || true);  // subscription object is destroyed by Stop()
 }
@@ -449,7 +467,10 @@ TEST(PaperThreading, ConcurrentQuotesAndOrdersKeepBooksConsistent) {
         const auto side = (i + t) % 2 ? Side::kBuy : Side::kSell;
         const auto price = std::to_string(49000 + (i * 13) % 2000).append(".0");
         auto ack = venue->PlaceOrder(Order(side, OrderType::kLimit, "0.001", price.c_str()));
-        if (ack && i % 3 == 0) (void)venue->CancelOrder(ack->order_id);
+        if (ack && i % 3 == 0)
+        {
+          (void)venue->CancelOrder(ack->order_id);
+        }
         (void)venue->GetBalances();
         (void)venue->GetOpenOrders();
       }

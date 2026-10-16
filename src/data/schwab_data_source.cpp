@@ -24,7 +24,10 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe tf) {
 
 types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(const types::Symbol&, types::Timeframe tf,
                                                                  types::Timestamp, types::Timestamp) {
-  if (auto f = SchwabFrequencyFor(tf); !f) return std::unexpected(f.error());
+  if (auto f = SchwabFrequencyFor(tf); !f)
+  {
+    return std::unexpected(f.error());
+  }
   return MakeError(ErrorCategory::kNotImplemented, "SchwabDataSource::GetBars is not implemented yet");
 }
 

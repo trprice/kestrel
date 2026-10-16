@@ -14,7 +14,10 @@ using kestrel::testing::D;
 config::LoadOptions NoEnv(std::map<std::string, std::string> env = {}) {
   config::LoadOptions o;
   o.getenv = [env](const std::string& k) -> std::optional<std::string> {
-    if (auto it = env.find(k); it != env.end()) return it->second;
+    if (auto it = env.find(k); it != env.end())
+    {
+      return it->second;
+    }
     return std::nullopt;
   };
   o.base_dir = std::filesystem::temp_directory_path() / "kestrel-no-such-dir";

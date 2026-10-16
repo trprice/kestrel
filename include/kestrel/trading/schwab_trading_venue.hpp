@@ -49,8 +49,8 @@ class SchwabTradingVenue : public TradingVenue {
   types::Result<std::vector<types::Balance>> GetBalances() override;
 
  private:
-  config::SchwabCredentials credentials_;
-  std::shared_ptr<data::DataSource> data_source_;  // for tick/lot rules via ApplySymbolRules
+  config::SchwabCredentials mCredentials;
+  std::shared_ptr<data::DataSource> mDataSource;  // for tick/lot rules via ApplySymbolRules
 };
 
 }  // namespace kestrel::trading

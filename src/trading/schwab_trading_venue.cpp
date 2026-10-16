@@ -12,7 +12,7 @@ types::Error NotImplemented(const char* what) {
 }  // namespace
 
 SchwabTradingVenue::SchwabTradingVenue(config::SchwabCredentials credentials, std::shared_ptr<data::DataSource> data_source)
-    : credentials_(std::move(credentials)), data_source_(std::move(data_source)) {}
+    : mCredentials(std::move(credentials)), mDataSource(std::move(data_source)) {}
 
 types::Result<types::OrderAcknowledgement> SchwabTradingVenue::PlaceOrder(const types::OrderRequest&) {
   return std::unexpected(NotImplemented("PlaceOrder"));

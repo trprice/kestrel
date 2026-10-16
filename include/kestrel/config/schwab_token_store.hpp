@@ -27,9 +27,9 @@ enum class SchwabTokenHealth {
 
 class SchwabTokenStore {
  public:
-  explicit SchwabTokenStore(std::filesystem::path path) : path_(std::move(path)) {}
+  explicit SchwabTokenStore(std::filesystem::path path) : mPath(std::move(path)) {}
 
-  const std::filesystem::path& Path() const { return path_; }
+  const std::filesystem::path& Path() const { return mPath; }
 
   // kNotFound when the file does not exist yet (first run).
   types::Result<SchwabTokens> Load() const;
@@ -44,7 +44,7 @@ class SchwabTokenStore {
   static void LogReauthorizationInstructions(const std::string& app_key, const std::string& redirect_uri);
 
  private:
-  std::filesystem::path path_;
+  std::filesystem::path mPath;
 };
 
 }  // namespace kestrel::config

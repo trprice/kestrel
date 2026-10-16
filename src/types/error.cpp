@@ -35,8 +35,14 @@ bool Error::IsTransient() const {
 
 std::string Error::ToString() const {
   std::string out = "[" + std::string(types::ToString(category)) + "] " + message;
-  if (http_status) out += " (http " + std::to_string(*http_status) + ")";
-  if (provider_code) out += " (code " + *provider_code + ")";
+  if (http_status)
+  {
+    out += " (http " + std::to_string(*http_status) + ")";
+  }
+  if (provider_code)
+  {
+    out += " (code " + *provider_code + ")";
+  }
   return out;
 }
 

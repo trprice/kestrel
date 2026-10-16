@@ -10,7 +10,10 @@ namespace kestrel::testing {
 // Parses a decimal literal; fails the test on malformed input.
 inline types::Decimal D(const char* text) {
   auto d = types::Decimal::Parse(text);
-  if (!d) throw std::runtime_error(d.error().ToString());
+  if (!d)
+  {
+    throw std::runtime_error(d.error().ToString());
+  }
   return *d;
 }
 

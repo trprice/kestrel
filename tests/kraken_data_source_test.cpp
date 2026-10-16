@@ -14,20 +14,23 @@ using namespace std::chrono_literals;
 // Scripted HTTP client: pops one canned outcome per request.
 class FakeHttp : public net::HttpClient {
  public:
-  void Push(std::string body) { script_.push_back(net::HttpResponse{200, std::move(body), {}}); }
-  void PushError(types::Error e) { script_.push_back(std::unexpected(std::move(e))); }
+  void Push(std::string body) { mScript.push_back(net::HttpResponse{200, std::move(body), {}}); }
+  void PushError(types::Error e) { mScript.push_back(std::unexpected(std::move(e))); }
   std::vector<net::HttpRequest> requests;
 
   types::Result<net::HttpResponse> Send(const net::HttpRequest& r) override {
     requests.push_back(r);
-    if (script_.empty()) return types::MakeError(types::ErrorCategory::kInternal, "unscripted request");
-    auto next = std::move(script_.front());
-    script_.pop_front();
+    if (mScript.empty())
+    {
+      return types::MakeError(types::ErrorCategory::kInternal, "unscripted request");
+    }
+    auto next = std::move(mScript.front());
+    mScript.pop_front();
     return next;
   }
 
  private:
-  std::deque<types::Result<net::HttpResponse>> script_;
+  std::deque<types::Result<net::HttpResponse>> mScript;
 };
 
 constexpr std::int64_t kHour = 3600;

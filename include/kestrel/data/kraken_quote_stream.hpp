@@ -28,8 +28,8 @@ class KrakenTickerMerger {
   void Reset();
 
  private:
-  std::mutex mutex_;
-  std::unordered_map<types::Symbol, types::Quote> state_;
+  std::mutex mMutex;
+  std::unordered_map<types::Symbol, types::Quote> mState;
 };
 
 // WebSocket subscription to Kraken's v2 ticker channel. Reconnects with
@@ -47,11 +47,11 @@ class KrakenQuoteStream : public Subscription {
   void OnMessage(const std::string& text);
   void Subscribe();
 
-  std::string url_;
-  std::vector<std::string> symbols_;
-  QuoteCallback callback_;
-  KrakenTickerMerger merger_;
-  std::unique_ptr<ix::WebSocket> socket_;
+  std::string mUrl;
+  std::vector<std::string> mSymbols;
+  QuoteCallback mCallback;
+  KrakenTickerMerger mMerger;
+  std::unique_ptr<ix::WebSocket> mSocket;
 };
 
 }  // namespace kestrel::data

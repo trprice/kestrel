@@ -36,36 +36,49 @@ int main(int argc, char** argv) {
   int stream_seconds = 10;
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
-    if (arg == "--config" && i + 1 < argc) {
+    if (arg == "--config" && i + 1 < argc)
+    {
       config_path = argv[++i];
-    } else if (arg == "--bars" && i + 2 < argc) {
+    }
+    else if (arg == "--bars" && i + 2 < argc)
+    {
       auto tf = types::ParseTimeframe(argv[++i]);
-      if (!tf) {
+      if (!tf)
+      {
         std::cerr << tf.error().ToString() << '\n';
         return 2;
       }
       bars = {*tf, std::stoi(argv[++i])};
-    } else if (arg == "--stream" && i + 1 < argc) {
+    }
+    else if (arg == "--stream" && i + 1 < argc)
+    {
       stream_seconds = std::stoi(argv[++i]);
-    } else if (arg == "--verbose") {
+    }
+    else if (arg == "--verbose")
+    {
       spdlog::set_level(spdlog::level::debug);
-    } else {
+    }
+    else
+    {
       Usage();
       return arg == "--help" ? 0 : 2;
     }
   }
-  if (config_path.empty()) {
+  if (config_path.empty())
+  {
     Usage();
     return 2;
   }
 
   auto cfg = config::LoadConfiguration(config_path);
-  if (!cfg) {
+  if (!cfg)
+  {
     spdlog::error("config: {}", cfg.error().ToString());
     return 1;
   }
   auto components = CreateComponents(**cfg);
-  if (!components) {
+  if (!components)
+  {
     spdlog::error("startup: {}", components.error().ToString());
     return 1;
   }
@@ -74,18 +87,23 @@ int main(int argc, char** argv) {
                config::ToString((*cfg)->GetMode()), data_source->Name(), venue->Name());
 
   for (const auto& symbol : (*cfg)->GetSymbols()) {
-    if (auto info = data_source->GetSymbolInfo(symbol)) {
+    if (auto info = data_source->GetSymbolInfo(symbol))
+    {
       std::cout << symbol << ": tick=" << info->tick_size << " lot=" << info->lot_size
                 << " min=" << info->min_order_size << '\n';
-    } else {
+    }
+    else
+    {
       spdlog::error("{}: {}", symbol, info.error().ToString());
     }
-    if (bars) {
+    if (bars)
+    {
       const auto length = *types::FixedDuration(bars->first);
       const auto end = types::Now();
       const auto start = end - length * bars->second;
       auto result = data_source->GetBars(symbol, bars->first, start, end);
-      if (!result) {
+      if (!result)
+      {
         spdlog::error("{}: {}", symbol, result.error().ToString());
         continue;
       }
@@ -96,12 +114,15 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (auto balances = venue->GetBalances()) {
+  if (auto balances = venue->GetBalances())
+  {
     for (const auto& b : *balances) {
       std::cout << "balance " << b.asset << ": total=" << b.total << " available=" << b.available
                 << " locked=" << b.locked << '\n';
     }
-  } else {
+  }
+  else
+  {
     spdlog::warn("balances: {}", balances.error().ToString());
   }
 
@@ -113,7 +134,8 @@ int main(int argc, char** argv) {
     std::cout << types::FormatIso8601(q.received_time) << ' ' << q.symbol << " bid=" << Opt(q.bid)
               << " ask=" << Opt(q.ask) << " last=" << Opt(q.last) << '\n';
   });
-  if (!sub) {
+  if (!sub)
+  {
     spdlog::error("stream: {}", sub.error().ToString());
     return 1;
   }

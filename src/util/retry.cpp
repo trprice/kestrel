@@ -20,7 +20,10 @@ std::chrono::milliseconds BackoffDelay(const RetryPolicy& policy, int retry) {
   double ms = static_cast<double>(policy.initial_delay.count()) *
               std::pow(policy.multiplier, std::max(0, retry - 1));
   ms = std::min(ms, static_cast<double>(policy.max_delay.count()));
-  if (policy.jitter > 0.0) ms *= 1.0 + Uniform(-policy.jitter, policy.jitter);
+  if (policy.jitter > 0.0)
+  {
+    ms *= 1.0 + Uniform(-policy.jitter, policy.jitter);
+  }
   return std::chrono::milliseconds(static_cast<long long>(std::max(0.0, ms)));
 }
 
