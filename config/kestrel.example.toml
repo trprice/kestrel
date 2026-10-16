@@ -1,0 +1,19 @@
+# Copy to config/kestrel.toml and edit. Credentials do NOT go in this file:
+# use KESTREL_<PROVIDER>_<FIELD> environment variables or secrets.toml.
+
+[general]
+provider = "kraken"            # schwab | kraken | binanceus
+mode     = "paper"             # paper | live
+symbols  = ["BTC/USD", "ETH/USD"]
+# secrets_file = "secrets.toml"  # default: secrets.toml next to this file (if present)
+
+[paper]                        # only used in paper mode
+initial_balances = { USD = "10000" }
+maker_fee_bps = 25             # 0.25%
+taker_fee_bps = 40             # 0.40%
+slippage_bps  = 5              # market orders fill 0.05% through the touch
+cap_limit_fills_at_quote_size = false
+
+[kraken]
+# rest_url = "https://api.kraken.com"
+# ws_url   = "wss://ws.kraken.com/v2"

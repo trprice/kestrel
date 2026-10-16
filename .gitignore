@@ -1,0 +1,8 @@
+build/
+.cache/
+compile_commands.json
+config/kestrel.toml
+config/secrets.toml
+secrets.toml
+*_tokens.json
+*.tmp
