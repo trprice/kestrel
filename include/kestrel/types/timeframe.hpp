@@ -17,9 +17,23 @@ namespace kestrel::types {
 //   Kraken      1m 5m 15m 30m 1h 4h 1d 1w 15d
 //   Binance.US  1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M
 enum class Timeframe {
-  kM1, kM3, kM5, kM10, kM15, kM30,
-  kH1, kH2, kH4, kH6, kH8, kH12,
-  kD1, kD3, kW1, kD15, kMo1,
+    kM1,
+    kM3,
+    kM5,
+    kM10,
+    kM15,
+    kM30,
+    kH1,
+    kH2,
+    kH4,
+    kH6,
+    kH8,
+    kH12,
+    kD1,
+    kD3,
+    kW1,
+    kD15,
+    kMo1,
 };
 
 std::vector<Timeframe> AllTimeframes();

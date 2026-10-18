@@ -11,8 +11,8 @@ namespace kestrel {
 // The two halves of a provider connection. Market data and order execution are
 // separate objects: only the venue differs between paper and live mode.
 struct Components {
-  std::shared_ptr<data::DataSource> data_source;
-  std::unique_ptr<trading::TradingVenue> venue;
+    std::shared_ptr<data::DataSource> data_source;
+    std::unique_ptr<trading::TradingVenue> venue;
 };
 
 // Builds the provider's DataSource and a TradingVenue chosen by
@@ -21,6 +21,7 @@ struct Components {
 // mode. Callers use only the abstract interfaces.
 //
 // Live mode fails with kAuth if the provider's credentials are not configured.
-types::Result<Components> CreateComponents(const config::Configuration& configuration);
+types::Result<Components> CreateComponents(
+    const config::Configuration& configuration);
 
 }  // namespace kestrel

@@ -16,8 +16,8 @@ namespace kestrel::types {
 using Symbol = std::string;
 
 struct SymbolParts {
-  std::string base;
-  std::optional<std::string> quote;  // empty for equities
+    std::string base;
+    std::optional<std::string> quote;  // empty for equities
 };
 
 // Trims, upper-cases, and maps '-' and '_' separators to '/'. Fails with

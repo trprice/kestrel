@@ -9,18 +9,18 @@ namespace kestrel::config {
 // Deliberately no stream/format operators, so they are hard to log by accident.
 
 struct KrakenCredentials {
-  std::string api_key;
-  std::string api_secret;  // base64, as shown in Kraken's key management page
+    std::string api_key;
+    std::string api_secret;  // base64, as shown in Kraken's key management page
 };
 
 struct BinanceUSCredentials {
-  std::string api_key;
-  std::string api_secret;
+    std::string api_key;
+    std::string api_secret;
 };
 
 struct SchwabCredentials {
-  std::string app_key;     // OAuth client id
-  std::string app_secret;  // OAuth client secret
+    std::string app_key;     // OAuth client id
+    std::string app_secret;  // OAuth client secret
 };
 
 }  // namespace kestrel::config

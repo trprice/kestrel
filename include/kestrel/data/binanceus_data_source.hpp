@@ -26,13 +26,16 @@ types::Result<std::string_view> BinanceUSInterval(types::Timeframe timeframe);
 //             response header); HTTP 429 means back off, 418 means banned.
 //   Signing:  only needed for trading endpoints; see BinanceUSTradingVenue.
 class BinanceUSDataSource : public DataSource {
- public:
-  std::string_view Name() const override { return "binanceus"; }
-  types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&, types::Timeframe,
-                                                 types::Timestamp, types::Timestamp) override;
-  types::Result<std::unique_ptr<Subscription>> StreamQuotes(const std::vector<std::string>&,
-                                                            QuoteCallback) override;
-  types::Result<types::SymbolInfo> GetSymbolInfo(const types::Symbol&) override;
+   public:
+    std::string_view Name() const override { return "binanceus"; }
+    types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&,
+                                                   types::Timeframe,
+                                                   types::Timestamp,
+                                                   types::Timestamp) override;
+    types::Result<std::unique_ptr<Subscription>> StreamQuotes(
+        const std::vector<std::string>&, QuoteCallback) override;
+    types::Result<types::SymbolInfo> GetSymbolInfo(
+        const types::Symbol&) override;
 };
 
 }  // namespace kestrel::data

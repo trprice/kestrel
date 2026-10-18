@@ -1,8 +1,7 @@
 #pragma once
 
-#include <string_view>
-
 #include <nlohmann/json.hpp>
+#include <string_view>
 
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/error.hpp"

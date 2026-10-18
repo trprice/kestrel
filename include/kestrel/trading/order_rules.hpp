@@ -13,7 +13,7 @@ namespace kestrel::trading {
 // Fails with kInvalidArgument for malformed requests (missing/non-positive
 // prices or quantity) and kRejected when the rounded quantity is below the
 // symbol's minimum order size.
-types::Result<types::OrderRequest> ApplySymbolRules(const types::OrderRequest& request,
-                                                    const types::SymbolInfo& info);
+types::Result<types::OrderRequest> ApplySymbolRules(
+    const types::OrderRequest& request, const types::SymbolInfo& info);
 
 }  // namespace kestrel::trading

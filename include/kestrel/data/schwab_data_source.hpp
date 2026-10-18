@@ -6,8 +6,9 @@ namespace kestrel::data {
 
 // Schwab price-history parameters for a timeframe.
 struct SchwabFrequency {
-  std::string_view frequency_type;  // "minute" | "daily" | "weekly" | "monthly"
-  int frequency;                    // 1, 5, 10, 15, 30 for minute; 1 otherwise
+    std::string_view
+        frequency_type;  // "minute" | "daily" | "weekly" | "monthly"
+    int frequency;       // 1, 5, 10, 15, 30 for minute; 1 otherwise
 };
 types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 
@@ -34,13 +35,16 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 //             US equities use tick 0.01 (0.0001 under $1), lot 1, min 1.
 //   Limits:   ~120 market-data requests/minute per app.
 class SchwabDataSource : public DataSource {
- public:
-  std::string_view Name() const override { return "schwab"; }
-  types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&, types::Timeframe,
-                                                 types::Timestamp, types::Timestamp) override;
-  types::Result<std::unique_ptr<Subscription>> StreamQuotes(const std::vector<std::string>&,
-                                                            QuoteCallback) override;
-  types::Result<types::SymbolInfo> GetSymbolInfo(const types::Symbol&) override;
+   public:
+    std::string_view Name() const override { return "schwab"; }
+    types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&,
+                                                   types::Timeframe,
+                                                   types::Timestamp,
+                                                   types::Timestamp) override;
+    types::Result<std::unique_ptr<Subscription>> StreamQuotes(
+        const std::vector<std::string>&, QuoteCallback) override;
+    types::Result<types::SymbolInfo> GetSymbolInfo(
+        const types::Symbol&) override;
 };
 
 }  // namespace kestrel::data
