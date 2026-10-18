@@ -70,7 +70,7 @@ target_compile_options(kestrel PRIVATE
 
 if(KESTREL_BUILD_APP)
   add_executable(kestrel_app app/main.cpp)
-  target_link_libraries(kestrel_app PRIVATE kestrel::kestrel)
+  target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
 endif()
 
 if(KESTREL_BUILD_TESTS)

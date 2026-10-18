@@ -3,6 +3,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <CLI/CLI.hpp>
 #include <chrono>
 #include <csignal>
 #include <iostream>
@@ -17,18 +18,6 @@ namespace {
 
 using namespace kestrel;
 
-void Usage() {
-    std::cout
-        << "usage: kestrel_app --config <file.toml> [--bars <timeframe> "
-           "<count>] [--stream <seconds>]\n"
-           "                   [--verbose]\n"
-           "\n"
-           "  --bars 1h 24    print the last 24 completed 1h bars for each "
-           "configured symbol\n"
-           "  --stream 30     print live quotes for 30 seconds (default 10)\n"
-           "Always prints symbol info and the venue's balances.\n";
-}
-
 std::string Opt(const std::optional<types::Decimal>& d) {
     return d ? d->ToString() : "-";
 }
@@ -36,32 +25,68 @@ std::string Opt(const std::optional<types::Decimal>& d) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    CLI::App app{
+        "Exercises the data and trading interfaces of the configured "
+        "provider. Does only what is asked: with just --config it prints the "
+        "last 10 completed 1h bars (the default for --bars); --stream adds "
+        "or selects live quotes."};
+    app.set_version_flag("--version", "kestrel 0.1.0");
+
     std::string config_path;
+    app.add_option("-c,--config", config_path, "Path to the TOML configuration")
+        ->required()
+        ->check(CLI::ExistingFile);
+
+    int bars_count = 0;
+    auto* bars_opt =
+        app.add_option("--bars",
+                       "Print the last <count> completed bars of "
+                       "<timeframe> (e.g. 1h 24) for each symbol, with symbol "
+                       "info and balances. Default when neither "
+                       "--bars nor --stream is given: 1h 10")
+            ->expected(2)
+            ->type_name("TIMEFRAME COUNT");
+
+    std::optional<int> stream_seconds;
+    auto* stream_opt = app.add_option("--stream", stream_seconds,
+                                      "Print live quotes for <seconds> seconds")
+                           ->check(CLI::NonNegativeNumber)
+                           ->type_name("SECONDS");
+
+    bool verbose = false;
+    app.add_flag("-v,--verbose", verbose, "Enable debug logging");
+
+    CLI11_PARSE(app, argc, argv);
+
     std::optional<std::pair<types::Timeframe, int>> bars;
-    int stream_seconds = 10;
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--config" && i + 1 < argc) {
-            config_path = argv[++i];
-        } else if (arg == "--bars" && i + 2 < argc) {
-            auto tf = types::ParseTimeframe(argv[++i]);
-            if (!tf) {
-                std::cerr << tf.error().ToString() << '\n';
-                return 2;
-            }
-            bars = {*tf, std::stoi(argv[++i])};
-        } else if (arg == "--stream" && i + 1 < argc) {
-            stream_seconds = std::stoi(argv[++i]);
-        } else if (arg == "--verbose") {
-            spdlog::set_level(spdlog::level::debug);
-        } else {
-            Usage();
-            return arg == "--help" ? 0 : 2;
+    if (bars_opt->count() == 0 && stream_opt->count() == 0) {
+        bars = {types::Timeframe::kH1, 10};
+    } else if (bars_opt->count() > 0) {
+        const auto raw = bars_opt->as<std::vector<std::string>>();
+        auto tf = types::ParseTimeframe(raw[0]);
+        if (!tf) {
+            std::cerr << "--bars: " << tf.error().ToString() << '\n';
+            return 2;
         }
+        try {
+            bars_count = std::stoi(raw[1]);
+        } catch (const std::exception&) {
+            bars_count = 0;
+        }
+        if (bars_count <= 0) {
+            std::cerr << "--bars: count must be a positive integer, got '"
+                      << raw[1] << "'\n";
+            return 2;
+        }
+        if (!types::FixedDuration(*tf)) {
+            std::cerr << "--bars: " << raw[0]
+                      << " has no fixed length; pick another timeframe\n";
+            return 2;
+        }
+        bars = {*tf, bars_count};
     }
-    if (config_path.empty()) {
-        Usage();
-        return 2;
+    if (verbose) {
+        spdlog::set_level(spdlog::level::debug);
     }
 
     auto cfg = config::LoadConfiguration(config_path);
@@ -80,15 +105,15 @@ int main(int argc, char** argv) {
                  config::ToString((*cfg)->GetMode()), data_source->Name(),
                  venue->Name());
 
-    for (const auto& symbol : (*cfg)->GetSymbols()) {
-        if (auto info = data_source->GetSymbolInfo(symbol)) {
-            std::cout << symbol << ": tick=" << info->tick_size
-                      << " lot=" << info->lot_size
-                      << " min=" << info->min_order_size << '\n';
-        } else {
-            spdlog::error("{}: {}", symbol, info.error().ToString());
-        }
-        if (bars) {
+    if (bars) {
+        for (const auto& symbol : (*cfg)->GetSymbols()) {
+            if (auto info = data_source->GetSymbolInfo(symbol)) {
+                std::cout << symbol << ": tick=" << info->tick_size
+                          << " lot=" << info->lot_size
+                          << " min=" << info->min_order_size << '\n';
+            } else {
+                spdlog::error("{}: {}", symbol, info.error().ToString());
+            }
             const auto length = *types::FixedDuration(bars->first);
             const auto end = types::Now();
             const auto start = end - length * bars->second;
@@ -104,34 +129,37 @@ int main(int argc, char** argv) {
                           << " V=" << b.volume << '\n';
             }
         }
-    }
 
-    if (auto balances = venue->GetBalances()) {
-        for (const auto& b : *balances) {
-            std::cout << "balance " << b.asset << ": total=" << b.total
-                      << " available=" << b.available << " locked=" << b.locked
-                      << '\n';
+        if (auto balances = venue->GetBalances()) {
+            for (const auto& b : *balances) {
+                std::cout << "balance " << b.asset << ": total=" << b.total
+                          << " available=" << b.available
+                          << " locked=" << b.locked << '\n';
+            }
+        } else {
+            spdlog::warn("balances: {}", balances.error().ToString());
         }
-    } else {
-        spdlog::warn("balances: {}", balances.error().ToString());
     }
 
-    // Quotes are printed from the stream thread; std::cout writes are
-    // serialised here by a lock because several symbols can update at once.
-    std::mutex out_mutex;
-    auto sub = data_source->StreamQuotes(
-        (*cfg)->GetSymbols(), [&](const types::Quote& q) {
-            std::lock_guard lock(out_mutex);
-            std::cout << types::FormatIso8601(q.received_time) << ' '
-                      << q.symbol << " bid=" << Opt(q.bid)
-                      << " ask=" << Opt(q.ask) << " last=" << Opt(q.last)
-                      << '\n';
-        });
-    if (!sub) {
-        spdlog::error("stream: {}", sub.error().ToString());
-        return 1;
+    if (stream_seconds) {
+        // Quotes are printed from the stream thread; std::cout writes are
+        // serialised here by a lock because several symbols can update at
+        // once.
+        std::mutex out_mutex;
+        auto sub = data_source->StreamQuotes(
+            (*cfg)->GetSymbols(), [&](const types::Quote& q) {
+                std::lock_guard lock(out_mutex);
+                std::cout << types::FormatIso8601(q.received_time) << ' '
+                          << q.symbol << " bid=" << Opt(q.bid)
+                          << " ask=" << Opt(q.ask) << " last=" << Opt(q.last)
+                          << '\n';
+            });
+        if (!sub) {
+            spdlog::error("stream: {}", sub.error().ToString());
+            return 1;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(*stream_seconds));
+        (*sub)->Stop();
     }
-    std::this_thread::sleep_for(std::chrono::seconds(stream_seconds));
-    (*sub)->Stop();
     return 0;
 }

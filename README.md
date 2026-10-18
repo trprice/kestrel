@@ -75,8 +75,15 @@ REQUIRED` error, with the authorize URL, once it has expired.
 ./build/kestrel_app --config config/kestrel.toml --bars 1h 24 --stream 30
 ```
 
-Prints symbol info, the last 24 completed hourly bars, the venue's balances,
-then 30 seconds of live quotes.
+`kestrel_app` only does what it is asked:
+
+- `--config` alone: the last 10 completed `1h` bars per symbol (the default for
+  `--bars`), preceded by symbol info and followed by the venue's balances.
+- `--bars <timeframe> <count>`: the same, with your timeframe and count.
+- `--stream <seconds>`: live quotes for that many seconds, and nothing else.
+- `--bars` and `--stream` together: bars first, then the quote stream.
+
+The example above prints the last 24 hourly bars, then 30 seconds of quotes.
 
 ## Design notes
 

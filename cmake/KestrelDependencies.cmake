@@ -73,6 +73,16 @@ if(NOT ixwebsocket_FOUND)
   endif()
 endif()
 
+# --- CLI11 (command line parsing, used by kestrel_app) ----------------------
+find_package(CLI11 2.4 CONFIG QUIET)
+if(NOT CLI11_FOUND)
+  message(STATUS "CLI11 not found; fetching")
+  FetchContent_Declare(CLI11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG v2.4.2 GIT_SHALLOW ON)
+  FetchContent_MakeAvailable(CLI11)
+endif()
+
 # --- GoogleTest -------------------------------------------------------------
 if(KESTREL_BUILD_TESTS)
   find_package(GTest CONFIG QUIET)
