@@ -1,0 +1,15 @@
+# Live Binance.US market data for ZEC/USDT, traded on the paper venue.
+# No credentials needed (market data is public).
+# Run: ./build/kestrel_app --config config/binanceus-zec.example.toml --bars 1h 6 --stream 15
+
+[general]
+provider = "binanceus"
+mode     = "paper"
+symbols  = ["ZEC/USDT"]
+
+[paper]
+initial_balances = { USDT = "10000" }
+maker_fee_bps = 10
+taker_fee_bps = 10
+slippage_bps  = 5
+cap_limit_fills_at_quote_size = false

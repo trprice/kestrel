@@ -43,6 +43,7 @@ add_library(kestrel
   src/data/kraken_quote_stream.cpp
   src/data/schwab_data_source.cpp
   src/data/binanceus_data_source.cpp
+  src/data/binanceus_quote_stream.cpp
   src/trading/order_rules.cpp
   src/trading/paper_trading_venue.cpp
   src/trading/kraken_trading_venue.cpp
@@ -80,6 +81,7 @@ if(KESTREL_BUILD_TESTS)
     tests/timeframe_test.cpp
     tests/util_test.cpp
     tests/kraken_data_source_test.cpp
+    tests/binanceus_data_source_test.cpp
     tests/paper_trading_venue_test.cpp
     tests/config_test.cpp
   )

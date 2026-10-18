@@ -1,41 +1,68 @@
 #pragma once
 
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <nlohmann/json.hpp>
+#include <string>
+
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/net/http_client.hpp"
+#include "kestrel/util/rate_limiter.hpp"
+#include "kestrel/util/retry.hpp"
 
 namespace kestrel::data {
 
 // Binance.US kline interval string ("1m", "4h", "1M", ...), or kUnsupported.
 types::Result<std::string_view> BinanceUSInterval(types::Timeframe timeframe);
 
-// STUB. Not yet functional; every call returns kNotImplemented.
-//
-// TODO(binanceus): implement against the Binance.US REST/WebSocket API.
-//   Base URL: https://api.binance.us ; market data is public (no key needed).
-//   GetBars:  GET /api/v3/klines?symbol=BTCUSD&interval=1h&startTime=<ms>
-//             &endTime=<ms>&limit=1000. Rows are
-//             [openTime, open, high, low, close, volume, closeTime, ...] with
-//             prices as strings. Page by advancing startTime past the last
-//             openTime (max 1000 rows per call); drop the forming kline.
-//   Stream:   wss://stream.binance.us:9443/stream?streams=btcusd@bookTicker/
-//             btcusd@trade (combined stream; lower-case symbols). bookTicker
-//             gives b/B/a/A (bid, bid qty, ask, ask qty); trade gives p/q/T.
-//             Connections are dropped after 24h, so reconnect and resubscribe.
-//   SymbolInfo: GET /api/v3/exchangeInfo?symbol=BTCUSD ->
-//             filters PRICE_FILTER.tickSize, LOT_SIZE.stepSize/minQty.
-//   Limits:   request-weight budget of 1200/minute per IP (X-MBX-USED-WEIGHT
-//             response header); HTTP 429 means back off, 418 means banned.
-//   Signing:  only needed for trading endpoints; see BinanceUSTradingVenue.
+// Binance.US market data over public REST and the combined WebSocket stream.
+// No API key is needed. The request-weight budget is 1200/minute per IP;
+// calls are throttled below that and transient failures (HTTP 429, 5xx) are
+// retried with exponential backoff. HTTP 418 (IP ban) is not retried.
 class BinanceUSDataSource : public DataSource {
    public:
+    struct Options {
+        std::string rest_base_url = "https://api.binance.us";
+        std::string ws_url = "wss://stream.binance.us:9443";
+        util::RetryPolicy retry;
+        double requests_per_second = 10.0;
+        double request_burst = 20.0;
+        std::function<types::Timestamp()> clock =
+            types::Now;  // injectable for tests
+        util::Sleeper sleeper = util::DefaultSleep;
+    };
+
+    explicit BinanceUSDataSource(std::shared_ptr<net::HttpClient> http,
+                                 Options options);
+    explicit BinanceUSDataSource(std::shared_ptr<net::HttpClient> http);
+    BinanceUSDataSource();  // real HTTP client, default options
+
     std::string_view Name() const override { return "binanceus"; }
-    types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&,
-                                                   types::Timeframe,
-                                                   types::Timestamp,
-                                                   types::Timestamp) override;
+
+    types::Result<std::vector<types::Bar>> GetBars(
+        const types::Symbol& symbol, types::Timeframe timeframe,
+        types::Timestamp start, types::Timestamp end) override;
+
     types::Result<std::unique_ptr<Subscription>> StreamQuotes(
-        const std::vector<std::string>&, QuoteCallback) override;
+        const std::vector<std::string>& symbols,
+        QuoteCallback callback) override;
+
     types::Result<types::SymbolInfo> GetSymbolInfo(
-        const types::Symbol&) override;
+        const types::Symbol& symbol) override;
+
+   private:
+    // GET <base>/api/v3/<path>, returning the parsed body.
+    types::Result<nlohmann::json> Call(
+        const std::string& path, std::map<std::string, std::string> query);
+
+    std::shared_ptr<net::HttpClient> mHttp;
+    Options mOptions;
+    util::RateLimiter mLimiter;
+
+    std::mutex mCacheMutex;
+    std::map<types::Symbol, types::SymbolInfo> mSymbolCache;
 };
 
 }  // namespace kestrel::data

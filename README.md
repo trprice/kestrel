@@ -15,7 +15,7 @@ live trading; a factory picks the right one from the config.
 | `DataSource` / `TradingVenue` interfaces, `Configuration`, factory | done |
 | `PaperTradingVenue` (works with any `DataSource`) | done |
 | `KrakenDataSource` (REST bars + symbol info, WebSocket quotes) | done, tested live |
-| Schwab / Binance.US data sources, all three live venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real |
+| Schwab data source, all three live venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real. The Binance.US data source (klines, symbol info, WebSocket quotes) is implemented |
 | Database, indicators, strategies, agent access, risk gate | out of scope |
 
 ## Build
