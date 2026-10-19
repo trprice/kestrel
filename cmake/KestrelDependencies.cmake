@@ -6,6 +6,7 @@ include(FetchContent)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 find_package(OpenSSL REQUIRED)
+find_package(PostgreSQL REQUIRED)   # libpq (Debian/Ubuntu: libpq-dev)
 find_package(ZLIB REQUIRED)   # needed by IXWebSocket
 
 # --- nlohmann/json ----------------------------------------------------------

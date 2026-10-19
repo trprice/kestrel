@@ -17,3 +17,12 @@ cap_limit_fills_at_quote_size = false
 [kraken]
 # rest_url = "https://api.kraken.com"
 # ws_url   = "wss://ws.kraken.com/v2"
+
+[database]                     # optional; needed for --store
+# host    = "localhost"        # omit to use the local socket
+# port    = 5432
+dbname  = "kestrel"
+# user    = "kestrel"
+# sslmode = "prefer"
+# The password is not set here: use KESTREL_DATABASE_PASSWORD, [database]
+# password in secrets.toml, or libpq's PGPASSWORD / ~/.pgpass.

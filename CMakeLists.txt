@@ -44,6 +44,11 @@ add_library(kestrel
   src/data/schwab_data_source.cpp
   src/data/binanceus_data_source.cpp
   src/data/binanceus_quote_stream.cpp
+  src/data/binanceus_bar_stream.cpp
+  src/db/database.cpp
+  src/db/migrations.cpp
+  src/db/bar_store.cpp
+  src/db/quote_store.cpp
   src/trading/order_rules.cpp
   src/trading/paper_trading_venue.cpp
   src/trading/kraken_trading_venue.cpp
@@ -63,7 +68,8 @@ target_link_libraries(kestrel PUBLIC
   cpr::cpr
   ixwebsocket::ixwebsocket
   OpenSSL::Crypto
-  OpenSSL::SSL)
+  OpenSSL::SSL
+  PostgreSQL::PostgreSQL)
 target_compile_options(kestrel PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>
   $<$<CXX_COMPILER_ID:MSVC>:/W4>)
@@ -82,6 +88,9 @@ if(KESTREL_BUILD_TESTS)
     tests/util_test.cpp
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp
+    tests/binanceus_bar_stream_test.cpp
+    tests/bar_store_test.cpp
+    tests/quote_store_test.cpp
     tests/paper_trading_venue_test.cpp
     tests/config_test.cpp
   )

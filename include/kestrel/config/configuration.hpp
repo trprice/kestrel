@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "kestrel/config/credentials.hpp"
+#include "kestrel/db/database.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/symbol.hpp"
@@ -36,6 +37,7 @@ struct CommonSettings {
     Mode mode = Mode::kPaper;
     std::vector<types::Symbol> symbols;
     trading::PaperOptions paper;
+    std::optional<db::ConnectionOptions> database;  // absent: no [database]
 };
 
 // Base class for per-provider configuration, loaded from a TOML file:
@@ -44,6 +46,15 @@ struct CommonSettings {
 //   provider = "kraken"          # schwab | kraken | binanceus
 //   mode     = "paper"           # paper | live
 //   symbols  = ["BTC/USD"]
+//
+//   [database]                   # optional; PostgreSQL + TimescaleDB
+//   host = "localhost"           # omit for the local socket
+//   port = 5432
+//   dbname = "kestrel"
+//   user = "kestrel"
+//   sslmode = "prefer"
+//   # password: KESTREL_DATABASE_PASSWORD or [database] password in the
+//   # secrets file (or libpq's own PGPASSWORD / ~/.pgpass when unset)
 //
 //   [paper]                      # optional; see PaperOptions
 //   initial_balances = { USD = "10000" }
@@ -60,6 +71,9 @@ class Configuration {
         return mCommon.symbols;
     }
     Mode GetMode() const { return mCommon.mode; }
+    const std::optional<db::ConnectionOptions>& GetDatabase() const {
+        return mCommon.database;
+    }
     const trading::PaperOptions& GetPaperOptions() const {
         return mCommon.paper;
     }

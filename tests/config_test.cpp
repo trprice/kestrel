@@ -36,6 +36,31 @@ taker_fee_bps = 12.5
 slippage_bps = "3"
 )";
 
+TEST(Config, DatabaseSectionIsOptionalAndTakesPasswordFromEnv) {
+    auto none = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
+    ASSERT_OK(none);
+    EXPECT_FALSE(none->GetDatabase().has_value());
+
+    const std::string toml = std::string(kKrakenToml) +
+                             "\n[database]\nhost = \"db.local\"\nport = 5433\n"
+                             "dbname = \"bars\"\nuser = \"kes\"\n";
+    auto cfg = config::KrakenConfiguration::Parse(
+        toml, NoEnv({{"KESTREL_DATABASE_PASSWORD", "hunter2"}}));
+    ASSERT_OK(cfg);
+    ASSERT_TRUE(cfg->GetDatabase().has_value());
+    EXPECT_EQ(cfg->GetDatabase()->host, "db.local");
+    EXPECT_EQ(cfg->GetDatabase()->port, 5433);
+    EXPECT_EQ(cfg->GetDatabase()->dbname, "bars");
+    EXPECT_EQ(cfg->GetDatabase()->user, "kes");
+    EXPECT_EQ(cfg->GetDatabase()->password, "hunter2");
+}
+
+TEST(Config, DatabasePasswordInMainConfigIsRejected) {
+    const std::string toml =
+        std::string(kKrakenToml) + "\n[database]\npassword = \"x\"\n";
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(toml, NoEnv()).has_value());
+}
+
 TEST(Config, KrakenPaperDefaultsAndOverrides) {
     auto cfg = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
     ASSERT_OK(cfg);

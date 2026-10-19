@@ -27,6 +27,11 @@ class Subscription {
 // different symbols are delivered serially, in arrival order.
 using QuoteCallback = std::function<void(const types::Quote&)>;
 
+// Called once per completed bar from the same background thread, with the
+// same rules as QuoteCallback.
+using BarCallback = std::function<void(
+    const types::Symbol&, types::Timeframe, const types::Bar&)>;
+
 class DataSource {
    public:
     virtual ~DataSource() = default;
@@ -45,6 +50,21 @@ class DataSource {
     // every delivered Quote carries the latest known value of each field.
     virtual types::Result<std::unique_ptr<Subscription>> StreamQuotes(
         const std::vector<std::string>& symbols, QuoteCallback callback) = 0;
+
+    // Streams each bar of `timeframe` once, when it closes (never the bar that
+    // is still forming). Reconnects like StreamQuotes; bars that closed while
+    // disconnected are not replayed, so backfill the gap with GetBars (saving
+    // is idempotent). Providers without a bar stream return kNotImplemented.
+    virtual types::Result<std::unique_ptr<Subscription>> StreamBars(
+        const std::vector<std::string>& symbols, types::Timeframe timeframe,
+        BarCallback callback) {
+        (void)symbols;
+        (void)timeframe;
+        (void)callback;
+        return types::MakeError(types::ErrorCategory::kNotImplemented,
+                                std::string(Name()) +
+                                    " does not stream bars");
+    }
 
     // Tick size, lot size and minimum order size; fetched once, then cached.
     virtual types::Result<types::SymbolInfo> GetSymbolInfo(

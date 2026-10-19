@@ -16,7 +16,8 @@ live trading; a factory picks the right one from the config.
 | `PaperTradingVenue` (works with any `DataSource`) | done |
 | `KrakenDataSource` (REST bars + symbol info, WebSocket quotes) | done, tested live |
 | Schwab data source, all three live venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real. The Binance.US data source (klines, symbol info, WebSocket quotes) is implemented |
-| Database, indicators, strategies, agent access, risk gate | out of scope |
+| Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables, `BarStore`, `QuoteStore`/`QuoteWriter`, Binance.US closed-bar stream | done, tested live |
+| Indicators, strategies, agent access, risk gate | out of scope |
 
 ## Build
 
@@ -84,6 +85,50 @@ REQUIRED` error, with the authorize URL, once it has expired.
 - `--bars` and `--stream` together: bars first, then the quote stream.
 
 The example above prints the last 24 hourly bars, then 30 seconds of quotes.
+
+## Database
+
+Bars are stored in PostgreSQL with the TimescaleDB extension (`bars`
+hypertable keyed by venue, symbol, timeframe, open_time; prices and volumes are
+exact `NUMERIC`). Needs `libpq-dev` to build and a server with
+`shared_preload_libraries = 'timescaledb'`.
+
+```sh
+scripts/setup_database.sh --config config/kestrel.toml
+```
+
+The script (idempotent; `--help` lists options) creates the `kestrel` role and
+database, enables the timescaledb extension, and creates the tables through
+`kestrel_app --init-db`. It runs `psql` as the `postgres` OS user via sudo, or
+as whatever `--admin-cmd` / `KESTREL_ADMIN_PSQL` says for a remote server. A
+password is generated for a new role and printed once (or set
+`KESTREL_DATABASE_PASSWORD` beforehand). Use `host = "localhost"` in
+`[database]` when the role has a password, since the local socket normally
+uses peer authentication.
+
+Add a `[database]` section (see `config/kestrel.example.toml`; the password
+comes from `KESTREL_DATABASE_PASSWORD`, the secrets file, or libpq's usual
+`PGPASSWORD`/`~/.pgpass`). Schema migrations are applied automatically on
+startup (`src/db/migrations.cpp`, append-only).
+
+```sh
+./build/kestrel_app -c config/kestrel.toml --bars 1h 500 --store          # pull and store
+./build/kestrel_app -c config/kestrel.toml --stream-bars 1m 3600 --store  # stream closed bars into the DB
+```
+
+`--stream <seconds> --store` writes every streamed quote to the `quotes`
+hypertable (chunked per day, one row per delivered quote with the merged
+bid/ask/last). `QuoteWriter` buffers on the WebSocket thread and a background
+thread inserts in batches every 500 ms; a failed batch is retried, with at most
+100,000 quotes buffered. Quotes have no natural key, so nothing deduplicates
+them. `bookTicker` updates are frequent: expect many rows per symbol per minute.
+
+`--stream-bars` (`DataSource::StreamBars`, implemented for Binance.US klines)
+emits each bar once, when it closes. Bars closed while the socket was down are
+not replayed; backfill with `--bars --store` (saves are upserts, so overlap is
+harmless). Integration tests run only when `KESTREL_TEST_DBNAME` is set
+(plus optional `KESTREL_TEST_DB{HOST,PORT,USER,PASSWORD}`), against a database
+that already has the timescaledb extension.
 
 ## Design notes
 

@@ -102,7 +102,8 @@ class ConfigParser {
     }
 
     static Result<CommonSettings> Common(const toml::table& root,
-                                         Provider expected) {
+                                         Provider expected,
+                                         const LoadOptions& options) {
         CommonSettings c;
         const auto* general = root["general"].as_table();
         if (!general) {
@@ -151,6 +152,14 @@ class ConfigParser {
             c.symbols.push_back(*sym);
         }
 
+        if (const auto* database = root["database"].as_table()) {
+            auto db = Database(root, *database, options);
+            if (!db) {
+                return std::unexpected(db.error());
+            }
+            c.database = std::move(*db);
+        }
+
         if (const auto* paper = root["paper"].as_table()) {
             auto& p = c.paper;
             if (const auto* balances =
@@ -192,6 +201,35 @@ class ConfigParser {
             }
         }
         return c;
+    }
+
+    static Result<db::ConnectionOptions> Database(const toml::table& root,
+                                                  const toml::table& section,
+                                                  const LoadOptions& o) {
+        if (auto ok = RejectSecrets(&section, "database"); !ok) {
+            return std::unexpected(ok.error());
+        }
+        db::ConnectionOptions d;
+        d.host = Str(&section, "host", d.host);
+        d.dbname = Str(&section, "dbname", d.dbname);
+        d.user = Str(&section, "user", d.user);
+        d.sslmode = Str(&section, "sslmode", d.sslmode);
+        if (const auto* node = section.get("port")) {
+            const auto port = node->value<std::int64_t>();
+            if (!port || *port < 1 || *port > 65535) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 "[database] port must be 1-65535");
+            }
+            d.port = static_cast<int>(*port);
+        }
+        auto secrets = Secrets(root, o);
+        if (!secrets) {
+            return std::unexpected(secrets.error());
+        }
+        d.password = Secret(o, *secrets, "database", "password",
+                            "KESTREL_DATABASE_PASSWORD")
+                         .value_or("");
+        return d;
     }
 
     // Credentials in the main file would end up in version control and logs.
@@ -352,7 +390,7 @@ Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
     if (!root) {
         return std::unexpected(root.error());
     }
-    auto common = ConfigParser::Common(*root, Provider::kKraken);
+    auto common = ConfigParser::Common(*root, Provider::kKraken, options);
     if (!common) {
         return std::unexpected(common.error());
     }
@@ -391,7 +429,7 @@ Result<BinanceUSConfiguration> BinanceUSConfiguration::Parse(
     if (!root) {
         return std::unexpected(root.error());
     }
-    auto common = ConfigParser::Common(*root, Provider::kBinanceUS);
+    auto common = ConfigParser::Common(*root, Provider::kBinanceUS, options);
     if (!common) {
         return std::unexpected(common.error());
     }
@@ -430,7 +468,7 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (!root) {
         return std::unexpected(root.error());
     }
-    auto common = ConfigParser::Common(*root, Provider::kSchwab);
+    auto common = ConfigParser::Common(*root, Provider::kSchwab, options);
     if (!common) {
         return std::unexpected(common.error());
     }

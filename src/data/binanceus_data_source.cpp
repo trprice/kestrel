@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include "kestrel/data/binanceus_bar_stream.hpp"
 #include "kestrel/data/binanceus_quote_stream.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
@@ -224,6 +225,36 @@ Result<std::unique_ptr<Subscription>> BinanceUSDataSource::StreamQuotes(
     }
     auto stream = std::make_unique<BinanceUSQuoteStream>(
         mOptions.ws_url, std::move(native_symbols), std::move(callback));
+    stream->Start();
+    return std::unique_ptr<Subscription>(std::move(stream));
+}
+
+Result<std::unique_ptr<Subscription>> BinanceUSDataSource::StreamBars(
+    const std::vector<std::string>& symbols, types::Timeframe timeframe,
+    BarCallback callback) {
+    if (symbols.empty()) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamBars: no symbols");
+    }
+    if (!callback) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamBars: no callback");
+    }
+    auto interval = BinanceUSInterval(timeframe);
+    if (!interval) {
+        return std::unexpected(interval.error());
+    }
+    std::vector<std::string> native_symbols;
+    for (const auto& s : symbols) {
+        auto native = ToBinanceUSSymbol(s);
+        if (!native) {
+            return std::unexpected(native.error());
+        }
+        native_symbols.push_back(*native);
+    }
+    auto stream = std::make_unique<BinanceUSBarStream>(
+        mOptions.ws_url, std::move(native_symbols), timeframe,
+        std::string(*interval), std::move(callback));
     stream->Start();
     return std::unique_ptr<Subscription>(std::move(stream));
 }

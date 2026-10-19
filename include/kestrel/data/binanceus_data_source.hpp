@@ -49,6 +49,10 @@ class BinanceUSDataSource : public DataSource {
         const std::vector<std::string>& symbols,
         QuoteCallback callback) override;
 
+    types::Result<std::unique_ptr<Subscription>> StreamBars(
+        const std::vector<std::string>& symbols, types::Timeframe timeframe,
+        BarCallback callback) override;
+
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) override;
 
