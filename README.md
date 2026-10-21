@@ -111,6 +111,36 @@ comes from `KESTREL_DATABASE_PASSWORD`, the secrets file, or libpq's usual
 `PGPASSWORD`/`~/.pgpass`). Schema migrations are applied automatically on
 startup (`src/db/migrations.cpp`, append-only).
 
+### Upgrading an existing database
+
+After updating Kestrel, bring an existing database up to the new schema with:
+
+```sh
+build/kestrel_app --config config/kestrel.toml --init-db
+```
+
+`--init-db` cannot be combined with other actions. Any run with `--store` also
+migrates first, but running `--init-db` yourself lets you choose when it
+happens. Migrations are tracked in the `schema_migrations` table: only those
+newer than the highest recorded version are applied, each one is logged
+(`database: applying migration N (...)`), and a database that is already
+current is left untouched. A lock keeps two processes from migrating at once.
+
+Before upgrading a database that holds data you care about:
+
+1. Back it up (`pg_dump`).
+2. Stop any running `kestrel_app` that writes to it, and restart the new build
+   after the migration. An older binary may not match the new schema.
+3. Check the release's commits and `src/db/migrations.cpp` for what each new
+   migration does. Some rewrite whole tables, which takes time, disk space and
+   locks.
+4. Run `--init-db`, then confirm with
+   `SELECT * FROM schema_migrations ORDER BY version;`.
+
+If a migration fails, the error names its version. Fix the cause and re-run; if
+you are unsure whether it applied partway, compare the schema against the
+migration's SQL, or restore the backup.
+
 ```sh
 ./build/kestrel_app -c config/kestrel.toml --bars 1h 500 --store          # pull and store
 ./build/kestrel_app -c config/kestrel.toml --stream-bars 1m 3600 --store  # stream closed bars into the DB
@@ -120,15 +150,38 @@ startup (`src/db/migrations.cpp`, append-only).
 hypertable (chunked per day, one row per delivered quote with the merged
 bid/ask/last). `QuoteWriter` buffers on the WebSocket thread and a background
 thread inserts in batches every 500 ms; a failed batch is retried, with at most
-100,000 quotes buffered. Quotes have no natural key, so nothing deduplicates
-them. `bookTicker` updates are frequent: expect many rows per symbol per minute.
+100,000 quotes buffered. Each quote gets a `seq`, counted per venue and symbol by `QuoteWriter`
+and continued from the database after a restart, so arrival order survives
+quotes that share a millisecond; reads are ordered by it. `bookTicker` updates are frequent: expect many rows per symbol per minute.
 
 `--stream-bars` (`DataSource::StreamBars`, implemented for Binance.US klines)
 emits each bar once, when it closes. Bars closed while the socket was down are
 not replayed; backfill with `--bars --store` (saves are upserts, so overlap is
-harmless). Integration tests run only when `KESTREL_TEST_DBNAME` is set
-(plus optional `KESTREL_TEST_DB{HOST,PORT,USER,PASSWORD}`), against a database
-that already has the timescaledb extension.
+harmless).
+
+### Database integration tests
+
+The database tests run only when `KESTREL_TEST_DBNAME` is set (plus optional
+`KESTREL_TEST_DB{HOST,PORT,USER,PASSWORD}`); otherwise they are skipped. They
+need an empty database with the timescaledb extension and a login role for it.
+The tables are created by the tests themselves (they run the migrations), and
+they only touch rows with their own test venue. Use a separate database from
+your real one:
+
+```bash
+export KESTREL_DATABASE_PASSWORD=testpass   # optional; else one is generated and printed
+scripts/setup_database.sh --db-name kestrel_test --db-user kestrel_test
+
+export KESTREL_TEST_DBNAME=kestrel_test
+export KESTREL_TEST_DBHOST=localhost
+export KESTREL_TEST_DBUSER=kestrel_test
+export KESTREL_TEST_DBPASSWORD=testpass
+./build/kestrel_tests --gtest_filter='QuoteStore*:BarStore*'
+```
+
+Omit `--config` so the script doesn't create the tables itself. See the
+script's `--help` for `--admin-cmd` if `sudo -u postgres psql` doesn't work on
+your machine.
 
 ## Design notes
 

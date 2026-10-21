@@ -38,6 +38,20 @@ SELECT create_hypertable('quotes', 'received_time',
 CREATE INDEX quotes_venue_symbol_time
     ON quotes (venue, symbol, received_time DESC);
 )sql"},
+        {3, "number quotes per venue and symbol", R"sql(
+ALTER TABLE quotes ADD COLUMN seq BIGINT;
+UPDATE quotes q SET seq = r.rn
+FROM (SELECT tableoid AS t, ctid AS c,
+             row_number() OVER (PARTITION BY venue, symbol
+                                ORDER BY received_time) AS rn
+      FROM quotes) r
+WHERE q.tableoid = r.t AND q.ctid = r.c;
+ALTER TABLE quotes ALTER COLUMN seq SET NOT NULL;
+ALTER TABLE quotes ADD CONSTRAINT quotes_seq_unique
+    UNIQUE (venue, symbol, received_time, seq);
+CREATE INDEX quotes_venue_symbol_seq
+    ON quotes (venue, symbol, seq DESC);
+)sql"},
     };
     return kMigrations;
 }

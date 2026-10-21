@@ -24,6 +24,9 @@ struct Bar {
 struct Quote {
     Symbol symbol;
     std::string venue;                       // e.g. "kraken"
+    // Arrival order within (venue, symbol), assigned by QuoteWriter and kept
+    // across runs; received_time alone can tie within a millisecond.
+    std::int64_t seq = 0;
     std::optional<Timestamp> exchange_time;  // provider's timestamp
     Timestamp received_time;                 // when we got it
     std::optional<Decimal> bid;

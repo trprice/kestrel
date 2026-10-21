@@ -1,6 +1,8 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
+#include <map>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -15,8 +17,9 @@
 namespace kestrel::db {
 
 // Quotes in the `quotes` TimescaleDB hypertable, one row per delivered Quote
-// (each already carries the latest known value of every field). Unlike bars
-// there is no natural key, so saving the same quote twice stores it twice.
+// (each already carries the latest known value of every field). Rows are
+// keyed by (venue, symbol, seq); QuoteWriter assigns seq, so Save callers that
+// bypass it must supply unique values.
 class QuoteStore {
    public:
     explicit QuoteStore(std::shared_ptr<Database> database)
@@ -25,7 +28,11 @@ class QuoteStore {
     // Returns how many quotes were written.
     types::Result<std::size_t> Save(std::span<const types::Quote> quotes);
 
-    // start <= received_time < end, oldest first.
+    // Highest stored seq for the symbol, 0 if there are no quotes yet.
+    types::Result<std::int64_t> LastSeq(const std::string& venue,
+                                        const types::Symbol& symbol);
+
+    // start <= received_time < end, in arrival (seq) order.
     types::Result<std::vector<types::Quote>> Load(const std::string& venue,
                                                   const types::Symbol& symbol,
                                                   types::Timestamp start,
@@ -51,6 +58,8 @@ class QuoteWriter {
     QuoteWriter(const QuoteWriter&) = delete;
     QuoteWriter& operator=(const QuoteWriter&) = delete;
 
+    // Assigns the quote's seq (continuing from the database after a restart),
+    // overwriting whatever the caller set.
     void Push(const types::Quote& quote);
     // Callback for DataSource::StreamQuotes.
     data::QuoteCallback MakeStreamSink();
@@ -65,6 +74,8 @@ class QuoteWriter {
     std::chrono::milliseconds mInterval;
     std::mutex mMutex;
     std::condition_variable mWake;
+    std::mutex mSeqMutex;
+    std::map<std::pair<std::string, types::Symbol>, std::int64_t> mLastSeq;
     std::vector<types::Quote> mBuffer;
     bool mStopping = false;
     std::mutex mFlushMutex;  // one writer at a time keeps batches in order

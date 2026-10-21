@@ -47,6 +47,7 @@ class QuoteStoreTest : public ::testing::Test {
 
     static types::Quote MakeQuote(std::int64_t ms) {
         types::Quote q;
+        q.seq = ms + 1;
         q.symbol = "BTC/USD";
         q.venue = kVenue;
         q.received_time = types::FromEpochMillis(1'700'000'000'000 + ms);
@@ -97,6 +98,37 @@ TEST_F(QuoteStoreTest, WriterFlushesBufferedQuotesOnDestruction) {
                              MakeQuote(100).received_time);
     ASSERT_OK(loaded);
     EXPECT_EQ(loaded->size(), 25U);
+}
+
+TEST_F(QuoteStoreTest, WriterNumbersSameMillisecondQuotesAcrossRestarts) {
+    // Every quote shares one received_time; only seq can order them.
+    auto quote = [](const char* symbol, const std::string& bid) {
+        auto q = MakeQuote(0);
+        q.symbol = symbol;
+        q.bid = D(bid.c_str());
+        return q;
+    };
+    for (int run = 0; run < 2; ++run) {
+        db::QuoteWriter writer(mDatabase, std::chrono::hours(1));
+        for (int i = 0; i < 3; ++i) {
+            writer.Push(quote("BTC/USD", std::to_string(run * 3 + i)));
+            writer.Push(quote("ETH/USD", "7"));
+        }
+    }
+    db::QuoteStore store(mDatabase);
+    const auto start = MakeQuote(0).received_time;
+    const auto end = MakeQuote(1).received_time;
+    auto btc = store.Load(kVenue, "BTC/USD", start, end);
+    ASSERT_OK(btc);
+    ASSERT_EQ(btc->size(), 6U);
+    for (std::size_t i = 0; i < btc->size(); ++i) {
+        EXPECT_EQ((*btc)[i].seq, static_cast<std::int64_t>(i + 1));
+        EXPECT_EQ((*btc)[i].bid, D(std::to_string(i).c_str()));
+    }
+    auto eth = store.Load(kVenue, "ETH/USD", start, end);
+    ASSERT_OK(eth);
+    ASSERT_EQ(eth->size(), 6U);
+    EXPECT_EQ(eth->back().seq, 6);
 }
 
 TEST_F(QuoteStoreTest, WriterFlushesPeriodically) {

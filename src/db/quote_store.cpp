@@ -10,13 +10,13 @@ using types::Result;
 
 namespace {
 
-constexpr std::size_t kColumns = 10;
+constexpr std::size_t kColumns = 11;
 // PostgreSQL allows 65535 bind parameters per statement.
 constexpr std::size_t kRowsPerInsert = 1000;
 
 std::string InsertSql(std::size_t rows) {
     std::string sql =
-        "INSERT INTO quotes (venue, symbol, received_time, exchange_time, "
+        "INSERT INTO quotes (venue, symbol, seq, received_time, exchange_time, "
         "bid, bid_size, ask, ask_size, last, last_size) VALUES ";
     for (std::size_t r = 0; r < rows; ++r) {
         sql += r ? ", (" : "(";
@@ -53,6 +53,7 @@ Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
         for (const auto& q : batch) {
             params.emplace_back(q.venue);
             params.emplace_back(q.symbol);
+            params.emplace_back(std::to_string(q.seq));
             params.emplace_back(types::FormatIso8601(q.received_time));
             params.emplace_back(
                 q.exchange_time
@@ -80,11 +81,11 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
                                                    types::Timestamp start,
                                                    types::Timestamp end) {
     auto rows = mDatabase->Query(
-        "SELECT (extract(epoch FROM received_time) * 1000)::bigint, "
+        "SELECT seq, (extract(epoch FROM received_time) * 1000)::bigint, "
         "(extract(epoch FROM exchange_time) * 1000)::bigint, bid, bid_size, "
         "ask, ask_size, last, last_size FROM quotes WHERE venue = $1 AND "
         "symbol = $2 AND received_time >= $3 AND received_time < $4 "
-        "ORDER BY received_time",
+        "ORDER BY seq",
         {venue, symbol, types::FormatIso8601(start),
          types::FormatIso8601(end)});
     if (!rows) {
@@ -96,19 +97,32 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
         types::Quote q;
         q.venue = venue;
         q.symbol = symbol;
-        q.received_time = types::FromEpochMillis(std::stoll(*row[0]));
-        if (row[1]) {
-            q.exchange_time = types::FromEpochMillis(std::stoll(*row[1]));
+        q.seq = std::stoll(*row[0]);
+        q.received_time = types::FromEpochMillis(std::stoll(*row[1]));
+        if (row[2]) {
+            q.exchange_time = types::FromEpochMillis(std::stoll(*row[2]));
         }
-        q.bid = ParseOptional(row[2]);
-        q.bid_size = ParseOptional(row[3]);
-        q.ask = ParseOptional(row[4]);
-        q.ask_size = ParseOptional(row[5]);
-        q.last = ParseOptional(row[6]);
-        q.last_size = ParseOptional(row[7]);
+        q.bid = ParseOptional(row[3]);
+        q.bid_size = ParseOptional(row[4]);
+        q.ask = ParseOptional(row[5]);
+        q.ask_size = ParseOptional(row[6]);
+        q.last = ParseOptional(row[7]);
+        q.last_size = ParseOptional(row[8]);
         quotes.push_back(std::move(q));
     }
     return quotes;
+}
+
+Result<std::int64_t> QuoteStore::LastSeq(const std::string& venue,
+                                         const types::Symbol& symbol) {
+    auto rows = mDatabase->Query(
+        "SELECT COALESCE(MAX(seq), 0) FROM quotes WHERE venue = $1 AND "
+        "symbol = $2",
+        {venue, symbol});
+    if (!rows) {
+        return std::unexpected(rows.error());
+    }
+    return std::stoll(*(*rows)[0][0]);
 }
 
 QuoteWriter::QuoteWriter(std::shared_ptr<Database> database,
@@ -128,10 +142,26 @@ QuoteWriter::~QuoteWriter() {
 }
 
 void QuoteWriter::Push(const types::Quote& quote) {
+    // Held across numbering and buffering so seq order is buffer order.
+    std::lock_guard seq_lock(mSeqMutex);
+    const auto key = std::make_pair(quote.venue, quote.symbol);
+    auto it = mLastSeq.find(key);
+    if (it == mLastSeq.end()) {
+        auto last = mStore.LastSeq(quote.venue, quote.symbol);
+        if (!last) {
+            spdlog::error("store quote {}: cannot read last seq: {}",
+                          quote.symbol, last.error().ToString());
+            return;  // dropped; the next quote retries the lookup
+        }
+        it = mLastSeq.emplace(key, *last).first;
+    }
+    auto numbered = quote;
+    numbered.seq = ++it->second;
+
     bool full = false;
     {
         std::lock_guard lock(mMutex);
-        mBuffer.push_back(quote);
+        mBuffer.push_back(std::move(numbered));
         full = mBuffer.size() >= kMaxBatch;
     }
     if (full) {
