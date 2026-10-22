@@ -22,7 +22,7 @@ class RecordingVenue : public trading::TradingVenue {
         orders.push_back(request);
         return types::OrderAcknowledgement{
             "order-" + std::to_string(orders.size()), request.client_order_id,
-            types::OrderState::kNew, types::FromEpochSeconds(0)};
+            ack_state, types::FromEpochSeconds(0)};
     }
     types::Result<trading::CancelOutcome> CancelOrder(
         const std::string&) override {
@@ -61,6 +61,7 @@ class RecordingVenue : public trading::TradingVenue {
 
     // Set before the venue is shared with other threads.
     bool reject_orders = false;
+    types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
     std::vector<types::Position> positions;

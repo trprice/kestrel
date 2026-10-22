@@ -91,6 +91,16 @@ void SmaCrossover::Trade(Context& context, Side side) {
                      mParams.symbol, ack.error().ToString());
         return;
     }
+    // A venue can acknowledge an order it has already closed without a fill
+    // (e.g. an unfillable fill-or-kill order); no fill will arrive for it.
+    if (ack->state == types::OrderState::kCancelled ||
+        ack->state == types::OrderState::kRejected ||
+        ack->state == types::OrderState::kExpired) {
+        spdlog::warn("sma_crossover: {} {} closed without a fill: {}",
+                     types::ToString(side), mParams.symbol,
+                     types::ToString(ack->state));
+        return;
+    }
     mPending = true;
     spdlog::info("sma_crossover: {} {} {} (order {})", types::ToString(side),
                  mParams.quantity.ToString(), mParams.symbol, ack->order_id);

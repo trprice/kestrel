@@ -18,12 +18,10 @@ the header of the code concerned.
 - One `Runner` drives one strategy; running several means one runner (and one
   set of data subscriptions) each.
 - A strategy that places an order and never sees its fill (rejected or
-  cancelled asynchronously) can get stuck. This already happens with the code
-  as shipped: the paper venue answers a fill-or-kill order it cannot fill with
-  a *successful* acknowledgement (state `kExpired`), and `SmaCrossover` only
-  checks that `PlaceOrder` did not error, so it marks itself pending and waits
-  forever. `SmaCrossover` should read the acknowledgement's state, and
-  strategies need the `OnOrderUpdate` work below.
+  cancelled asynchronously, after a successful acknowledgement) can get stuck.
+  `SmaCrossover` now handles an acknowledgement that is already closed
+  (`kExpired`, `kCancelled`, `kRejected`), but a later asynchronous rejection
+  still needs the `OnOrderUpdate` work below.
 - `Stop()` is documented as signal-handler friendly, but it pushes onto the
   queue through a mutex and condition variable, which is not
   async-signal-safe. The planned SIGINT/SIGTERM wiring should use a self-pipe
@@ -135,9 +133,8 @@ not yet reachable from the command line.
       fast, and stop rescanning all of it in `GetFills`
 - [ ] Give strategies a way to learn an order was rejected or cancelled
       asynchronously (an `OnOrderUpdate` hook, or poll `GetOpenOrders`), and
-      use it in `SmaCrossover` — which should also read the acknowledgement's
-      state, since the paper venue's unfilled FOK path returns a successful
-      ack with state `kExpired` and hangs the strategy until then
+      use it in `SmaCrossover`. (Its handling of an already-closed
+      acknowledgement is done.)
 - [ ] Backtest summary: equity curve, total return, max drawdown, trade count,
       win rate, fees paid
 - [ ] Backtest fill model: fill at the next bar's open by default (filling a

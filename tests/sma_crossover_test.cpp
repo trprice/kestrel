@@ -154,4 +154,21 @@ TEST(SmaCrossoverTest, RejectedBuyLeavesItFlat) {
     EXPECT_EQ(context.venue.attempts, 1);
 }
 
+TEST(SmaCrossoverTest, OrderClosedWithoutAFillDoesNotLeaveItWaiting) {
+    SmaCrossover strategy(Params());
+    FakeContext context;
+    context.venue.ack_state = types::OrderState::kExpired;
+    for (const char* close : {"10", "10", "10", "10", "20"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+
+    // Not pending and still flat: the next up cross tries the buy again.
+    for (const char* close : {"10", "10", "10", "30"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].side, Side::kBuy);
+}
+
 }  // namespace
