@@ -7,7 +7,7 @@ Market data and order execution are separate interfaces (`data::DataSource`,
 `trading::TradingVenue`). Only the execution side changes between paper and
 live trading; a factory picks the right one from the config.
 
-## Status (first pass)
+## Status
 
 | Piece | State |
 |---|---|
@@ -15,9 +15,20 @@ live trading; a factory picks the right one from the config.
 | `DataSource` / `TradingVenue` interfaces, `Configuration`, factory | done |
 | `PaperTradingVenue` (works with any `DataSource`) | done |
 | `KrakenDataSource` (REST bars + symbol info, WebSocket quotes) | done, tested live |
-| Schwab data source, all three live venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real. The Binance.US data source (klines, symbol info, WebSocket quotes) is implemented |
+| `BinanceUSDataSource` (klines, symbol info, WebSocket quotes, closed-bar stream) | done |
 | Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables, `BarStore`, `QuoteStore`/`QuoteWriter`, Binance.US closed-bar stream | done, tested live |
-| Indicators, strategies, agent access, risk gate | out of scope |
+| `PnlTracker`: realized P&L from fills, used by the paper venue and the risk gate | done, tested with fakes |
+| Strategy interface, `Runner` (event queue, warmup, gap backfill, fill polling to `OnFill`), example `SmaCrossover` | done, tested with fakes |
+| `RiskGatedVenue` (order and position size, open orders, order rate, daily loss, symbol allowlist, kill switch) | done, tested with fakes |
+| `ReplayDataSource` + `RunBacktest` (same `Runner`, paper venue, simulated clock) | done, tested with fakes |
+| Schwab data source; Kraken, Schwab and Binance.US trading venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real |
+| Running strategies and backtests from `kestrel_app`, indicators, more strategies, agent access | not started; see [TODO.md](TODO.md) |
+
+The strategy, risk and backtest code is a library only so far: nothing in
+`kestrel_app` starts it yet, and it has not run against a live venue.
+
+Known limitations, work in progress and planned projects are tracked in
+[TODO.md](TODO.md).
 
 ## Build
 
@@ -35,7 +46,7 @@ FetchContent otherwise (see `cmake/KestrelDependencies.cmake`): cpr (system
 libcurl preferred via `CPR_USE_SYSTEM_CURL`), IXWebSocket (TLS via OpenSSL),
 nlohmann/json, OpenSSL, toml++, spdlog, GoogleTest. The first configure needs
 network access if any are missing. The cpr FetchContent fallback is written but
-has not been exercised here (the system cpr was found).
+has not been exercised here (the system cpr was found); see [TODO.md](TODO.md).
 
 Targets: `kestrel` (library), `kestrel_app`, `kestrel_tests`.
 Options: `-DKESTREL_BUILD_APP=OFF`, `-DKESTREL_BUILD_TESTS=OFF`.
@@ -214,13 +225,27 @@ your machine.
 - **Timeframes**: Schwab 1m 5m 10m 15m 30m 1d 1w 1M; Kraken 1m 5m 15m 30m 1h 4h
   1d 1w 15d; Binance.US 1m 3m 5m 15m 30m 1h 2h 4h 6h 8h 12h 1d 3d 1w 1M.
   Unsupported ones return `kUnsupported`. These lists come from memory of each
-  provider's docs and should be re-verified before the stubs are completed.
+  provider's docs and should be re-verified before the stubs are completed (see
+  [TODO.md](TODO.md)).
 
 ## Layout
 
 ```
-include/kestrel/{types,util,net,data,trading,config}/   public headers
-src/                                                     implementation
-app/main.cpp                                             kestrel_app
-tests/                                                   kestrel_tests
+include/kestrel/   public headers, one directory per area:
+  types/             Decimal, Symbol, Timeframe, orders, errors
+  util/              retry, rate limiter, HMAC, JSON
+  net/               HTTP client
+  config/            configuration, credentials, Schwab token store
+  data/              DataSource and the provider data sources, streams
+  db/                database, bar and quote stores
+  trading/           TradingVenue, paper and live venues, PnlTracker, RiskGatedVenue
+  strategy/          Strategy, Runner, SmaCrossover
+  backtest/          ReplayDataSource, RunBacktest
+  factory.hpp        builds a provider's data source and venue from the config
+src/               implementation, same directories (plus factory.cpp)
+app/main.cpp       kestrel_app
+tests/             kestrel_tests
+config/            example configuration files
+scripts/           setup_database.sh
+cmake/             dependency handling
 ```

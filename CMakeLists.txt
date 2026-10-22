@@ -50,10 +50,16 @@ add_library(kestrel
   src/db/bar_store.cpp
   src/db/quote_store.cpp
   src/trading/order_rules.cpp
+  src/trading/pnl_tracker.cpp
+  src/trading/risk_gate.cpp
   src/trading/paper_trading_venue.cpp
   src/trading/kraken_trading_venue.cpp
   src/trading/schwab_trading_venue.cpp
   src/trading/binanceus_trading_venue.cpp
+  src/backtest/replay_data_source.cpp
+  src/backtest/backtest.cpp
+  src/strategy/runner.cpp
+  src/strategy/sma_crossover.cpp
   src/config/configuration.cpp
   src/config/schwab_token_store.cpp
   src/factory.cpp
@@ -92,6 +98,11 @@ if(KESTREL_BUILD_TESTS)
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
     tests/paper_trading_venue_test.cpp
+    tests/pnl_tracker_test.cpp
+    tests/risk_gate_test.cpp
+    tests/runner_test.cpp
+    tests/backtest_test.cpp
+    tests/sma_crossover_test.cpp
     tests/config_test.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/trading/pnl_tracker.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
 namespace kestrel::trading {
@@ -75,7 +76,6 @@ class PaperTradingVenue : public TradingVenue {
    private:
     struct Order;
     struct Candidate;
-    struct PositionState;
 
     // All of these require mMutex to be held.
     std::optional<Candidate> Evaluate(const Order& order,
@@ -101,7 +101,7 @@ class PaperTradingVenue : public TradingVenue {
     std::vector<types::Fill> mFills;
     std::map<std::string, types::Decimal> mTotal;
     std::map<std::string, types::Decimal> mLocked;
-    std::map<types::Symbol, PositionState> mPositions;
+    PnlTracker mPnl;  // positions and realized P&L, from the fills
     std::map<types::Symbol, types::Quote> mQuotes;
     std::uint64_t mNextOrder = 1;
     std::uint64_t mNextFill = 1;

@@ -66,12 +66,6 @@ struct PaperTradingVenue::Candidate {
     bool triggers_stop = false;
 };
 
-struct PaperTradingVenue::PositionState {
-    Decimal quantity;
-    Decimal average_price;
-    Decimal realized_pnl;
-};
-
 PaperTradingVenue::PaperTradingVenue(
     std::shared_ptr<data::DataSource> data_source, PaperOptions options,
     std::function<types::Timestamp()> clock)
@@ -224,31 +218,14 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     const Decimal after = Reserve(order, order.Remaining());
     Adjust(mLocked, order.reserve_asset, after - before);
 
-    PositionState& pos = mPositions[order.status.symbol];
     if (side == Side::kBuy) {
         Adjust(mTotal, order.quote_asset,
                -(ToBookScale(notional, Rounding::kUp) + fee));
         Adjust(mTotal, order.base_asset, c.quantity);
-        const Decimal new_qty = pos.quantity + c.quantity;
-        pos.average_price =
-            Decimal::Divide(pos.average_price * pos.quantity + notional,
-                            new_qty, kBookScale, Rounding::kNearest);
-        pos.quantity = new_qty;
-        pos.realized_pnl =
-            ToBookScale(pos.realized_pnl - fee, Rounding::kNearest);
     } else {
         Adjust(mTotal, order.base_asset, -c.quantity);
         Adjust(mTotal, order.quote_asset,
                ToBookScale(notional, Rounding::kDown) - fee);
-        // Only quantity bought through this venue has a known cost basis.
-        const Decimal tracked = std::min(c.quantity, pos.quantity);
-        pos.realized_pnl = ToBookScale(
-            pos.realized_pnl + (c.price - pos.average_price) * tracked - fee,
-            Rounding::kNearest);
-        pos.quantity -= tracked;
-        if (pos.quantity.IsZero()) {
-            pos.average_price = Decimal();
-        }
     }
 
     order.notional_filled += notional;
@@ -275,6 +252,7 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     fill.fee_asset = order.quote_asset;
     fill.liquidity = liquidity;
     fill.time = order.status.updated_time;
+    mPnl.Apply(fill);
     mFills.push_back(std::move(fill));
     return true;
 }
@@ -522,10 +500,11 @@ Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
 Result<std::vector<types::Position>> PaperTradingVenue::GetPositions() {
     std::lock_guard lock(mMutex);
     std::vector<types::Position> out;
-    for (const auto& [symbol, pos] : mPositions) {
-        if (pos.quantity.Sign() > 0) {
-            out.push_back(
-                {symbol, pos.quantity, pos.average_price, pos.realized_pnl});
+    for (auto& position : mPnl.Positions()) {
+        // Flat positions are not reported, and their realized P&L goes with
+        // them.
+        if (position.quantity.Sign() > 0) {
+            out.push_back(std::move(position));
         }
     }
     return out;
