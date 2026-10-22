@@ -26,7 +26,8 @@ using ResultPtr = std::unique_ptr<PGresult, ResultDeleter>;
 
 types::Error ConnectionError(const PGconn* conn, std::string_view what) {
     std::string message(PQerrorMessage(conn));
-    while (!message.empty() && (message.back() == '\n' || message.back() == '\r')) {
+    while (!message.empty() &&
+           (message.back() == '\n' || message.back() == '\r')) {
         message.pop_back();
     }
     return MakeError(ErrorCategory::kNetwork,
@@ -38,7 +39,8 @@ types::Error ConnectionError(const PGconn* conn, std::string_view what) {
 types::Error StatementError(const PGresult* res, const PGconn* conn) {
     const char* state = PQresultErrorField(res, PG_DIAG_SQLSTATE);
     std::string message(PQresultErrorMessage(res));
-    while (!message.empty() && (message.back() == '\n' || message.back() == '\r')) {
+    while (!message.empty() &&
+           (message.back() == '\n' || message.back() == '\r')) {
         message.pop_back();
     }
     if (!state) {
@@ -49,7 +51,8 @@ types::Error StatementError(const PGresult* res, const PGconn* conn) {
     const std::string_view code(state);
     if (code.starts_with("08") || code.starts_with("57P") ||
         code.starts_with("53")) {
-        category = ErrorCategory::kNetwork;  // connection / shutdown / resources
+        category =
+            ErrorCategory::kNetwork;  // connection / shutdown / resources
     } else if (code.starts_with("28")) {
         category = ErrorCategory::kAuth;
     } else if (code.starts_with("40")) {
@@ -130,7 +133,8 @@ Result<void> Database::EnsureConnected() {
 }
 
 Result<std::vector<Database::Row>> Database::Query(
-    const std::string& sql, const std::vector<std::optional<std::string>>& params) {
+    const std::string& sql,
+    const std::vector<std::optional<std::string>>& params) {
     std::lock_guard lock(mMutex);
     if (auto ok = EnsureConnected(); !ok) {
         return std::unexpected(ok.error());
@@ -189,8 +193,8 @@ Result<void> Database::ExecScript(const std::string& sql) {
 
 Result<void> Database::Migrate() {
     // Session-level advisory lock: held on this connection until released.
-    auto locked =
-        Query(std::string("SELECT pg_advisory_lock(") + kMigrationLockKey + ")");
+    auto locked = Query(std::string("SELECT pg_advisory_lock(") +
+                        kMigrationLockKey + ")");
     if (!locked) {
         return std::unexpected(locked.error());
     }
@@ -206,7 +210,8 @@ Result<void> Database::Migrate() {
 
     // CREATE EXTENSION needs a superuser the first time for timescaledb, so
     // only attempt it when the extension is missing.
-    auto ext = Query("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'");
+    auto ext =
+        Query("SELECT 1 FROM pg_extension WHERE extname = 'timescaledb'");
     if (!ext) {
         return fail(ext.error());
     }
@@ -220,14 +225,14 @@ Result<void> Database::Migrate() {
             return fail(std::move(err));
         }
     }
-    if (auto ok = ExecScript(
-            "CREATE TABLE IF NOT EXISTS schema_migrations ("
-            "version INTEGER PRIMARY KEY, name TEXT NOT NULL, "
-            "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
+    if (auto ok = ExecScript("CREATE TABLE IF NOT EXISTS schema_migrations ("
+                             "version INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+                             "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())");
         !ok) {
         return fail(ok.error());
     }
-    auto applied = Query("SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
+    auto applied =
+        Query("SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
     if (!applied) {
         return fail(applied.error());
     }
@@ -245,8 +250,8 @@ Result<void> Database::Migrate() {
             std::to_string(m.version) + ", '" + m.name + "');";
         if (auto ok = ExecScript(script); !ok) {
             auto err = ok.error();
-            err.message = "migration " + std::to_string(m.version) + ": " +
-                          err.message;
+            err.message =
+                "migration " + std::to_string(m.version) + ": " + err.message;
             return fail(std::move(err));
         }
     }

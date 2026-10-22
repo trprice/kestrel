@@ -9,11 +9,12 @@ using namespace kestrel;
 using kestrel::testing::D;
 
 std::string KlineMessage(bool closed) {
-    return std::string(R"({"stream":"btcusd@kline_1m","data":{"e":"kline",)"
-                       R"("E":1700000060001,"s":"BTCUSD","k":{"t":1700000000000,)"
-                       R"("T":1700000059999,"s":"BTCUSD","i":"1m","o":"100.10",)"
-                       R"("c":"105.50","h":"110.00","l":"90.25","v":"12.5",)"
-                       R"("n":42,"x":)") +
+    return std::string(
+               R"({"stream":"btcusd@kline_1m","data":{"e":"kline",)"
+               R"("E":1700000060001,"s":"BTCUSD","k":{"t":1700000000000,)"
+               R"("T":1700000059999,"s":"BTCUSD","i":"1m","o":"100.10",)"
+               R"("c":"105.50","h":"110.00","l":"90.25","v":"12.5",)"
+               R"("n":42,"x":)") +
            (closed ? "true" : "false") + "}}}";
 }
 
@@ -23,7 +24,8 @@ TEST(BinanceUSBarStreamTest, ClosedKlineBecomesBar) {
     const auto parsed = data::ParseBinanceUSClosedKline(*json);
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(parsed->first, "BTC/USD");
-    EXPECT_EQ(types::ToEpochMillis(parsed->second.open_time), 1'700'000'000'000);
+    EXPECT_EQ(types::ToEpochMillis(parsed->second.open_time),
+              1'700'000'000'000);
     EXPECT_EQ(parsed->second.open, D("100.10"));
     EXPECT_EQ(parsed->second.high, D("110.00"));
     EXPECT_EQ(parsed->second.low, D("90.25"));

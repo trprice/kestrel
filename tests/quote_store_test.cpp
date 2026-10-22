@@ -35,8 +35,8 @@ class QuoteStoreTest : public ::testing::Test {
         ASSERT_OK(database);
         mDatabase = std::move(*database);
         ASSERT_OK(mDatabase->Migrate());
-        ASSERT_OK(mDatabase->Query("DELETE FROM quotes WHERE venue = $1",
-                                   {kVenue}));
+        ASSERT_OK(
+            mDatabase->Query("DELETE FROM quotes WHERE venue = $1", {kVenue}));
     }
     void TearDown() override {
         if (mDatabase) {

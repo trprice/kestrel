@@ -39,8 +39,8 @@ class BarStoreTest : public ::testing::Test {
         ASSERT_OK(mDatabase->Migrate());
         ASSERT_OK(mDatabase->Migrate());  // idempotent
         mStore = std::make_unique<db::BarStore>(mDatabase);
-        ASSERT_OK(mDatabase->Query("DELETE FROM bars WHERE venue = $1",
-                                   {kVenue}));
+        ASSERT_OK(
+            mDatabase->Query("DELETE FROM bars WHERE venue = $1", {kVenue}));
     }
     void TearDown() override {
         if (mDatabase) {
@@ -51,7 +51,8 @@ class BarStoreTest : public ::testing::Test {
 
     static types::Bar MakeBar(std::int64_t minute, const char* close) {
         types::Bar b;
-        b.open_time = types::FromEpochMillis(1'700'000'000'000 + minute * 60'000);
+        b.open_time =
+            types::FromEpochMillis(1'700'000'000'000 + minute * 60'000);
         b.open = D("100.10");
         b.high = D("110");
         b.low = D("90.123456789");
@@ -72,9 +73,9 @@ TEST_F(BarStoreTest, RoundTripsBarsExactly) {
     ASSERT_OK(saved);
     EXPECT_EQ(*saved, 2U);
 
-    auto loaded = mStore->Load(kVenue, "BTC/USD", types::Timeframe::kM1,
-                               bars[0].open_time,
-                               bars[1].open_time + std::chrono::milliseconds(1));
+    auto loaded = mStore->Load(
+        kVenue, "BTC/USD", types::Timeframe::kM1, bars[0].open_time,
+        bars[1].open_time + std::chrono::milliseconds(1));
     ASSERT_OK(loaded);
     ASSERT_EQ(loaded->size(), 2U);
     EXPECT_EQ((*loaded)[0].open_time, bars[0].open_time);
@@ -87,9 +88,9 @@ TEST_F(BarStoreTest, SavingAgainReplacesTheBar) {
                            std::vector{MakeBar(0, "105")}));
     ASSERT_OK(mStore->Save(kVenue, "BTC/USD", types::Timeframe::kM1,
                            std::vector{MakeBar(0, "107")}));
-    auto loaded = mStore->Load(kVenue, "BTC/USD", types::Timeframe::kM1,
-                               MakeBar(0, "1").open_time,
-                               MakeBar(1, "1").open_time);
+    auto loaded =
+        mStore->Load(kVenue, "BTC/USD", types::Timeframe::kM1,
+                     MakeBar(0, "1").open_time, MakeBar(1, "1").open_time);
     ASSERT_OK(loaded);
     ASSERT_EQ(loaded->size(), 1U);
     EXPECT_EQ((*loaded)[0].close, D("107"));
@@ -98,14 +99,14 @@ TEST_F(BarStoreTest, SavingAgainReplacesTheBar) {
 TEST_F(BarStoreTest, TimeframesAndSymbolsAreSeparate) {
     ASSERT_OK(mStore->Save(kVenue, "BTC/USD", types::Timeframe::kM1,
                            std::vector{MakeBar(0, "105")}));
-    auto other_tf = mStore->Load(kVenue, "BTC/USD", types::Timeframe::kM5,
-                                 MakeBar(0, "1").open_time,
-                                 MakeBar(9, "1").open_time);
+    auto other_tf =
+        mStore->Load(kVenue, "BTC/USD", types::Timeframe::kM5,
+                     MakeBar(0, "1").open_time, MakeBar(9, "1").open_time);
     ASSERT_OK(other_tf);
     EXPECT_TRUE(other_tf->empty());
-    auto other_symbol = mStore->Load(kVenue, "ETH/USD", types::Timeframe::kM1,
-                                     MakeBar(0, "1").open_time,
-                                     MakeBar(9, "1").open_time);
+    auto other_symbol =
+        mStore->Load(kVenue, "ETH/USD", types::Timeframe::kM1,
+                     MakeBar(0, "1").open_time, MakeBar(9, "1").open_time);
     ASSERT_OK(other_symbol);
     EXPECT_TRUE(other_symbol->empty());
 }
@@ -113,9 +114,9 @@ TEST_F(BarStoreTest, TimeframesAndSymbolsAreSeparate) {
 TEST_F(BarStoreTest, StreamSinkStoresBars) {
     auto sink = mStore->MakeStreamSink(kVenue);
     sink("ETH/USD", types::Timeframe::kM1, MakeBar(0, "105"));
-    auto loaded = mStore->Load(kVenue, "ETH/USD", types::Timeframe::kM1,
-                               MakeBar(0, "1").open_time,
-                               MakeBar(1, "1").open_time);
+    auto loaded =
+        mStore->Load(kVenue, "ETH/USD", types::Timeframe::kM1,
+                     MakeBar(0, "1").open_time, MakeBar(1, "1").open_time);
     ASSERT_OK(loaded);
     EXPECT_EQ(loaded->size(), 1U);
 }

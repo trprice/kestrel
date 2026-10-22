@@ -56,10 +56,9 @@ Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
             params.emplace_back(std::to_string(q.seq));
             params.emplace_back(types::FormatIso8601(q.received_time));
             params.emplace_back(
-                q.exchange_time
-                    ? std::optional<std::string>(
-                          types::FormatIso8601(*q.exchange_time))
-                    : std::nullopt);
+                q.exchange_time ? std::optional<std::string>(
+                                      types::FormatIso8601(*q.exchange_time))
+                                : std::nullopt);
             params.emplace_back(Text(q.bid));
             params.emplace_back(Text(q.bid_size));
             params.emplace_back(Text(q.ask));

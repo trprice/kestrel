@@ -23,7 +23,7 @@ struct Bar {
 // every message, so everything beyond identity and receive time is optional.
 struct Quote {
     Symbol symbol;
-    std::string venue;                       // e.g. "kraken"
+    std::string venue;  // e.g. "kraken"
     // Arrival order within (venue, symbol), assigned by QuoteWriter and kept
     // across runs; received_time alone can tie within a millisecond.
     std::int64_t seq = 0;

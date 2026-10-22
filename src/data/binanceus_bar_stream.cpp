@@ -83,9 +83,11 @@ std::string BinanceUSBarStream::BuildUrl(
     return url;
 }
 
-BinanceUSBarStream::BinanceUSBarStream(
-    std::string ws_base_url, std::vector<std::string> native_symbols,
-    types::Timeframe timeframe, std::string interval, BarCallback callback)
+BinanceUSBarStream::BinanceUSBarStream(std::string ws_base_url,
+                                       std::vector<std::string> native_symbols,
+                                       types::Timeframe timeframe,
+                                       std::string interval,
+                                       BarCallback callback)
     : mUrl(BuildUrl(ws_base_url, native_symbols, interval)),
       mTimeframe(timeframe),
       mCallback(std::move(callback)),

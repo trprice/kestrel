@@ -29,8 +29,8 @@ using QuoteCallback = std::function<void(const types::Quote&)>;
 
 // Called once per completed bar from the same background thread, with the
 // same rules as QuoteCallback.
-using BarCallback = std::function<void(
-    const types::Symbol&, types::Timeframe, const types::Bar&)>;
+using BarCallback = std::function<void(const types::Symbol&, types::Timeframe,
+                                       const types::Bar&)>;
 
 class DataSource {
    public:
@@ -62,8 +62,7 @@ class DataSource {
         (void)timeframe;
         (void)callback;
         return types::MakeError(types::ErrorCategory::kNotImplemented,
-                                std::string(Name()) +
-                                    " does not stream bars");
+                                std::string(Name()) + " does not stream bars");
     }
 
     // Tick size, lot size and minimum order size; fetched once, then cached.
