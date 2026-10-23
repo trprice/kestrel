@@ -268,6 +268,23 @@ The build runs 2 compile jobs by default because parallel C++23 compiles can
 run a small container out of memory (the compiler is killed); change it with
 `-e KESTREL_JOBS=N`. The source is compiled on every run.
 
+To skip the entrypoint and get a shell (to run a single test, use `perf`,
+or poke at the database), override it. PostgreSQL is not started for you in
+that case:
+
+```sh
+docker run --rm -it --network none -v "$PWD":/src --entrypoint bash kestrel-test
+# inside the container:
+pg_ctlcluster "$PG_VERSION" main start
+cmake -S /src -B /build -G Ninja && cmake --build /build -j2
+/build/kestrel_tests --gtest_filter='BarStoreTest.*'
+```
+
+The image includes `perf`. Docker's default seccomp profile blocks the
+`perf_event_open` syscall, so profiling needs
+`--cap-add SYS_ADMIN --security-opt seccomp=unconfined` on the `docker run`
+(and a host `kernel.perf_event_paranoid` that permits it).
+
 ## Design notes
 
 - **Decimal**: int64 mantissa + scale (0–18). No floating point for prices or

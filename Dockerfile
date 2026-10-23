@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build pkg-config git ca-certificates \
         libssl-dev zlib1g-dev libcurl4-openssl-dev libpq-dev libcpr-dev \
         nlohmann-json3-dev libspdlog-dev libtomlplusplus-dev libcli11-dev \
-        libgtest-dev \
+        libgtest-dev linux-perf \
         postgresql-${PG_VERSION} postgresql-${PG_VERSION}-timescaledb \
     && rm -rf /var/lib/apt/lists/*
 
