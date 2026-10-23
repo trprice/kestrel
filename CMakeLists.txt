@@ -144,6 +144,7 @@ if(KESTREL_BUILD_TESTS)
     tests/binanceus_bar_stream_test.cpp
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
+    tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp
     tests/pnl_tracker_test.cpp
     tests/risk_gate_test.cpp
@@ -153,6 +154,9 @@ if(KESTREL_BUILD_TESTS)
     tests/config_test.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)
+  target_include_directories(kestrel_tests PRIVATE tests)
+  target_compile_definitions(kestrel_tests PRIVATE
+    KESTREL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   include(GoogleTest)
   gtest_discover_tests(kestrel_tests DISCOVERY_MODE PRE_TEST)
 endif()

@@ -208,26 +208,41 @@ harmless).
 ### Database integration tests
 
 The database tests run only when `KESTREL_TEST_DBNAME` is set (plus optional
-`KESTREL_TEST_DB{HOST,PORT,USER,PASSWORD}`); otherwise they are skipped. They
-need an empty database with the timescaledb extension and a login role for it.
-The tables are created by the tests themselves (they run the migrations), and
-they only touch rows with their own test venue. Use a separate database from
-your real one:
+`KESTREL_TEST_DB{HOST,PORT,USER,PASSWORD}`); otherwise they are skipped. **No
+venue API keys are needed**: real Kraken and Binance.US bars and quotes are
+checked in under `tests/data/market/`, and the tests load them into the
+database themselves. What you need to do:
+
+1. Install PostgreSQL and the TimescaleDB package for your PostgreSQL version
+   (Ubuntu: `postgresql-<version>-timescaledb`), and enable it in
+   `postgresql.conf` with `shared_preload_libraries = 'timescaledb'`
+   (`timescaledb-tune` can do this), then restart PostgreSQL.
+2. Run `scripts/setup_test_database.sh`. It must run as a PostgreSQL admin
+   (by default through `sudo -u postgres psql`), because creating the
+   database and enabling the extension need superuser rights. The tests
+   cannot do this for you: their `kestrel_test` role is deliberately not a
+   superuser and cannot create databases.
+3. Export the variables it prints and run the tests:
 
 ```bash
-export KESTREL_DATABASE_PASSWORD=testpass   # optional; else one is generated and printed
-scripts/setup_database.sh --db-name kestrel_test --db-user kestrel_test
-
 export KESTREL_TEST_DBNAME=kestrel_test
 export KESTREL_TEST_DBHOST=localhost
 export KESTREL_TEST_DBUSER=kestrel_test
-export KESTREL_TEST_DBPASSWORD=testpass
-./build/kestrel_tests --gtest_filter='QuoteStore*:BarStore*'
+export KESTREL_TEST_DBPASSWORD=kestrel_test
+ctest --test-dir build --output-on-failure
 ```
 
-Omit `--config` so the script doesn't create the tables itself. See the
-script's `--help` for `--admin-cmd` if `sudo -u postgres psql` doesn't work on
-your machine.
+The script wraps `scripts/setup_database.sh` (see its `--help`, e.g.
+`--admin-cmd` if `sudo -u postgres psql` doesn't work on your machine). The
+tests run the migrations, then replace the rows of two venues named
+`fixture-kraken` and `fixture-binanceus`; the other store tests only touch the
+venue `kestrel-test`. Use a separate database from your real one anyway.
+
+`tests/db_fixture.hpp` has the shared helpers (`ConnectTestDatabase`,
+`ReadFixtureData`, `LoadFixtureData`); `tests/fixture_data_test.cpp` is the
+suite built on them. To refresh the data, store a new pull into a scratch
+database (`kestrel_app bars 1h 168 --store`, `kestrel_app stream 90 --store`)
+and run `scripts/export_test_data.sh` with the `PG*` variables pointing at it.
 
 ## Design notes
 
