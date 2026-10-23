@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "kestrel/backtest/replay_data_source.hpp"
+#include "kestrel/data/data_source.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
 #include "kestrel/trading/risk_gate.hpp"
@@ -17,7 +18,7 @@ struct BacktestOptions {
     // Bars of the strategy's series with start <= open_time < end are
     // replayed. Earlier bars in the data source are available as warmup.
     types::Timestamp start;
-    types::Timestamp end;
+    types::Timestamp end;  // must be after start
 };
 
 struct BacktestResult {
@@ -26,6 +27,15 @@ struct BacktestResult {
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
 };
+
+// Fills a ReplayDataSource from `source` with what a backtest of `needs` over
+// [from, to) uses: symbol info for every symbol, and each symbol's bars for
+// every timeframe, starting early enough before `from` to fill the warmup
+// window. kInvalidArgument if `to` is not after `from`; kUnsupported for a
+// calendar timeframe (1M); otherwise the source's own error.
+types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
+    data::DataSource& source, const strategy::Requirements& needs,
+    types::Timestamp from, types::Timestamp to);
 
 // Runs a strategy over the bars in `data`, using the same Runner as live
 // trading and a PaperTradingVenue for execution, on one thread and a simulated
@@ -40,7 +50,8 @@ struct BacktestResult {
 //     intrabar high or low;
 //   - an order placed in OnStart is rejected, as no quote exists yet.
 // Only strategies that work from bars are supported: one that asks for quotes,
-// or a calendar-length timeframe (1M), fails with kUnsupported. `data` needs
+// or a calendar-length timeframe (1M), fails with kUnsupported, and an end
+// that is not after the start with kInvalidArgument. `data` needs
 // bars and SetSymbolInfo for every symbol the strategy trades.
 types::Result<BacktestResult> RunBacktest(
     std::shared_ptr<ReplayDataSource> data,

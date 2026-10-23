@@ -2,7 +2,7 @@
 # Sets up PostgreSQL + TimescaleDB for a new Kestrel installation:
 #   1. creates the login role and the database (skipped if they exist)
 #   2. enables the timescaledb extension in that database (needs a superuser)
-#   3. optionally creates the tables by running `kestrel_app --init-db`
+#   3. optionally creates the tables by running `kestrel_app init-db`
 #
 # Safe to re-run. Run it as a user that can administer PostgreSQL; by default
 # it runs psql as the `postgres` OS user through sudo.
@@ -109,11 +109,11 @@ if [[ -n $config ]]; then
         exit 1
     fi
     echo "Creating tables..."
-    KESTREL_DATABASE_PASSWORD=$password "$app" --config "$config" --init-db
+    KESTREL_DATABASE_PASSWORD=$password "$app" --config "$config" init-db
 else
     echo "Extension ready. Create the tables with:"
-    echo "  kestrel_app --config <config> --init-db"
-    echo "(they are also created automatically the first time --store runs)."
+    echo "  kestrel_app --config <config> init-db"
+    echo "(they are also created automatically the first time a --store command runs)."
 fi
 
 cat <<MSG

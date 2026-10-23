@@ -1,9 +1,11 @@
 #include <filesystem>
 #include <fstream>
 
+#include "kestrel/backtest/replay_data_source.hpp"
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/config/schwab_token_store.hpp"
 #include "kestrel/factory.hpp"
+#include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
 namespace {
@@ -375,6 +377,187 @@ TEST(Factory, CreateStrategyRejectsBadInput) {
     ASSERT_OK(cfg);
     EXPECT_EQ(CreateStrategy("nope", *cfg).error().category,
               types::ErrorCategory::kNotFound);
+}
+
+// CreateRunner opens the provider connection only after every check below has
+// passed, so these need no network.
+types::Error RunnerFailure(const config::Configuration& cfg,
+                           const std::string& strategy = "sma_crossover") {
+    auto runner = CreateRunner(strategy, cfg);
+    EXPECT_FALSE(runner.has_value());
+    return runner ? types::Error{} : runner.error();
+}
+
+TEST(Factory, CreateRunnerRefusesWhatCannotRun) {
+    const char* strategy = "[strategy]\nsymbol='BTC/USD'\nquantity='0.01'\n";
+    const auto env = NoEnv({{"KESTREL_BINANCEUS_API_KEY", "k"},
+                            {"KESTREL_BINANCEUS_API_SECRET", "s"}});
+
+    // Unknown strategy.
+    auto paper =
+        config::BinanceUSConfiguration::Parse(WithTables(strategy), NoEnv());
+    ASSERT_OK(paper);
+    EXPECT_EQ(RunnerFailure(*paper, "nope").category,
+              types::ErrorCategory::kNotFound);
+
+    // Bad strategy parameters, with the step named.
+    auto bad = config::BinanceUSConfiguration::Parse(
+        WithTables("[strategy]\nsymbol='BTC/USD'\n"), NoEnv());
+    ASSERT_OK(bad);
+    EXPECT_NE(RunnerFailure(*bad).message.find("strategy: "),
+              std::string::npos);
+
+    // A [risk.<name>] section naming no strategy.
+    auto typo = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(strategy) +
+                   "[risk.sma_crosover]\nmax_open_orders=1\n"),
+        NoEnv());
+    ASSERT_OK(typo);
+    EXPECT_NE(RunnerFailure(*typo).message.find("risk: "), std::string::npos);
+
+    // Live mode without limits, and live mode on a stub venue.
+    auto live = config::BinanceUSConfiguration::Parse(
+        WithTables(strategy, "live"), env);
+    ASSERT_OK(live);
+    EXPECT_EQ(RunnerFailure(*live).category,
+              types::ErrorCategory::kInvalidArgument);
+    auto limited = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(strategy) + "[risk]\nmax_open_orders=1\n",
+                   "live"),
+        env);
+    ASSERT_OK(limited);
+    EXPECT_EQ(RunnerFailure(*limited).category,
+              types::ErrorCategory::kNotImplemented);
+}
+
+// A provider connection made of fakes, so CreateRunner needs no network.
+struct FakeComponents {
+    std::shared_ptr<kestrel::testing::RecordingVenue> venue =
+        std::make_shared<kestrel::testing::RecordingVenue>();
+    int built = 0;
+
+    ComponentsFactory Factory() {
+        return [this](
+                   const config::Configuration&) -> types::Result<Components> {
+            ++built;
+            // The runner takes ownership of its venue, so hand over a
+            // forwarding wrapper and keep the real one for the test.
+            return Components{std::make_shared<backtest::ReplayDataSource>(),
+                              std::make_unique<Forward>(venue)};
+        };
+    }
+
+   private:
+    class Forward : public trading::TradingVenue {
+       public:
+        explicit Forward(std::shared_ptr<trading::TradingVenue> v)
+            : mVenue(std::move(v)) {}
+        std::string_view Name() const override { return mVenue->Name(); }
+        types::Result<types::OrderAcknowledgement> PlaceOrder(
+            const types::OrderRequest& r) override {
+            return mVenue->PlaceOrder(r);
+        }
+        types::Result<trading::CancelOutcome> CancelOrder(
+            const std::string& id) override {
+            return mVenue->CancelOrder(id);
+        }
+        types::Result<std::vector<std::string>> CancelAll() override {
+            return mVenue->CancelAll();
+        }
+        types::Result<std::vector<types::OrderStatus>> GetOpenOrders()
+            override {
+            return mVenue->GetOpenOrders();
+        }
+        types::Result<std::vector<types::Fill>> GetFills(
+            types::Timestamp since) override {
+            return mVenue->GetFills(since);
+        }
+        types::Result<std::vector<types::Position>> GetPositions() override {
+            return mVenue->GetPositions();
+        }
+        types::Result<std::vector<types::Balance>> GetBalances() override {
+            return mVenue->GetBalances();
+        }
+
+       private:
+        std::shared_ptr<trading::TradingVenue> mVenue;
+    };
+};
+
+constexpr const char* kSmaParams =
+    "[strategy]\nsymbol='BTC/USD'\nquantity='0.01'\n";
+
+TEST(Factory, CreateRunnerBuildsARunnerWithAGateWhenLimitsApply) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[risk]\nmax_daily_loss=100\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    ASSERT_OK(runner);
+    EXPECT_EQ(fake.built, 1);
+    ASSERT_NE((*runner)->RiskGate(), nullptr);
+    EXPECT_FALSE((*runner)->RiskGate()->IsHalted());
+}
+
+TEST(Factory, CreateRunnerAppliesThePerStrategyLimits) {
+    // Only the override sets a limit, so only sma_crossover gets a gate.
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) +
+                   "[risk.sma_crossover]\nmax_open_orders=1\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    ASSERT_OK(runner);
+    EXPECT_NE((*runner)->RiskGate(), nullptr);
+}
+
+TEST(Factory, CreateRunnerWithoutLimitsHasNoGateInPaperMode) {
+    auto cfg =
+        config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    ASSERT_OK(runner);
+    EXPECT_EQ((*runner)->RiskGate(), nullptr);
+}
+
+TEST(Factory, CreateRunnerFailsIfTheDailyLossCountCannotStart) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[risk]\nmax_daily_loss=100\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    fake.venue->fail_reads = true;  // GetPositions fails
+    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    ASSERT_FALSE(runner.has_value());
+    EXPECT_NE(runner.error().message.find("cannot start the daily loss count"),
+              std::string::npos)
+        << runner.error().message;
+}
+
+TEST(Factory, CreateRunnerReportsAFailedConnection) {
+    auto cfg =
+        config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
+    ASSERT_OK(cfg);
+    auto runner = CreateRunner(
+        "sma_crossover", *cfg,
+        [](const config::Configuration&) -> types::Result<Components> {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        });
+    ASSERT_FALSE(runner.has_value());
+    EXPECT_EQ(runner.error().category, types::ErrorCategory::kNetwork);
+    EXPECT_NE(runner.error().message.find("startup: "), std::string::npos);
+}
+
+TEST(Factory, CreateRunnerChecksBeforeConnecting) {
+    auto cfg =
+        config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    EXPECT_FALSE(CreateRunner("nope", *cfg, fake.Factory()).has_value());
+    EXPECT_EQ(fake.built, 0);  // refused before any connection was made
 }
 
 TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {

@@ -81,8 +81,55 @@ target_compile_options(kestrel PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W4>)
 
 if(KESTREL_BUILD_APP)
-  add_executable(kestrel_app app/main.cpp)
+  add_executable(kestrel_app
+    app/main.cpp
+    app/common.cpp
+    app/commands/init_db.cpp
+    app/commands/bars.cpp
+    app/commands/stream_quotes.cpp
+    app/commands/stream_bars.cpp
+    app/commands/run.cpp
+    app/commands/backtest.cpp
+  )
+  target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
+
+  # How the command line refuses bad input: the exit code and the message.
+  # 105 (bad value) and 106 (missing argument) are CLI11's own usage-error
+  # codes; 2 (bad range) and 1 (failure) are ours.
+  if(KESTREL_BUILD_TESTS)
+    enable_testing()
+    set(_good ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_backtest.toml)
+    set(_live ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_live_no_risk.toml)
+    # name | config | exit code | message | arguments (comma-separated)
+    set(_cli_cases
+      "no_subcommand|${_good}|106|A subcommand is required|"
+      "unknown_timeframe|${_good}|105|unknown timeframe|bars,7x,3"
+      "calendar_timeframe|${_good}|105|has no fixed length|bars,1M,3"
+      "zero_count|${_good}|105|not in range|bars,1h,0"
+      "negative_seconds|${_good}|105|not in range|stream,-1"
+      "backtest_needs_range|${_good}|106|--from is required|backtest,sma_crossover"
+      "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"
+      "backtest_backwards_range|${_good}|2|must be after its start|backtest,sma_crossover,--from,2026-02-01,--to,2026-01-01"
+      "backtest_unknown_strategy|${_good}|1|unknown strategy|backtest,nope,--from,2026-01-01,--to,2026-02-01"
+      "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,sma_crossover")
+    foreach(_case IN LISTS _cli_cases)
+      string(REPLACE "|" ";" _fields "${_case}")
+      list(GET _fields 0 _name)
+      list(GET _fields 1 _config)
+      list(GET _fields 2 _rc)
+      list(GET _fields 3 _msg)
+      list(GET _fields 4 _args)
+      string(REPLACE "," ";" _args "${_args}")
+      add_test(NAME cli_${_name}
+        COMMAND ${CMAKE_COMMAND}
+          -DAPP=$<TARGET_FILE:kestrel_app>
+          "-DARGS=--config;${_config};${_args}"
+          -DEXPECT_RC=${_rc}
+          "-DEXPECT_MSG=${_msg}"
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_check.cmake)
+    endforeach()
+  endif()
 endif()
 
 if(KESTREL_BUILD_TESTS)

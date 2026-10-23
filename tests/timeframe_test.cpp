@@ -75,4 +75,15 @@ TEST(Time, Iso8601RoundTripAndFractions) {
     }
 }
 
+TEST(Time, ParseTimestampTakesADateOrAFullTime) {
+    EXPECT_EQ(types::ToEpochSeconds(*types::ParseTimestamp("1970-01-02")),
+              86400);
+    EXPECT_EQ(*types::ParseTimestamp("2024-02-29T12:34:56.5Z"),
+              *types::ParseIso8601("2024-02-29T12:34:56.5Z"));
+    for (const char* bad :
+         {"", "2023-13-01", "20230925", "2023-09-25T10", "garbage!!!"}) {
+        EXPECT_FALSE(types::ParseTimestamp(bad).has_value()) << bad;
+    }
+}
+
 }  // namespace

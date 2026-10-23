@@ -34,7 +34,7 @@ cap_limit_fills_at_quote_size = false
 # max_orders_per_day     = 6
 # max_consecutive_losses = 2
 
-[strategy]                     # parameters for --run / --backtest sma_crossover
+[strategy]                     # parameters for the run / backtest subcommands
 # symbol      = "BTC/USD"      # must be in [general] symbols
 # quantity    = "0.001"        # base-asset units per order
 # timeframe   = "1h"
@@ -45,7 +45,7 @@ cap_limit_fills_at_quote_size = false
 # rest_url = "https://api.kraken.com"
 # ws_url   = "wss://ws.kraken.com/v2"
 
-[database]                     # optional; needed for --store
+[database]                     # optional; needed for init-db and --store
 # host    = "localhost"        # omit to use the local socket
 # port    = 5432
 dbname  = "kestrel"

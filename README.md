@@ -22,11 +22,11 @@ live trading; a factory picks the right one from the config.
 | `RiskGatedVenue` (order and position size, open orders, order rate, daily loss, symbol allowlist, kill switch) | done, tested with fakes |
 | `ReplayDataSource` + `RunBacktest` (same `Runner`, paper venue, simulated clock) | done, tested with fakes |
 | Schwab data source; Kraken, Schwab and Binance.US trading venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real |
-| `kestrel_app --run` and `--backtest`, `[risk]` and `[strategy]` config, strategy registry | done; `--run` has only been exercised briefly in paper mode on Binance.US |
+| `kestrel_app run` and `backtest`, `[risk]` and `[strategy]` config, strategy registry | done; `run` has only been exercised briefly in paper mode on Binance.US |
 | Indicators, more strategies, agent access | not started; see [TODO.md](TODO.md) |
 
 The strategy, risk and backtest code has not run against a live venue, and
-`--run` in live mode is refused until a trading venue is implemented.
+`run` in live mode is refused until a trading venue is implemented.
 
 Known limitations, work in progress and planned projects are tracked in
 [TODO.md](TODO.md).
@@ -85,31 +85,37 @@ REQUIRED` error, with the authorize URL, once it has expired.
 ## Run
 
 ```sh
-./build/kestrel_app --config config/kestrel.toml --bars 1h 24 --stream 30
+./build/kestrel_app --config config/kestrel.toml bars 1h 24
 ```
 
-`kestrel_app` only does what it is asked:
+`kestrel_app` takes the global options `-c/--config` (required) and
+`-v/--verbose`, then one subcommand, which does only what its name says.
+`kestrel_app --help` and `kestrel_app <subcommand> --help` list the arguments.
 
-- `--config` alone: the last 10 completed `1h` bars per symbol (the default for
-  `--bars`), preceded by symbol info and followed by the venue's balances.
-- `--bars <timeframe> <count>`: the same, with your timeframe and count.
-- `--stream <seconds>`: live quotes for that many seconds, and nothing else.
-- `--bars` and `--stream` together: bars first, then the quote stream.
+| Subcommand | Does |
+|---|---|
+| `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances |
+| `stream <seconds> [--store]` | live quotes for that many seconds |
+| `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
+| `init-db` | creates or updates the database schema |
+| `run <strategy>` | trades a strategy on live data (see Strategies below) |
+| `backtest <strategy> --from <date> --to <date>` | replays a strategy over historical bars |
 
-The example above prints the last 24 hourly bars, then 30 seconds of quotes.
+The example above prints the last 24 hourly bars. The global options may also
+come after the subcommand's arguments.
 
 ### Strategies
 
 ```sh
-./build/kestrel_app -c config/kestrel.toml --backtest sma_crossover --from 2026-09-01 --to 2026-10-01
-./build/kestrel_app -c config/kestrel.toml --run sma_crossover
+./build/kestrel_app -c config/kestrel.toml backtest sma_crossover --from 2026-09-01 --to 2026-10-01
+./build/kestrel_app -c config/kestrel.toml run sma_crossover
 ```
 
-- `--backtest <strategy> --from <date> --to <date>` fetches the strategy's
+- `backtest <strategy> --from <date> --to <date>` fetches the strategy's
   bars (plus its warmup) from the provider, replays them through the same
   `Runner` and a paper venue using `[paper]`, and prints the fills, positions
   and balances. `--to` is exclusive; dates are `YYYY-MM-DD` or ISO 8601 UTC.
-- `--run <strategy>` trades on live data through the paper or live venue until
+- `run <strategy>` trades on live data through the paper or live venue until
   Ctrl-C or SIGTERM (a second signal exits immediately). If `[risk]` sets any
   limit, orders go through the risk gate, and the daily-loss count starts at
   startup. Without `[risk]` it warns and trades unchecked in paper mode. Live
@@ -140,7 +146,7 @@ scripts/setup_database.sh --config config/kestrel.toml
 
 The script (idempotent; `--help` lists options) creates the `kestrel` role and
 database, enables the timescaledb extension, and creates the tables through
-`kestrel_app --init-db`. It runs `psql` as the `postgres` OS user via sudo, or
+`kestrel_app init-db`. It runs `psql` as the `postgres` OS user via sudo, or
 as whatever `--admin-cmd` / `KESTREL_ADMIN_PSQL` says for a remote server. A
 password is generated for a new role and printed once (or set
 `KESTREL_DATABASE_PASSWORD` beforehand). Use `host = "localhost"` in
@@ -157,11 +163,10 @@ startup (`src/db/migrations.cpp`, append-only).
 After updating Kestrel, bring an existing database up to the new schema with:
 
 ```sh
-build/kestrel_app --config config/kestrel.toml --init-db
+build/kestrel_app --config config/kestrel.toml init-db
 ```
 
-`--init-db` cannot be combined with other actions. Any run with `--store` also
-migrates first, but running `--init-db` yourself lets you choose when it
+Any command with `--store` also migrates first, but running `init-db` yourself lets you choose when it
 happens. Migrations are tracked in the `schema_migrations` table: only those
 newer than the highest recorded version are applied, each one is logged
 (`database: applying migration N (...)`), and a database that is already
@@ -175,7 +180,7 @@ Before upgrading a database that holds data you care about:
 3. Check the release's commits and `src/db/migrations.cpp` for what each new
    migration does. Some rewrite whole tables, which takes time, disk space and
    locks.
-4. Run `--init-db`, then confirm with
+4. Run `init-db`, then confirm with
    `SELECT * FROM schema_migrations ORDER BY version;`.
 
 If a migration fails, the error names its version. Fix the cause and re-run; if
@@ -183,11 +188,11 @@ you are unsure whether it applied partway, compare the schema against the
 migration's SQL, or restore the backup.
 
 ```sh
-./build/kestrel_app -c config/kestrel.toml --bars 1h 500 --store          # pull and store
-./build/kestrel_app -c config/kestrel.toml --stream-bars 1m 3600 --store  # stream closed bars into the DB
+./build/kestrel_app -c config/kestrel.toml bars 1h 500 --store          # pull and store
+./build/kestrel_app -c config/kestrel.toml stream-bars 1m 3600 --store  # stream closed bars into the DB
 ```
 
-`--stream <seconds> --store` writes every streamed quote to the `quotes`
+`stream <seconds> --store` writes every streamed quote to the `quotes`
 hypertable (chunked per day, one row per delivered quote with the merged
 bid/ask/last). `QuoteWriter` buffers on the WebSocket thread and a background
 thread inserts in batches every 500 ms; a failed batch is retried, with at most
@@ -195,9 +200,9 @@ thread inserts in batches every 500 ms; a failed batch is retried, with at most
 and continued from the database after a restart, so arrival order survives
 quotes that share a millisecond; reads are ordered by it. `bookTicker` updates are frequent: expect many rows per symbol per minute.
 
-`--stream-bars` (`DataSource::StreamBars`, implemented for Binance.US klines)
+`stream-bars` (`DataSource::StreamBars`, implemented for Binance.US klines)
 emits each bar once, when it closes. Bars closed while the socket was down are
-not replayed; backfill with `--bars --store` (saves are upserts, so overlap is
+not replayed; backfill with `bars --store` (saves are upserts, so overlap is
 harmless).
 
 ### Database integration tests
@@ -270,11 +275,16 @@ include/kestrel/   public headers, one directory per area:
   db/                database, bar and quote stores
   trading/           TradingVenue, paper and live venues, PnlTracker, RiskGatedVenue
   strategy/          Strategy, Runner, SmaCrossover
-  backtest/          ReplayDataSource, RunBacktest
-  factory.hpp        builds a provider's data source and venue from the config
+  backtest/          ReplayDataSource, LoadReplayData, RunBacktest
+  factory.hpp        builds a provider's data source and venue, a strategy by
+                     name, resolved risk limits, and a ready-to-run Runner
 src/               implementation, same directories (plus factory.cpp)
-app/main.cpp       kestrel_app
-tests/             kestrel_tests
+app/main.cpp       kestrel_app: parses the command line and runs one command
+app/commands/      one class per subcommand (bars, stream, stream-bars, init-db,
+                   run, backtest); command.hpp is the interface
+app/common.*       helpers shared by the commands (argument validators, printing)
+tests/             kestrel_tests; tests/data and cli_check.cmake drive the cli_* tests
+                   that run the built kestrel_app with bad arguments
 config/            example configuration files
 scripts/           setup_database.sh
 cmake/             dependency handling

@@ -1,5 +1,7 @@
 #include "kestrel/backtest/backtest.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 
 #include "kestrel/strategy/runner.hpp"
@@ -20,9 +22,47 @@ struct Replayed {
 
 }  // namespace
 
+types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
+    data::DataSource& source, const strategy::Requirements& needs,
+    types::Timestamp from, types::Timestamp to) {
+    if (to <= from) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "the end of a backtest must be after its start");
+    }
+    auto replay = std::make_shared<ReplayDataSource>();
+    for (const types::Symbol& symbol : needs.symbols) {
+        auto info = source.GetSymbolInfo(symbol);
+        if (!info) {
+            return std::unexpected(info.error());
+        }
+        replay->SetSymbolInfo(*info);
+        for (const types::Timeframe timeframe : needs.bar_timeframes) {
+            const auto length = types::FixedDuration(timeframe);
+            if (!length) {
+                return MakeError(ErrorCategory::kUnsupported,
+                                 "backtests cannot replay calendar timeframe " +
+                                     std::string(types::ToString(timeframe)));
+            }
+            const auto first = from - *length * (needs.warmup_bars + 1);
+            auto bars = source.GetBars(symbol, timeframe, first, to);
+            if (!bars) {
+                return std::unexpected(bars.error());
+            }
+            spdlog::info("{} {}: {} bars loaded", symbol,
+                         types::ToString(timeframe), bars->size());
+            replay->AddBars(symbol, timeframe, std::move(*bars));
+        }
+    }
+    return replay;
+}
+
 types::Result<BacktestResult> RunBacktest(
     std::shared_ptr<ReplayDataSource> data,
     std::unique_ptr<strategy::Strategy> strategy, BacktestOptions options) {
+    if (options.end <= options.start) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "the end of a backtest must be after its start");
+    }
     const strategy::Requirements needs = strategy->Needs();
     if (needs.quotes) {
         return MakeError(ErrorCategory::kUnsupported,

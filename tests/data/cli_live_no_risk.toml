@@ -1,0 +1,9 @@
+# Live mode with no [risk]: `run` must refuse before connecting to anything.
+[general]
+provider = "binanceus"
+mode = "live"
+symbols = ["BTC/USD"]
+
+[strategy]
+symbol = "BTC/USD"
+quantity = "0.01"

@@ -228,4 +228,53 @@ TEST(BacktestTest, RejectsStrategiesItCannotReplay) {
     EXPECT_EQ(monthly.error().category, ErrorCategory::kUnsupported);
 }
 
+TEST(BacktestTest, RejectsAnEndThatIsNotAfterTheStart) {
+    auto options = Options();
+    options.end = options.start;
+    auto result = RunBacktest(Data(kCloses), Sma(), options);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().category, ErrorCategory::kInvalidArgument);
+}
+
+TEST(LoadReplayDataTest, LoadsInfoAndBarsIncludingTheWarmup) {
+    auto source = Data(kCloses);  // hours 0-7
+    auto needs = Sma()->Needs();  // 4 warmup bars (slow period + 1)
+    // Replaying from hour 6: the warmup reaches back to hour 1 at least.
+    auto loaded = backtest::LoadReplayData(*source, needs, Hour(6), Hour(8));
+    ASSERT_OK(loaded);
+    EXPECT_TRUE((*loaded)->GetSymbolInfo(kSymbol).has_value());
+    const auto& bars = (*loaded)->Series(kSymbol, Timeframe::kH1);
+    ASSERT_FALSE(bars.empty());
+    EXPECT_LE(bars.front().open_time, Hour(2));
+    EXPECT_EQ(bars.back().open_time, Hour(7));
+}
+
+TEST(LoadReplayDataTest, OnlyLoadsBarsBeforeTheEnd) {
+    auto loaded = backtest::LoadReplayData(*Data(kCloses), Sma()->Needs(),
+                                           Hour(4), Hour(6));
+    ASSERT_OK(loaded);
+    EXPECT_EQ((*loaded)->Series(kSymbol, Timeframe::kH1).back().open_time,
+              Hour(5));
+}
+
+TEST(LoadReplayDataTest, ReportsWhatCannotBeLoaded) {
+    auto data = Data(kCloses);
+    auto backwards =
+        backtest::LoadReplayData(*data, Sma()->Needs(), Hour(6), Hour(6));
+    ASSERT_FALSE(backwards);
+    EXPECT_EQ(backwards.error().category, ErrorCategory::kInvalidArgument);
+
+    auto monthly = backtest::LoadReplayData(*data, MonthlyStrategy().Needs(),
+                                            Hour(1), Hour(5));
+    ASSERT_FALSE(monthly);
+    EXPECT_EQ(monthly.error().category, ErrorCategory::kUnsupported);
+
+    // No symbol info for the symbol: the source's own error comes through.
+    auto bare = std::make_shared<ReplayDataSource>();
+    auto missing =
+        backtest::LoadReplayData(*bare, Sma()->Needs(), Hour(1), Hour(5));
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().category, ErrorCategory::kNotFound);
+}
+
 }  // namespace

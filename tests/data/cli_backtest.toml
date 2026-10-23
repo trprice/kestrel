@@ -1,0 +1,10 @@
+# Used by the cli_* tests: a valid paper configuration that never touches the
+# network before the argument it is testing is refused.
+[general]
+provider = "binanceus"
+mode = "paper"
+symbols = ["BTC/USD"]
+
+[strategy]
+symbol = "BTC/USD"
+quantity = "0.01"

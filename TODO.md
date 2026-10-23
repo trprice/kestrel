@@ -22,7 +22,7 @@ the header of the code concerned.
   `SmaCrossover` now handles an acknowledgement that is already closed
   (`kExpired`, `kCancelled`, `kRejected`), but a later asynchronous rejection
   still needs the `OnOrderUpdate` work below.
-- `Stop()` is not async-signal-safe (it takes a mutex). `kestrel_app --run`
+- `Stop()` is not async-signal-safe (it takes a mutex). `kestrel_app run`
   calls it from a watch thread that collects SIGINT/SIGTERM with
   `sigtimedwait`; any other driver must do the same.
 
@@ -89,9 +89,9 @@ the header of the code concerned.
   `kNotImplemented`.
 - The Schwab data source is a stub.
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
-- `--run` refuses live mode on a provider whose venue is a stub
+- `run` refuses live mode on a provider whose venue is a stub
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
-  land), but `CreateComponents` still builds the stub, so `--bars` in live mode
+  land), but `CreateComponents` still builds the stub, so `bars` in live mode
   runs until the first order-related call fails with `kNotImplemented`.
 - Stream liveness is reconnect-only: `StreamQuotes`/`StreamBars` re-subscribe
   after disconnects, but nothing notices a half-open socket that quietly
@@ -102,7 +102,7 @@ the header of the code concerned.
 ## In progress: strategy system and risk gate
 
 Built and tested with fakes (206 tests). Not yet run against a live venue, and
-reachable from `kestrel_app --run` and `--backtest`.
+reachable from `kestrel_app run` and `backtest`.
 
 ### Done
 - [x] `Strategy` / `Context` / `Requirements` interface
@@ -115,8 +115,9 @@ reachable from `kestrel_app --run` and `--backtest`.
 - [x] `PnlTracker` as the single P&L implementation, used by both the paper
       venue and the risk gate
 - [x] `ReplayDataSource` and `RunBacktest`
-- [x] CLI: `--run <strategy>` and `--backtest <strategy> --from --to` in
-      `app/main.cpp`; SIGINT/SIGTERM stop the runner through a watch thread
+- [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
+      (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
+      runner through a watch thread
 - [x] Per-strategy risk limits (`[risk.<strategy>]` over `[risk]`), and
       `max_orders_per_day`, `max_consecutive_losses` and `max_drawdown`
 - [x] `[risk]` and `[strategy]` config sections (unknown keys are errors);
@@ -124,6 +125,12 @@ reachable from `kestrel_app --run` and `--backtest`.
 - [x] Live runs need `[risk]` limits and a non-stub venue, checked at startup
       (`ValidateForRun`); the daily-loss baseline is started at startup and a
       failure is fatal
+- [x] `CreateRunner` (factory) builds a ready-to-run runner and takes its
+      provider connection as an argument, so the paper, no-limits and
+      failed-baseline paths are tested with fakes; `LoadReplayData`
+      (backtest) and `types::ParseTimestamp` hold the logic the `backtest`
+      command used to carry; `cli_*` tests check the exit code and message
+      for bad arguments
 
 ### To finish
 - [ ] Close the risk gate's halt race: `Halt()` should hold the order lock or
@@ -132,8 +139,8 @@ reachable from `kestrel_app --run` and `--backtest`.
       live data source that is complete) and fix what that shakes out. (It
       starts, streams and stops cleanly; a long run that actually trades has
       not been done.)
-- [ ] `--run` does not cancel open orders on shutdown; decide whether it should
-- [ ] `--backtest` fetches bars from the provider on every run; load them from
+- [ ] `run` does not cancel open orders on shutdown; decide whether it should
+- [ ] `backtest` fetches bars from the provider on every run; load them from
       `BarStore` instead (see Backtesting and research)
 - [ ] Bound the runner's queue, or conflate quotes per symbol
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
@@ -212,8 +219,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 
 ### Engineering
 - [ ] Building components in the factory starts the paper venue's quote
-      stream as a side effect, so a `--bars`-only app run opens a WebSocket
-      it never uses; make starting the venue explicit
+      stream as a side effect, so `bars` and `run` open a WebSocket whether or
+      not they need it (`stream`, `stream-bars` and `backtest` already avoid
+      this by building only the data source); make starting the venue explicit
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.

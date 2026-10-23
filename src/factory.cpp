@@ -346,6 +346,52 @@ Result<void> ValidateForRun(const config::Configuration& cfg,
     return {};
 }
 
+namespace {
+
+std::unexpected<types::Error> WithContext(types::Error error,
+                                          std::string_view context) {
+    error.message = std::string(context) + ": " + error.message;
+    return std::unexpected(std::move(error));
+}
+
+}  // namespace
+
+Result<std::unique_ptr<strategy::Runner>> CreateRunner(
+    const std::string& strategy_name, const config::Configuration& cfg,
+    const ComponentsFactory& make_components) {
+    auto limits = ResolveRiskLimits(strategy_name, cfg);
+    if (!limits) {
+        return WithContext(limits.error(), "risk");
+    }
+    if (auto ok = ValidateForRun(cfg, *limits); !ok) {
+        return std::unexpected(ok.error());
+    }
+    auto strategy = CreateStrategy(strategy_name, cfg);
+    if (!strategy) {
+        return WithContext(strategy.error(), "strategy");
+    }
+    auto components = make_components(cfg);
+    if (!components) {
+        return WithContext(components.error(), "startup");
+    }
+
+    strategy::RunnerOptions options;
+    options.risk = *limits;
+    auto runner = std::make_unique<strategy::Runner>(
+        components->data_source,
+        std::shared_ptr<trading::TradingVenue>(std::move(components->venue)),
+        std::move(*strategy), options);
+    if (const auto gate = runner->RiskGate()) {
+        // The loss count starts here. If it cannot, trading without it would
+        // be trading without the limit.
+        if (auto baseline = gate->ResetDailyBaseline(); !baseline) {
+            return WithContext(baseline.error(),
+                               "cannot start the daily loss count");
+        }
+    }
+    return runner;
+}
+
 Result<Components> CreateComponents(
     const config::Configuration& configuration) {
     switch (configuration.GetProvider()) {

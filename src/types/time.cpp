@@ -36,6 +36,13 @@ bool Expect(std::string_view s, std::size_t& pos, char c) {
 
 }  // namespace
 
+Result<Timestamp> ParseTimestamp(std::string_view text) {
+    if (text.size() == 10) {
+        return ParseIso8601(std::string(text) + "T00:00:00Z");
+    }
+    return ParseIso8601(text);
+}
+
 Result<Timestamp> ParseIso8601(std::string_view text) {
     auto bad = [&] {
         return MakeError(ErrorCategory::kParse, "invalid ISO-8601 timestamp '" +

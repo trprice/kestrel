@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -7,6 +8,7 @@
 
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/strategy/runner.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/risk_gate.hpp"
 #include "kestrel/trading/trading_venue.hpp"
@@ -62,5 +64,22 @@ types::Result<std::optional<trading::RiskLimits>> ResolveRiskLimits(
 types::Result<void> ValidateForRun(
     const config::Configuration& configuration,
     const std::optional<trading::RiskLimits>& limits);
+
+// How CreateRunner gets its provider connection; CreateComponents by default.
+// Tests pass one that returns fakes.
+using ComponentsFactory =
+    std::function<types::Result<Components>(const config::Configuration&)>;
+
+// Builds everything `kestrel_app run` needs, ready for Runner::Run(): checks
+// the configuration may trade (ValidateForRun), resolves the strategy's risk
+// limits, builds the strategy, the provider connection (CreateComponents) and
+// a Runner with the risk gate when limits apply, and starts the gate's
+// daily-loss count. Any failure is returned, with a prefix saying which step
+// failed, and nothing is left running. The runner has no risk gate (see
+// Runner::RiskGate) when no limits apply, which is allowed only in paper mode.
+types::Result<std::unique_ptr<strategy::Runner>> CreateRunner(
+    const std::string& strategy_name,
+    const config::Configuration& configuration,
+    const ComponentsFactory& make_components = CreateComponents);
 
 }  // namespace kestrel

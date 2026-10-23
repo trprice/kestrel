@@ -1,6 +1,6 @@
 # Live Binance.US market data for ZEC/USDT, traded on the paper venue.
 # No credentials needed (market data is public).
-# Run: ./build/kestrel_app --config config/binanceus-zec.example.toml --bars 1h 6 --stream 15
+# Run: ./build/kestrel_app --config config/binanceus-zec.example.toml bars 1h 6
 
 [general]
 provider = "binanceus"
