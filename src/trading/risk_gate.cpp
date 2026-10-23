@@ -58,6 +58,9 @@ types::Result<void> RiskGatedVenue::StartLossCount() {
     mDay = DayOf(now);
     mFillCursor = now;
     mSeenFills.clear();
+    mConsecutiveLosses = 0;
+    mTotalRealized = Decimal();
+    mPeakEquity = Decimal();
     mCounting = true;
     return {};
 }
@@ -74,7 +77,28 @@ types::Result<std::vector<std::string>> RiskGatedVenue::Halt(
     return mVenue->CancelAll();
 }
 
-types::Result<std::optional<std::string>> RiskGatedVenue::CheckDailyLoss(
+void RiskGatedVenue::NewDay(std::chrono::sys_days day) {
+    mPnl.ResetRealized();
+    mConsecutiveLosses = 0;
+    mDay = day;
+}
+
+std::optional<Decimal> RiskGatedVenue::Unrealized(types::Timestamp now) const {
+    Decimal total;
+    for (const auto& position : mPnl.Positions()) {
+        if (position.quantity.Sign() == 0) {
+            continue;
+        }
+        const auto price = ReferencePriceFor(position.symbol, now);
+        if (!price) {
+            return std::nullopt;
+        }
+        total += position.quantity * (*price - position.average_price);
+    }
+    return total;
+}
+
+types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
     types::Timestamp now) {
     if (!mCounting) {
         if (auto started = StartLossCount(); !started) {
@@ -95,26 +119,69 @@ types::Result<std::optional<std::string>> RiskGatedVenue::CheckDailyLoss(
         }
         // A fill from a new day starts that day's count before it is applied.
         if (DayOf(fill.time) != mDay) {
-            mPnl.ResetRealized();
-            mDay = DayOf(fill.time);
+            NewDay(DayOf(fill.time));
         }
+        const Decimal before = mPnl.Realized(fill.symbol);
         mPnl.Apply(fill);
+        const Decimal gained = mPnl.Realized(fill.symbol) - before;
+        mTotalRealized += gained;
+        if (fill.side == Side::kSell) {
+            mConsecutiveLosses = gained.Sign() < 0 ? mConsecutiveLosses + 1 : 0;
+        }
         mFillCursor = std::max(mFillCursor, fill.time);
     }
     std::erase_if(mSeenFills, [this](const auto& seen) {
         return seen.second < mFillCursor;
     });
     if (DayOf(now) != mDay) {
-        mPnl.ResetRealized();
-        mDay = DayOf(now);
+        NewDay(DayOf(now));
     }
 
-    const Decimal loss = -mPnl.Realized();
-    if (loss >= *mLimits.max_daily_loss) {
-        return "daily loss limit reached (lost " + loss.ToString() +
-               ", limit " + mLimits.max_daily_loss->ToString() + ")";
+    if (mLimits.max_daily_loss) {
+        const Decimal loss = -mPnl.Realized();
+        if (loss >= *mLimits.max_daily_loss) {
+            return "daily loss limit reached (lost " + loss.ToString() +
+                   ", limit " + mLimits.max_daily_loss->ToString() + ")";
+        }
+    }
+    if (mLimits.max_consecutive_losses &&
+        mConsecutiveLosses >= *mLimits.max_consecutive_losses) {
+        return std::to_string(mConsecutiveLosses) +
+               " consecutive losing sells (limit " +
+               std::to_string(*mLimits.max_consecutive_losses) + ")";
+    }
+    if (mLimits.max_drawdown) {
+        // Fails closed: with something held that cannot be priced, the
+        // drawdown is unknown.
+        const auto unrealized = Unrealized(now);
+        if (!unrealized) {
+            return std::string(
+                "drawdown unknown: a held symbol has no current price");
+        }
+        const Decimal equity = mTotalRealized + *unrealized;
+        mPeakEquity = std::max(mPeakEquity, equity);
+        const Decimal drawdown = mPeakEquity - equity;
+        if (drawdown >= *mLimits.max_drawdown) {
+            return "drawdown limit reached (down " + drawdown.ToString() +
+                   " from the peak, limit " + mLimits.max_drawdown->ToString() +
+                   ")";
+        }
     }
     return std::nullopt;
+}
+
+std::optional<Decimal> RiskGatedVenue::ReferencePriceFor(
+    const types::Symbol& symbol, types::Timestamp now) const {
+    std::lock_guard lock(mPriceMutex);
+    auto it = mPrices.find(symbol);
+    if (it == mPrices.end()) {
+        return std::nullopt;
+    }
+    if (mLimits.max_price_age &&
+        now - it->second.time > *mLimits.max_price_age) {
+        return std::nullopt;
+    }
+    return it->second.price;
 }
 
 std::optional<Decimal> RiskGatedVenue::PriceFor(
@@ -125,16 +192,7 @@ std::optional<Decimal> RiskGatedVenue::PriceFor(
     if (request.stop_price) {
         return request.stop_price;
     }
-    std::lock_guard lock(mPriceMutex);
-    auto it = mPrices.find(request.symbol);
-    if (it == mPrices.end()) {
-        return std::nullopt;
-    }
-    if (mLimits.max_price_age &&
-        now - it->second.time > *mLimits.max_price_age) {
-        return std::nullopt;
-    }
-    return it->second.price;
+    return ReferencePriceFor(request.symbol, now);
 }
 
 types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
@@ -154,13 +212,24 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
     std::optional<std::string> blocked;
     if (mHalted) {
         blocked = "trading is halted";
-    } else if (mLimits.max_daily_loss) {
-        auto checked = CheckDailyLoss(now);
+    } else if (mLimits.max_daily_loss || mLimits.max_consecutive_losses ||
+               mLimits.max_drawdown) {
+        auto checked = CheckLosses(now);
         if (!checked) {
-            return Reject("could not work out the day's loss: " +
+            return Reject("could not work out the losses: " +
                           checked.error().ToString());
         }
         blocked = *checked;
+    }
+    if (mLimits.max_orders_per_day) {
+        if (DayOf(now) != mOrderDay) {
+            mOrderDay = DayOf(now);
+            mOrdersToday = 0;
+        }
+        if (!blocked && mOrdersToday >= *mLimits.max_orders_per_day) {
+            blocked = std::to_string(mOrdersToday) + " orders today (limit " +
+                      std::to_string(*mLimits.max_orders_per_day) + ")";
+        }
     }
 
     // Holdings are needed to tell whether a blocked order reduces a position
@@ -241,6 +310,9 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
                           " orders in the last minute");
         }
         mRecentOrders.push_back(now);
+    }
+    if (mLimits.max_orders_per_day) {
+        ++mOrdersToday;
     }
 
     return mVenue->PlaceOrder(request);

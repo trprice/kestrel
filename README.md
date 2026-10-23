@@ -22,10 +22,11 @@ live trading; a factory picks the right one from the config.
 | `RiskGatedVenue` (order and position size, open orders, order rate, daily loss, symbol allowlist, kill switch) | done, tested with fakes |
 | `ReplayDataSource` + `RunBacktest` (same `Runner`, paper venue, simulated clock) | done, tested with fakes |
 | Schwab data source; Kraken, Schwab and Binance.US trading venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real |
-| Running strategies and backtests from `kestrel_app`, indicators, more strategies, agent access | not started; see [TODO.md](TODO.md) |
+| `kestrel_app --run` and `--backtest`, `[risk]` and `[strategy]` config, strategy registry | done; `--run` has only been exercised briefly in paper mode on Binance.US |
+| Indicators, more strategies, agent access | not started; see [TODO.md](TODO.md) |
 
-The strategy, risk and backtest code is a library only so far: nothing in
-`kestrel_app` starts it yet, and it has not run against a live venue.
+The strategy, risk and backtest code has not run against a live venue, and
+`--run` in live mode is refused until a trading venue is implemented.
 
 Known limitations, work in progress and planned projects are tracked in
 [TODO.md](TODO.md).
@@ -96,6 +97,35 @@ REQUIRED` error, with the authorize URL, once it has expired.
 - `--bars` and `--stream` together: bars first, then the quote stream.
 
 The example above prints the last 24 hourly bars, then 30 seconds of quotes.
+
+### Strategies
+
+```sh
+./build/kestrel_app -c config/kestrel.toml --backtest sma_crossover --from 2026-09-01 --to 2026-10-01
+./build/kestrel_app -c config/kestrel.toml --run sma_crossover
+```
+
+- `--backtest <strategy> --from <date> --to <date>` fetches the strategy's
+  bars (plus its warmup) from the provider, replays them through the same
+  `Runner` and a paper venue using `[paper]`, and prints the fills, positions
+  and balances. `--to` is exclusive; dates are `YYYY-MM-DD` or ISO 8601 UTC.
+- `--run <strategy>` trades on live data through the paper or live venue until
+  Ctrl-C or SIGTERM (a second signal exits immediately). If `[risk]` sets any
+  limit, orders go through the risk gate, and the daily-loss count starts at
+  startup. Without `[risk]` it warns and trades unchecked in paper mode. Live
+  mode is refused without `[risk]`, and on any provider whose trading venue is
+  still a stub (currently all of them).
+- Risk limits come from `[risk]`, with `[risk.<strategy>]` laid over it key by
+  key for that strategy (a section naming an unknown strategy is an error).
+  Besides the size, rate and daily-loss limits, `max_orders_per_day`,
+  `max_consecutive_losses` and `max_drawdown` suit a trend follower like
+  `sma_crossover`. When one of the loss, drawdown or order-count limits is
+  hit, only orders that reduce a position are allowed; the gate does not close
+  the position itself.
+- The strategy's parameters come from `[strategy]` in the config. Unknown
+  parameters and unknown `[risk]` keys are errors. `sma_crossover` takes
+  `symbol` and `quantity` (required), `timeframe` (`1h`), `fast_period` (10)
+  and `slow_period` (30); the symbol must be listed in `[general] symbols`.
 
 ## Database
 

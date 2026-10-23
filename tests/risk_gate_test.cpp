@@ -221,6 +221,100 @@ TEST_F(RiskGateTest, DailyLossHaltsNewPositionsButNotExits) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1.1")));
 }
 
+TEST_F(RiskGateTest, OrdersPerDayBlocksEntriesButNotExitsUntilTomorrow) {
+    limits.max_orders_per_day = 2;
+    Build();
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    ExpectRejected(Market(Side::kBuy, "1"));
+
+    venue->positions = {PositionOf("2")};
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "2")));  // exit still works
+    ExpectRejected(Market(Side::kBuy, "1"));
+
+    now += std::chrono::hours(24);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+TEST_F(RiskGateTest, ConsecutiveLossesBlockEntriesUntilAWinOrANewDay) {
+    limits.max_consecutive_losses = 2;
+    Build();  // starts flat
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    auto trade = [&](const char* id, Side side, const char* price) {
+        now += std::chrono::seconds(1);
+        venue->fills.push_back(FillOf(id, side, "1", price, now));
+    };
+    trade("b1", Side::kBuy, "100");
+    trade("s1", Side::kSell, "90");  // loss 1
+    trade("b2", Side::kBuy, "100");
+    trade("s2", Side::kSell, "110");  // a win resets the count
+    trade("b3", Side::kBuy, "100");
+    trade("s3", Side::kSell, "95");  // loss 1 again
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+
+    trade("b4", Side::kBuy, "100");
+    trade("s4", Side::kSell, "99");  // loss 2: at the limit
+    ExpectRejected(Market(Side::kBuy, "1"));
+
+    // The count lapses with the UTC day.
+    now += std::chrono::hours(24);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+TEST_F(RiskGateTest, ConsecutiveLossesStillAllowAnExit) {
+    limits.max_consecutive_losses = 1;
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("s1", Side::kSell, "1", "90", now)};
+    venue->positions = {HoldingOf("1", "100")};  // still holds some
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+}
+
+TEST_F(RiskGateTest, DrawdownIsMeasuredFromThePeakIncludingUnrealized) {
+    limits.max_drawdown = D("50");
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("130"));  // +30 unrealized: new peak
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    gate->NoteReferencePrice(kSymbol, D("85"));  // -15; 45 below the peak
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    gate->NoteReferencePrice(kSymbol, D("79"));  // 51 below the peak
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));  // exit is allowed
+}
+
+TEST_F(RiskGateTest, DrawdownCountsRealizedLossesAndDoesNotResetAtMidnight) {
+    limits.max_drawdown = D("20");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("b1", Side::kBuy, "1", "100", now),
+                    FillOf("s1", Side::kSell, "1", "85", now)};  // lost 15
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+
+    now += std::chrono::hours(24);
+    venue->fills.push_back(FillOf("b2", Side::kBuy, "1", "100", now));
+    venue->fills.push_back(FillOf("s2", Side::kSell, "1", "95", now));  // -5
+    ExpectRejected(Market(Side::kBuy, "1"));  // 20 down in all, over two days
+}
+
+TEST_F(RiskGateTest, DrawdownFailsClosedWithoutAPriceForWhatIsHeld) {
+    limits.max_drawdown = D("50");
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
 TEST_F(RiskGateTest, LossesOnPositionsThatAreNowClosedStillCount) {
     limits.max_daily_loss = D("50");
     Build();  // starts flat

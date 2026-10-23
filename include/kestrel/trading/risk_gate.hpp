@@ -36,6 +36,24 @@ struct RiskLimits {
     // worked out by the gate from the venue's fills (see PnlTracker), not read
     // from Position::realized_pnl.
     std::optional<types::Decimal> max_daily_loss;
+    // Orders that reach the venue in one UTC day. Once reached, only orders
+    // that reduce a position are allowed until the next day, so a strategy
+    // that flips in and out of a whipsawing market cannot churn fees away.
+    std::optional<std::size_t> max_orders_per_day;
+    // Consecutive losing sells (a sell fill whose realized P&L, net of its
+    // fee, is negative; a winning sell resets the count, as does a new UTC
+    // day or ResetDailyBaseline). Once reached, only orders that reduce a
+    // position are allowed until the count resets. A sell that fills in
+    // several pieces counts each losing piece.
+    std::optional<std::size_t> max_consecutive_losses;
+    // Largest fall of the strategy's equity from its peak, in the quote
+    // asset. Equity is realized P&L (net of fees) since ResetDailyBaseline
+    // plus the unrealized P&L of what is held, valued at the last reference
+    // price. It is measured when an order is attempted, not continuously, so
+    // a peak or trough between orders is not seen. Once reached, only orders
+    // that reduce a position are allowed; the gate cannot close the position
+    // for the strategy. Does not reset at midnight.
+    std::optional<types::Decimal> max_drawdown;
     // Empty means any symbol.
     std::set<types::Symbol> allowed_symbols;
     // Reject orders priced from a reference price older than this. Unset
@@ -58,7 +76,8 @@ struct RiskLimits {
 // order is rejected whenever a notional limit is set.
 //
 // An order that reduces a position (a sell of no more than is held) is the
-// only kind allowed while trading is halted or the daily loss limit is hit.
+// only kind allowed while trading is halted or a loss, drawdown or order-count
+// limit is hit.
 //
 // Thread-safe. Orders are checked and placed one at a time, so two concurrent
 // orders cannot together exceed a limit; that means the venue call is made
@@ -120,9 +139,15 @@ class RiskGatedVenue : public TradingVenue {
     // All require mMutex.
     types::Result<void> StartLossCount();
     // Brings the P&L up to date with the venue's fills and returns why the
-    // daily loss limit blocks trading, if it does.
-    types::Result<std::optional<std::string>> CheckDailyLoss(
-        types::Timestamp now);
+    // daily loss, consecutive loss or drawdown limit blocks trading, if one
+    // does.
+    types::Result<std::optional<std::string>> CheckLosses(types::Timestamp now);
+    // The unrealized P&L of everything held, or nullopt if a held symbol has
+    // no usable reference price.
+    std::optional<types::Decimal> Unrealized(types::Timestamp now) const;
+    void NewDay(std::chrono::sys_days day);
+    std::optional<types::Decimal> ReferencePriceFor(const types::Symbol& symbol,
+                                                    types::Timestamp now) const;
     std::optional<types::Decimal> PriceFor(const types::OrderRequest& request,
                                            types::Timestamp now) const;
 
@@ -143,6 +168,11 @@ class RiskGatedVenue : public TradingVenue {
     bool mCounting = false;
     PnlTracker mPnl;
     std::chrono::sys_days mDay{};
+    std::size_t mConsecutiveLosses = 0;
+    types::Decimal mTotalRealized;  // since the baseline; not reset daily
+    types::Decimal mPeakEquity;
+    std::size_t mOrdersToday = 0;
+    std::chrono::sys_days mOrderDay{};
     types::Timestamp mFillCursor;
     std::map<std::string, types::Timestamp> mSeenFills;
 };

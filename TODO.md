@@ -22,14 +22,19 @@ the header of the code concerned.
   `SmaCrossover` now handles an acknowledgement that is already closed
   (`kExpired`, `kCancelled`, `kRejected`), but a later asynchronous rejection
   still needs the `OnOrderUpdate` work below.
-- `Stop()` is documented as signal-handler friendly, but it pushes onto the
-  queue through a mutex and condition variable, which is not
-  async-signal-safe. The planned SIGINT/SIGTERM wiring should use a self-pipe
-  or a small watch thread instead of calling `Stop()` from the handler.
+- `Stop()` is not async-signal-safe (it takes a mutex). `kestrel_app --run`
+  calls it from a watch thread that collects SIGINT/SIGTERM with
+  `sigtimedwait`; any other driver must do the same.
 
 ### Risk gate (`trading/risk_gate.hpp`)
 - Optional in `RunnerOptions`. Nothing forces it on for live trading.
-- Daily loss is summed across symbols, so they must share a quote asset.
+- Daily loss and drawdown are summed across symbols, so they must share a
+  quote asset.
+- `max_drawdown` is sampled when an order is attempted: a peak or trough
+  between orders is not seen. It and the other loss limits block entries only;
+  they do not close a position that is already open.
+- `max_consecutive_losses` counts losing sell fills, so a sell that fills in
+  several pieces counts each losing piece.
 - Daily loss counts only fills at or after the baseline call, relying on the
   venue's and the gate's clocks roughly agreeing. A fill landing between the
   positions snapshot and the baseline time is missed.
@@ -84,10 +89,10 @@ the header of the code concerned.
   `kNotImplemented`.
 - The Schwab data source is a stub.
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
-- Live mode builds the stub venues anyway: startup only checks credentials,
-  so `mode = "live"` on Kraken, Schwab or Binance.US runs until the first
-  order fails with `kNotImplemented`. The factory should refuse to build a
-  stub venue for live mode.
+- `--run` refuses live mode on a provider whose venue is a stub
+  (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
+  land), but `CreateComponents` still builds the stub, so `--bars` in live mode
+  runs until the first order-related call fails with `kNotImplemented`.
 - Stream liveness is reconnect-only: `StreamQuotes`/`StreamBars` re-subscribe
   after disconnects, but nothing notices a half-open socket that quietly
   stops delivering, or a feed gone stale. The health-check item under
@@ -97,7 +102,7 @@ the header of the code concerned.
 ## In progress: strategy system and risk gate
 
 Built and tested with fakes (206 tests). Not yet run against a live venue, and
-not yet reachable from the command line.
+reachable from `kestrel_app --run` and `--backtest`.
 
 ### Done
 - [x] `Strategy` / `Context` / `Requirements` interface
@@ -110,24 +115,26 @@ not yet reachable from the command line.
 - [x] `PnlTracker` as the single P&L implementation, used by both the paper
       venue and the risk gate
 - [x] `ReplayDataSource` and `RunBacktest`
+- [x] CLI: `--run <strategy>` and `--backtest <strategy> --from --to` in
+      `app/main.cpp`; SIGINT/SIGTERM stop the runner through a watch thread
+- [x] Per-strategy risk limits (`[risk.<strategy>]` over `[risk]`), and
+      `max_orders_per_day`, `max_consecutive_losses` and `max_drawdown`
+- [x] `[risk]` and `[strategy]` config sections (unknown keys are errors);
+      strategy registry (`CreateStrategy`) in `factory.cpp`
+- [x] Live runs need `[risk]` limits and a non-stub venue, checked at startup
+      (`ValidateForRun`); the daily-loss baseline is started at startup and a
+      failure is fatal
 
 ### To finish
-- [ ] CLI: `--run <strategy>` and `--backtest` in `app/main.cpp`, with
-      SIGINT/SIGTERM calling `Runner::Stop()` (from a watch thread or
-      self-pipe; `Stop()` itself is not async-signal-safe)
-- [ ] Config: a `[risk]` section in the TOML (and a `[strategy]` section for
-      parameters), parsed into `RiskLimits`
-- [ ] Make the risk gate mandatory for live mode (refuse to run live without
-      limits set)
-- [ ] Refuse to start live mode on a provider whose trading venue is still a
-      stub, at startup rather than at the first order
 - [ ] Close the risk gate's halt race: `Halt()` should hold the order lock or
       re-cancel open orders after an in-flight placement lands
-- [ ] Strategy registry in `factory.cpp`, so strategies are chosen by name
-- [ ] Call `ResetDailyBaseline()` at startup in the app, and treat failure as
-      fatal
 - [ ] Run the runner against Binance.US data end to end in paper mode (the only
-      live data source that is complete) and fix what that shakes out
+      live data source that is complete) and fix what that shakes out. (It
+      starts, streams and stops cleanly; a long run that actually trades has
+      not been done.)
+- [ ] `--run` does not cancel open orders on shutdown; decide whether it should
+- [ ] `--backtest` fetches bars from the provider on every run; load them from
+      `BarStore` instead (see Backtesting and research)
 - [ ] Bound the runner's queue, or conflate quotes per symbol
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
@@ -183,8 +190,12 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 
 ### Risk
 - [ ] Portfolio-level limits (total exposure across symbols, concentration)
-- [ ] Per-strategy limits when several strategies share a venue
-- [ ] Drawdown-based kill switch, in addition to the daily loss limit
+- [ ] Drawdown that is measured continuously (the `max_drawdown` limit is
+      sampled at order attempts only), and a version that halts and closes
+      the position instead of only blocking entries
+- [ ] Stop-loss support: a per-position loss limit (`max_loss_per_position`)
+      and a risk-per-trade percentage need orders that carry a stop, which
+      `SmaCrossover` does not place
 - [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
       reports that use them
 

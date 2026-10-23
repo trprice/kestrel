@@ -53,7 +53,8 @@ class Runner : private Context {
     // problems are logged and the loop carries on. Call once.
     types::Result<void> Run();
 
-    // Thread-safe and signal-handler friendly. Events already queued are
+    // Thread-safe, but not async-signal-safe (it takes a mutex): call it from
+    // a watch thread, not a signal handler. Events already queued are
     // processed first. May be called before Run().
     void Stop();
 

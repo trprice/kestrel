@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -11,6 +12,7 @@
 #include "kestrel/config/credentials.hpp"
 #include "kestrel/db/database.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
+#include "kestrel/trading/risk_gate.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/symbol.hpp"
 
@@ -32,12 +34,21 @@ struct LoadOptions {
     std::filesystem::path base_dir;
 };
 
+// The [strategy] table: parameters for whichever strategy --run or --backtest
+// names. Values are kept as text; the strategy registry (see factory.hpp)
+// parses and validates them.
+using StrategyParams = std::map<std::string, std::string>;
+
 // Settings shared by every provider.
 struct CommonSettings {
     Mode mode = Mode::kPaper;
     std::vector<types::Symbol> symbols;
     trading::PaperOptions paper;
     std::optional<db::ConnectionOptions> database;  // absent: no [database]
+    std::optional<trading::RiskLimits> risk;        // absent: no [risk]
+    // [risk.<strategy>]: limits that replace the [risk] ones key by key.
+    std::map<std::string, trading::RiskLimits> strategy_risk;
+    StrategyParams strategy;  // empty: no [strategy]
 };
 
 // Base class for per-provider configuration, loaded from a TOML file:
@@ -61,6 +72,29 @@ struct CommonSettings {
 //   maker_fee_bps = 25
 //   taker_fee_bps = 40
 //   slippage_bps  = 5
+//
+//   [risk]                       # optional; see RiskLimits. Required for live
+//                                # runs. A [risk] table with no limits is
+//                                # treated as absent.
+//   max_order_notional    = "1000"
+//   max_position_notional = "5000"
+//   max_open_orders       = 5
+//   max_orders_per_minute = 10
+//   max_daily_loss        = "250"
+//   allowed_symbols       = ["BTC/USD"]
+//   max_price_age_ms      = 5000
+//   max_orders_per_day    = 20
+//   max_consecutive_losses = 3
+//   max_drawdown          = "400"
+//
+//   [risk.sma_crossover]         # optional per-strategy overrides: each key
+//   max_orders_per_day = 6       # given here replaces the [risk] value for
+//                                # that strategy only (allowed_symbols
+//                                # replaces the whole list)
+//
+//   [strategy]                   # optional; parameters, meaning depends on
+//   symbol = "BTC/USD"           # the strategy named on the command line
+//   ...
 class Configuration {
    public:
     virtual ~Configuration() = default;
@@ -74,9 +108,22 @@ class Configuration {
     const std::optional<db::ConnectionOptions>& GetDatabase() const {
         return mCommon.database;
     }
+    // The [risk] limits that apply to every strategy.
+    const std::optional<trading::RiskLimits>& GetRiskLimits() const {
+        return mCommon.risk;
+    }
+    // [risk.<strategy>] tables by strategy name.
+    const std::map<std::string, trading::RiskLimits>& GetRiskOverrides() const {
+        return mCommon.strategy_risk;
+    }
+    // The limits for one strategy: [risk] with that strategy's overrides laid
+    // over it. Absent when neither sets a limit.
+    std::optional<trading::RiskLimits> GetRiskLimits(
+        const std::string& strategy) const;
     const trading::PaperOptions& GetPaperOptions() const {
         return mCommon.paper;
     }
+    const StrategyParams& GetStrategyParams() const { return mCommon.strategy; }
 
    protected:
     explicit Configuration(CommonSettings common)

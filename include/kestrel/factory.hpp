@@ -1,9 +1,14 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/strategy/strategy.hpp"
+#include "kestrel/trading/risk_gate.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
 namespace kestrel {
@@ -23,5 +28,39 @@ struct Components {
 // Live mode fails with kAuth if the provider's credentials are not configured.
 types::Result<Components> CreateComponents(
     const config::Configuration& configuration);
+
+// Just the provider's DataSource, for work that needs no venue (backtests).
+// Unlike CreateComponents it starts no streams.
+types::Result<std::shared_ptr<data::DataSource>> CreateDataSource(
+    const config::Configuration& configuration);
+
+// Names accepted by CreateStrategy.
+std::vector<std::string> StrategyNames();
+
+// Builds the named strategy from the configuration's [strategy] parameters.
+// kNotFound for an unknown name; kInvalidArgument for a missing, malformed or
+// unknown parameter, or a symbol that is not in [general] symbols.
+//
+//   sma_crossover: symbol (required), quantity (required), timeframe (1h),
+//                  fast_period (10), slow_period (30)
+types::Result<std::unique_ptr<strategy::Strategy>> CreateStrategy(
+    const std::string& name, const config::Configuration& configuration);
+
+// The risk limits for the named strategy: [risk] with [risk.<strategy>]
+// overrides laid over it (see Configuration::GetRiskLimits). Absent when no
+// limit applies. kInvalidArgument if a [risk.<name>] section names a strategy
+// that does not exist, since a misspelled section would otherwise be ignored
+// and its limits silently not applied.
+types::Result<std::optional<trading::RiskLimits>> ResolveRiskLimits(
+    const std::string& strategy, const config::Configuration& configuration);
+
+// Checks that the configuration may be used to trade (--run) with `limits`
+// (from ResolveRiskLimits). Paper mode always passes. Live mode fails with
+// kInvalidArgument unless `limits` is set, and with kNotImplemented if the
+// provider's trading venue is still a stub; both are refused here, at
+// startup, rather than at the first order.
+types::Result<void> ValidateForRun(
+    const config::Configuration& configuration,
+    const std::optional<trading::RiskLimits>& limits);
 
 }  // namespace kestrel

@@ -196,6 +196,209 @@ TEST(Factory, LiveModeBuildsTheProviderVenue) {
     EXPECT_EQ(balances.error().category, types::ErrorCategory::kNotImplemented);
 }
 
+std::string WithTables(const std::string& tables, const char* mode = "paper") {
+    return std::string("[general]\nmode='") + mode +
+           "'\nsymbols=['BTC/USD','ETH/USD']\n" + tables;
+}
+
+TEST(Config, RiskSectionIsParsedIntoLimits) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_order_notional='1000'\n"
+                   "max_position_notional=5000\nmax_open_orders=3\n"
+                   "max_orders_per_minute=10\nmax_daily_loss=250.5\n"
+                   "allowed_symbols=['btc-usd']\nmax_price_age_ms=5000\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    ASSERT_TRUE(cfg->GetRiskLimits().has_value());
+    const auto& r = *cfg->GetRiskLimits();
+    EXPECT_EQ(r.max_order_notional, D("1000"));
+    EXPECT_EQ(r.max_position_notional, D("5000"));
+    EXPECT_EQ(r.max_open_orders, 3u);
+    EXPECT_EQ(r.max_orders_per_minute, 10u);
+    EXPECT_EQ(r.max_daily_loss, D("250.5"));
+    EXPECT_EQ(r.allowed_symbols, std::set<types::Symbol>{"BTC/USD"});
+    EXPECT_EQ(r.max_price_age, std::chrono::milliseconds(5000));
+}
+
+TEST(Config, RiskSectionRejectsTyposAndBadValues) {
+    for (const char* bad :
+         {"[risk]\nmax_order_notinal='1'\n",
+          "[risk]\nmax_order_notional='-1'\n", "[risk]\nmax_order_notional=0\n",
+          "[risk]\nmax_open_orders=0\n", "[risk]\nmax_open_orders='3'\n",
+          "[risk]\nallowed_symbols='BTC/USD'\n"}) {
+        EXPECT_FALSE(
+            config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv())
+                .has_value())
+            << bad;
+    }
+}
+
+TEST(Config, RiskSectionParsesTheStrategyLimits) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_orders_per_day=20\n"
+                   "max_consecutive_losses=3\nmax_drawdown='400'\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    const auto& r = *cfg->GetRiskLimits();
+    EXPECT_EQ(r.max_orders_per_day, 20u);
+    EXPECT_EQ(r.max_consecutive_losses, 3u);
+    EXPECT_EQ(r.max_drawdown, D("400"));
+}
+
+TEST(Config, PerStrategyRiskOverridesTheGlobalLimitsKeyByKey) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_order_notional='1000'\nmax_open_orders=5\n"
+                   "allowed_symbols=['BTC/USD','ETH/USD']\n"
+                   "[risk.sma_crossover]\nmax_open_orders=1\n"
+                   "max_orders_per_day=6\nallowed_symbols=['BTC/USD']\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    // The global limits are untouched.
+    EXPECT_EQ(cfg->GetRiskLimits()->max_open_orders, 5u);
+    EXPECT_FALSE(cfg->GetRiskLimits()->max_orders_per_day.has_value());
+
+    const auto sma = cfg->GetRiskLimits("sma_crossover");
+    ASSERT_TRUE(sma.has_value());
+    EXPECT_EQ(sma->max_order_notional, D("1000"));  // inherited
+    EXPECT_EQ(sma->max_open_orders, 1u);            // overridden
+    EXPECT_EQ(sma->max_orders_per_day, 6u);         // added
+    EXPECT_EQ(sma->allowed_symbols, std::set<types::Symbol>{"BTC/USD"});
+
+    // A strategy without a section gets the global limits.
+    EXPECT_EQ(cfg->GetRiskLimits("other")->max_open_orders, 5u);
+}
+
+TEST(Config, PerStrategyRiskWorksWithoutAGlobalSection) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk.sma_crossover]\nmax_open_orders=2\n"), NoEnv());
+    ASSERT_OK(cfg);
+    EXPECT_FALSE(cfg->GetRiskLimits().has_value());
+    EXPECT_EQ(cfg->GetRiskLimits("sma_crossover")->max_open_orders, 2u);
+    EXPECT_FALSE(cfg->GetRiskLimits("other").has_value());
+}
+
+TEST(Config, PerStrategyRiskIsCheckedLikeTheGlobalSection) {
+    for (const char* bad :
+         {"[risk.sma_crossover]\nmax_open_ordrs=1\n",
+          "[risk.sma_crossover]\nmax_open_orders=0\n",
+          "[risk.sma_crossover.deeper]\nmax_open_orders=1\n"}) {
+        auto cfg =
+            config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv());
+        EXPECT_FALSE(cfg.has_value()) << bad;
+    }
+}
+
+TEST(Factory, ResolveRiskLimitsRefusesAnUnknownStrategySection) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_open_orders=5\n"
+                   "[risk.sma_crosover]\nmax_open_orders=1\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    auto limits = ResolveRiskLimits("sma_crossover", *cfg);
+    ASSERT_FALSE(limits.has_value());
+    EXPECT_EQ(limits.error().category, types::ErrorCategory::kInvalidArgument);
+
+    auto good = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_open_orders=5\n"
+                   "[risk.sma_crossover]\nmax_open_orders=1\n"),
+        NoEnv());
+    ASSERT_OK(good);
+    auto resolved = ResolveRiskLimits("sma_crossover", *good);
+    ASSERT_OK(resolved);
+    EXPECT_EQ((*resolved)->max_open_orders, 1u);
+}
+
+TEST(Config, EmptyOrMissingRiskMeansNoLimits) {
+    auto none = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
+    ASSERT_OK(none);
+    EXPECT_FALSE(none->GetRiskLimits().has_value());
+    auto empty =
+        config::BinanceUSConfiguration::Parse(WithTables("[risk]\n"), NoEnv());
+    ASSERT_OK(empty);
+    EXPECT_FALSE(empty->GetRiskLimits().has_value());
+}
+
+TEST(Config, StrategyParametersKeepTheirText) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[strategy]\nsymbol='BTC/USD'\nfast_period=5\n"
+                   "quantity=0.01\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    EXPECT_EQ(cfg->GetStrategyParams().at("symbol"), "BTC/USD");
+    EXPECT_EQ(cfg->GetStrategyParams().at("fast_period"), "5");
+    EXPECT_EQ(cfg->GetStrategyParams().at("quantity"), "0.01");
+    EXPECT_FALSE(config::BinanceUSConfiguration::Parse(
+                     WithTables("[strategy]\nsymbol=['a']\n"), NoEnv())
+                     .has_value());
+}
+
+TEST(Factory, CreateStrategyBuildsSmaCrossoverFromParameters) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[strategy]\nsymbol='eth-usd'\nquantity='0.5'\n"
+                   "timeframe='4h'\nfast_period=3\nslow_period=8\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    auto strategy = CreateStrategy("sma_crossover", *cfg);
+    ASSERT_OK(strategy);
+    const auto needs = (*strategy)->Needs();
+    EXPECT_EQ(needs.symbols, std::vector<types::Symbol>{"ETH/USD"});
+    EXPECT_EQ(needs.bar_timeframes,
+              std::vector<types::Timeframe>{types::Timeframe::kH4});
+    EXPECT_EQ(needs.warmup_bars, 9u);
+}
+
+TEST(Factory, CreateStrategyRejectsBadInput) {
+    auto make = [](const char* strategy_table) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(strategy_table), NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("sma_crossover", *cfg);
+    };
+    EXPECT_EQ(make("").error().category,
+              types::ErrorCategory::kInvalidArgument);  // no symbol
+    EXPECT_FALSE(make("[strategy]\nsymbol='BTC/USD'\n").has_value());  // qty
+    EXPECT_FALSE(
+        make("[strategy]\nsymbol='SOL/USD'\nquantity=1\n").has_value());
+    EXPECT_FALSE(make("[strategy]\nsymbol='BTC/USD'\nquantity=1\n"
+                      "fast_perod=3\n")
+                     .has_value());
+    EXPECT_FALSE(make("[strategy]\nsymbol='BTC/USD'\nquantity=1\n"
+                      "fast_period=30\nslow_period=10\n")
+                     .has_value());
+    EXPECT_FALSE(
+        make("[strategy]\nsymbol='BTC/USD'\nquantity=0\n").has_value());
+    EXPECT_FALSE(make("[strategy]\nsymbol='BTC/USD'\nquantity=1\n"
+                      "timeframe='7x'\n")
+                     .has_value());
+
+    auto cfg = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
+    ASSERT_OK(cfg);
+    EXPECT_EQ(CreateStrategy("nope", *cfg).error().category,
+              types::ErrorCategory::kNotFound);
+}
+
+TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {
+    auto paper = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
+    ASSERT_OK(paper);
+    EXPECT_TRUE(ValidateForRun(*paper, paper->GetRiskLimits()).has_value());
+
+    const auto env = NoEnv({{"KESTREL_BINANCEUS_API_KEY", "k"},
+                            {"KESTREL_BINANCEUS_API_SECRET", "s"}});
+    auto no_risk =
+        config::BinanceUSConfiguration::Parse(WithTables("", "live"), env);
+    ASSERT_OK(no_risk);
+    auto refused = ValidateForRun(*no_risk, no_risk->GetRiskLimits());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().category, types::ErrorCategory::kInvalidArgument);
+
+    auto stub = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_open_orders=1\n", "live"), env);
+    ASSERT_OK(stub);
+    auto stubbed = ValidateForRun(*stub, stub->GetRiskLimits());
+    ASSERT_FALSE(stubbed.has_value());
+    EXPECT_EQ(stubbed.error().category, types::ErrorCategory::kNotImplemented);
+}
+
 TEST(SchwabTokenStore, SaveLoadRoundTripAndPermissions) {
     const auto dir =
         std::filesystem::temp_directory_path() / "kestrel-token-test";

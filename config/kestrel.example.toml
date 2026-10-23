@@ -14,6 +14,33 @@ taker_fee_bps = 40             # 0.40%
 slippage_bps  = 5              # market orders fill 0.05% through the touch
 cap_limit_fills_at_quote_size = false
 
+[risk]                         # optional in paper mode, required for live runs
+# Every limit is optional; omit one to leave it unchecked. Amounts are in the
+# quote asset. Unknown keys are errors.
+# max_order_notional    = "1000"
+# max_position_notional = "5000"
+# max_open_orders       = 5
+# max_orders_per_minute = 10
+# max_daily_loss        = "250"
+# allowed_symbols       = ["BTC/USD"]
+# max_price_age_ms      = 5000
+# max_orders_per_day    = 20      # then only position-reducing orders
+# max_consecutive_losses = 3      # losing sells in a row; resets on a win or a new UTC day
+# max_drawdown          = "400"   # fall from peak equity (realized + unrealized), checked at order time
+
+# Per-strategy overrides: keys given here replace the [risk] values for that
+# strategy only. The name must be a real strategy.
+# [risk.sma_crossover]
+# max_orders_per_day     = 6
+# max_consecutive_losses = 2
+
+[strategy]                     # parameters for --run / --backtest sma_crossover
+# symbol      = "BTC/USD"      # must be in [general] symbols
+# quantity    = "0.001"        # base-asset units per order
+# timeframe   = "1h"
+# fast_period = 10
+# slow_period = 30
+
 [kraken]
 # rest_url = "https://api.kraken.com"
 # ws_url   = "wss://ws.kraken.com/v2"

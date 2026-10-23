@@ -160,6 +160,39 @@ class ConfigParser {
             c.database = std::move(*db);
         }
 
+        if (const auto* risk = root["risk"].as_table()) {
+            auto limits = Risk(*risk, "[risk]", true);
+            if (!limits) {
+                return std::unexpected(limits.error());
+            }
+            c.risk = std::move(*limits);
+            for (const auto& [name, node] : *risk) {
+                if (!node.is_table()) {
+                    continue;
+                }
+                const std::string section =
+                    "[risk." + std::string(name.str()) + "]";
+                auto overrides = Risk(*node.as_table(), section, false);
+                if (!overrides) {
+                    return std::unexpected(overrides.error());
+                }
+                if (*overrides) {
+                    c.strategy_risk[std::string(name.str())] =
+                        std::move(**overrides);
+                }
+            }
+        }
+
+        if (const auto* strategy = root["strategy"].as_table()) {
+            for (const auto& [key, node] : *strategy) {
+                auto text = ParamText(node, "[strategy] " + std::string(key));
+                if (!text) {
+                    return std::unexpected(text.error());
+                }
+                c.strategy[std::string(key.str())] = std::move(*text);
+            }
+        }
+
         if (const auto* paper = root["paper"].as_table()) {
             auto& p = c.paper;
             if (const auto* balances =
@@ -201,6 +234,144 @@ class ConfigParser {
             }
         }
         return c;
+    }
+
+    // A scalar TOML value as the text a strategy parses.
+    static Result<std::string> ParamText(const toml::node& node,
+                                         const std::string& name) {
+        if (const auto s = node.value<std::string>()) {
+            return *s;
+        }
+        if (node.is_integer() || node.is_floating_point()) {
+            auto d = NumberNode(node, name);
+            if (!d) {
+                return std::unexpected(d.error());
+            }
+            return d->ToString();
+        }
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         name + " must be a string or a number");
+    }
+
+    static Result<std::optional<Decimal>> RiskAmount(const toml::table& t,
+                                                     const std::string& where,
+                                                     const char* key) {
+        const auto* node = t.get(key);
+        if (!node) {
+            return std::optional<Decimal>{};
+        }
+        auto amount = NumberNode(*node, where + " " + key);
+        if (!amount) {
+            return std::unexpected(amount.error());
+        }
+        if (amount->Sign() <= 0) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             where + " " + key + " must be positive");
+        }
+        return std::optional<Decimal>(*amount);
+    }
+
+    static Result<std::optional<std::size_t>> RiskCount(
+        const toml::table& t, const std::string& where, const char* key) {
+        const auto* node = t.get(key);
+        if (!node) {
+            return std::optional<std::size_t>{};
+        }
+        const auto n =
+            node->is_integer() ? node->value<std::int64_t>() : std::nullopt;
+        if (!n || *n < 1) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             where + " " + key + " must be a positive integer");
+        }
+        return std::optional<std::size_t>(static_cast<std::size_t>(*n));
+    }
+
+    // Unknown keys are errors: a misspelled limit would otherwise be silently
+    // unset, which is the wrong way for a safety setting to fail. In the
+    // global table, sub-tables are the per-strategy sections, read separately.
+    static Result<std::optional<trading::RiskLimits>> Risk(
+        const toml::table& section, const std::string& where,
+        bool allow_tables) {
+        static constexpr std::string_view kKeys[] = {
+            "max_order_notional",     "max_position_notional",
+            "max_open_orders",        "max_orders_per_minute",
+            "max_daily_loss",         "allowed_symbols",
+            "max_price_age_ms",       "max_orders_per_day",
+            "max_consecutive_losses", "max_drawdown"};
+        for (const auto& [key, node] : section) {
+            if (allow_tables && node.is_table()) {
+                continue;
+            }
+            bool known = false;
+            for (auto k : kKeys) {
+                known = known || k == key.str();
+            }
+            if (!known) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 where + " has an unknown key '" +
+                                     std::string(key.str()) + "'");
+            }
+        }
+        trading::RiskLimits limits;
+        auto order = RiskAmount(section, where, "max_order_notional");
+        auto position = RiskAmount(section, where, "max_position_notional");
+        auto loss = RiskAmount(section, where, "max_daily_loss");
+        auto open = RiskCount(section, where, "max_open_orders");
+        auto rate = RiskCount(section, where, "max_orders_per_minute");
+        auto age = RiskCount(section, where, "max_price_age_ms");
+        auto per_day = RiskCount(section, where, "max_orders_per_day");
+        auto streak = RiskCount(section, where, "max_consecutive_losses");
+        auto drawdown = RiskAmount(section, where, "max_drawdown");
+        if (!order) return std::unexpected(order.error());
+        if (!position) return std::unexpected(position.error());
+        if (!loss) return std::unexpected(loss.error());
+        if (!open) return std::unexpected(open.error());
+        if (!rate) return std::unexpected(rate.error());
+        if (!age) return std::unexpected(age.error());
+        if (!per_day) return std::unexpected(per_day.error());
+        if (!streak) return std::unexpected(streak.error());
+        if (!drawdown) return std::unexpected(drawdown.error());
+        limits.max_order_notional = *order;
+        limits.max_position_notional = *position;
+        limits.max_daily_loss = *loss;
+        limits.max_open_orders = *open;
+        limits.max_orders_per_minute = *rate;
+        limits.max_orders_per_day = *per_day;
+        limits.max_consecutive_losses = *streak;
+        limits.max_drawdown = *drawdown;
+        if (*age) {
+            limits.max_price_age = std::chrono::milliseconds(**age);
+        }
+        if (const auto* node = section.get("allowed_symbols")) {
+            const auto* list = node->as_array();
+            if (!list) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 where + " allowed_symbols must be an array");
+            }
+            for (const auto& item : *list) {
+                const auto text = item.value<std::string>();
+                if (!text) {
+                    return MakeError(
+                        ErrorCategory::kInvalidArgument,
+                        where + " allowed_symbols must be strings");
+                }
+                auto sym = types::NormalizeSymbol(*text);
+                if (!sym) {
+                    return std::unexpected(sym.error());
+                }
+                limits.allowed_symbols.insert(*sym);
+            }
+        }
+        const bool any =
+            limits.max_order_notional || limits.max_position_notional ||
+            limits.max_open_orders || limits.max_orders_per_minute ||
+            limits.max_daily_loss || limits.max_price_age ||
+            limits.max_orders_per_day || limits.max_consecutive_losses ||
+            limits.max_drawdown || !limits.allowed_symbols.empty();
+        if (!any) {
+            return std::optional<trading::RiskLimits>{};
+        }
+        return std::optional<trading::RiskLimits>(std::move(limits));
     }
 
     static Result<db::ConnectionOptions> Database(const toml::table& root,
@@ -382,6 +553,37 @@ class ConfigParser {
         return o;
     }
 };
+
+std::optional<trading::RiskLimits> Configuration::GetRiskLimits(
+    const std::string& strategy) const {
+    const auto it = mCommon.strategy_risk.find(strategy);
+    if (it == mCommon.strategy_risk.end()) {
+        return mCommon.risk;
+    }
+    if (!mCommon.risk) {
+        return it->second;
+    }
+    trading::RiskLimits merged = *mCommon.risk;
+    const trading::RiskLimits& o = it->second;
+    auto take = [](auto& into, const auto& from) {
+        if (from) {
+            into = from;
+        }
+    };
+    take(merged.max_order_notional, o.max_order_notional);
+    take(merged.max_position_notional, o.max_position_notional);
+    take(merged.max_open_orders, o.max_open_orders);
+    take(merged.max_orders_per_minute, o.max_orders_per_minute);
+    take(merged.max_daily_loss, o.max_daily_loss);
+    take(merged.max_price_age, o.max_price_age);
+    take(merged.max_orders_per_day, o.max_orders_per_day);
+    take(merged.max_consecutive_losses, o.max_consecutive_losses);
+    take(merged.max_drawdown, o.max_drawdown);
+    if (!o.allowed_symbols.empty()) {
+        merged.allowed_symbols = o.allowed_symbols;
+    }
+    return merged;
+}
 
 Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
                                                        const LoadOptions& raw) {
