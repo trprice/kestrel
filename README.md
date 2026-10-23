@@ -244,6 +244,30 @@ suite built on them. To refresh the data, store a new pull into a scratch
 database (`kestrel_app bars 1h 168 --store`, `kestrel_app stream 90 --store`)
 and run `scripts/export_test_data.sh` with the `PG*` variables pointing at it.
 
+### Running the tests in Docker
+
+The `Dockerfile` (Ubuntu 26.04) installs the build dependencies, PostgreSQL 18
+with TimescaleDB and the `kestrel_test` database, so the whole suite, database
+tests included, runs without installing anything on the host. Only building the
+image needs network access (apt and an IXWebSocket clone); running it does not.
+
+```sh
+docker build -t kestrel-test .
+docker run --rm --network none kestrel-test
+```
+
+The container starts PostgreSQL, builds `/src` into `/build` and runs `ctest`.
+Arguments after the image name go to `ctest`. Mount your working tree over
+`/src` to test local changes without rebuilding the image:
+
+```sh
+docker run --rm --network none -v "$PWD":/src kestrel-test -R fixture
+```
+
+The build runs 2 compile jobs by default because parallel C++23 compiles can
+run a small container out of memory (the compiler is killed); change it with
+`-e KESTREL_JOBS=N`. The source is compiled on every run.
+
 ## Design notes
 
 - **Decimal**: int64 mantissa + scale (0–18). No floating point for prices or
