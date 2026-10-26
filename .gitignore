@@ -6,3 +6,5 @@ config/secrets.toml
 secrets.toml
 *_tokens.json
 *.tmp
+external_tests/backtest_data/backtest_data_check
+external_tests/sma_backtest/sma_backtest_check

@@ -6,6 +6,8 @@
 
 #include "kestrel/backtest/replay_data_source.hpp"
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/db/bar_store.hpp"
+#include "kestrel/db/quote_store.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
 #include "kestrel/trading/risk_gate.hpp"
@@ -23,19 +25,38 @@ struct BacktestOptions {
 
 struct BacktestResult {
     std::size_t bars_replayed = 0;
+    std::size_t quotes_replayed = 0;
     std::vector<types::Fill> fills;
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
 };
 
-// Fills a ReplayDataSource from `source` with what a backtest of `needs` over
-// [from, to) uses: symbol info for every symbol, and each symbol's bars for
-// every timeframe, starting early enough before `from` to fill the warmup
-// window. kInvalidArgument if `to` is not after `from`; kUnsupported for a
-// calendar timeframe (1M); otherwise the source's own error.
+// Where LoadReplayData looks before going to the venue. Either may be null.
+struct StoredData {
+    db::BarStore* bars = nullptr;
+    db::QuoteStore* quotes = nullptr;
+};
+
+// Fills a ReplayDataSource with what a backtest of `needs` over [from, to)
+// uses: symbol info for every symbol (always from `source`), each symbol's bars
+// for every timeframe, starting early enough before `from` to fill the warmup
+// window, and, if the strategy asks for quotes, each symbol's quotes in
+// [from, to).
+//
+// Bars come from `stored.bars` (keyed by source.Name()) when its first bar
+// opens within one bar of the window's start and its last bar closes within one
+// bar of the window's end. Only those two ends are checked, not gaps in the
+// middle. A series it covers only partly, or whose lookup fails, is fetched
+// from `source` instead, and the bars fetched are saved to `stored.bars` so the
+// next run finds them (a failed save is logged, not an error). Quotes can only
+// come from `stored.quotes`, as venues offer no history of them; kNotFound if
+// it is null or holds none for a symbol in the range.
+//
+// kInvalidArgument if `to` is not after `from`; kUnsupported for a calendar
+// timeframe (1M); otherwise the source's own error.
 types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
     data::DataSource& source, const strategy::Requirements& needs,
-    types::Timestamp from, types::Timestamp to);
+    types::Timestamp from, types::Timestamp to, StoredData stored = {});
 
 // Runs a strategy over the bars in `data`, using the same Runner as live
 // trading and a PaperTradingVenue for execution, on one thread and a simulated
@@ -46,13 +67,17 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // (bid = ask = last), then the strategy sees the bar. So:
 //   - orders a strategy places on a bar fill on that bar's close, plus the
 //     paper venue's slippage and fees;
-//   - resting limit and stop orders can only trigger at closes, never on an
-//     intrabar high or low;
+//   - resting limit and stop orders can only trigger when the venue is given
+//     a quote: at a close, or (for a strategy that asks for quotes) when a
+//     stored quote arrives, which can be between two closes;
 //   - an order placed in OnStart is rejected, as no quote exists yet.
-// Only strategies that work from bars are supported: one that asks for quotes,
-// or a calendar-length timeframe (1M), fails with kUnsupported, and an end
-// that is not after the start with kInvalidArgument. `data` needs
-// bars and SetSymbolInfo for every symbol the strategy trades.
+// A strategy that asks for quotes is also replayed through the stored quotes
+// in [start, end) (AddQuotes), in arrival order and ahead of any bar closing at
+// the same instant. The paper venue is then fed those quotes instead of the
+// bar-close ones, so fills happen at the recorded bid and ask.
+// A calendar-length timeframe (1M) fails with kUnsupported, and an end that is
+// not after the start with kInvalidArgument. `data` needs bars (and quotes if
+// asked for) and SetSymbolInfo for every symbol the strategy trades.
 types::Result<BacktestResult> RunBacktest(
     std::shared_ptr<ReplayDataSource> data,
     std::unique_ptr<strategy::Strategy> strategy, BacktestOptions options);

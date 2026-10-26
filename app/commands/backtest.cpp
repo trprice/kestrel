@@ -35,8 +35,24 @@ class BacktestCommand : public Command {
             spdlog::error("startup: {}", source.error().ToString());
             return 1;
         }
+        // The database is optional: without a [database] section, or if it
+        // cannot be reached, everything comes from the venue.
+        std::unique_ptr<db::BarStore> bar_store;
+        std::unique_ptr<db::QuoteStore> quote_store;
+        backtest::StoredData stored;
+        auto database = OpenDatabase(config);
+        if (database) {
+            bar_store = std::make_unique<db::BarStore>(*database);
+            quote_store = std::make_unique<db::QuoteStore>(*database);
+            stored.bars = bar_store.get();
+            stored.quotes = quote_store.get();
+        } else if (database.error().category !=
+                   types::ErrorCategory::kNotFound) {
+            spdlog::warn("database unavailable, using the venue: {}",
+                         database.error().ToString());
+        }
         auto replay = backtest::LoadReplayData(**source, (*strategy)->Needs(),
-                                               mFrom, mTo);
+                                               mFrom, mTo, stored);
         if (!replay) {
             return Fail("data", replay.error());
         }
@@ -64,6 +80,7 @@ class BacktestCommand : public Command {
 
     static void PrintReport(const backtest::BacktestResult& result) {
         std::cout << "bars replayed: " << result.bars_replayed
+                  << "\nquotes replayed: " << result.quotes_replayed
                   << "\nfills: " << result.fills.size() << '\n';
         for (const auto& f : result.fills) {
             std::cout << types::FormatIso8601(f.time) << ' ' << f.symbol << ' '
@@ -97,8 +114,9 @@ struct Args {
 void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
     auto* sub = AddSubcommand(
         app, "backtest",
-        "Backtest the named strategy over --from..--to using historical bars "
-        "from the provider");
+        "Backtest the named strategy over --from..--to using stored bars and "
+        "quotes from the database, falling back to the provider for missing "
+        "bars");
     auto args = std::make_shared<Args>();
     sub->add_option("strategy", args->strategy, "Strategy name")->required();
     sub->add_option("--from", args->from,

@@ -19,6 +19,42 @@ class ReplayDataSource::Subscription : public data::Subscription {
     types::Timeframe mTimeframe;
 };
 
+class ReplayDataSource::QuoteSubscription : public data::Subscription {
+   public:
+    explicit QuoteSubscription(ReplayDataSource& source) : mSource(source) {}
+    ~QuoteSubscription() override { Stop(); }
+    void Stop() override { mSource.mQuoteStream.reset(); }
+
+   private:
+    ReplayDataSource& mSource;
+};
+
+void ReplayDataSource::AddQuotes(const types::Symbol& symbol,
+                                 std::vector<types::Quote> quotes) {
+    std::stable_sort(quotes.begin(), quotes.end(),
+                     [](const types::Quote& a, const types::Quote& b) {
+                         return a.received_time != b.received_time
+                                    ? a.received_time < b.received_time
+                                    : a.seq < b.seq;
+                     });
+    mQuotes[symbol] = std::move(quotes);
+}
+
+const std::vector<types::Quote>& ReplayDataSource::QuotesFor(
+    const types::Symbol& symbol) const {
+    static const std::vector<types::Quote> kNone;
+    auto it = mQuotes.find(symbol);
+    return it == mQuotes.end() ? kNone : it->second;
+}
+
+bool ReplayDataSource::EmitQuote(const types::Quote& quote) {
+    if (!mQuoteStream || !mQuoteStream->symbols.contains(quote.symbol)) {
+        return false;
+    }
+    mQuoteStream->callback(quote);
+    return true;
+}
+
 void ReplayDataSource::AddBars(const types::Symbol& symbol,
                                types::Timeframe timeframe,
                                std::vector<types::Bar> bars) {
@@ -73,10 +109,12 @@ types::Result<std::vector<types::Bar>> ReplayDataSource::GetBars(
 }
 
 types::Result<std::unique_ptr<data::Subscription>>
-ReplayDataSource::StreamQuotes(const std::vector<std::string>&,
-                               data::QuoteCallback) {
-    return MakeError(ErrorCategory::kNotImplemented,
-                     "replay data source has no quotes");
+ReplayDataSource::StreamQuotes(const std::vector<std::string>& symbols,
+                               data::QuoteCallback callback) {
+    mQuoteStream =
+        QuoteStream{std::set<types::Symbol>(symbols.begin(), symbols.end()),
+                    std::move(callback)};
+    return std::unique_ptr<data::Subscription>(new QuoteSubscription(*this));
 }
 
 types::Result<std::unique_ptr<data::Subscription>> ReplayDataSource::StreamBars(

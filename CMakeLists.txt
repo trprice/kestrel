@@ -150,6 +150,7 @@ if(KESTREL_BUILD_TESTS)
     tests/risk_gate_test.cpp
     tests/runner_test.cpp
     tests/backtest_test.cpp
+    tests/backtest_db_test.cpp
     tests/sma_crossover_test.cpp
     tests/config_test.cpp
   )

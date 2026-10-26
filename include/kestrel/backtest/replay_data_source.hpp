@@ -14,8 +14,9 @@ namespace kestrel::backtest {
 // simulated clock with SetTime and hands bars to the strategy with Emit.
 //
 // GetBars never shows the future: once SetTime has been called it returns only
-// bars that have closed by then. Quotes are not offered (StreamQuotes fails
-// with kNotImplemented).
+// bars that have closed by then. Quotes are replayed the same way as bars:
+// AddQuotes stores them and EmitQuote hands one to the StreamQuotes
+// subscription. Without a subscription nothing is delivered.
 //
 // Not thread-safe; everything is meant to happen on one thread.
 class ReplayDataSource : public data::DataSource {
@@ -24,12 +25,23 @@ class ReplayDataSource : public data::DataSource {
     // sorted by open time.
     void AddBars(const types::Symbol& symbol, types::Timeframe timeframe,
                  std::vector<types::Bar> bars);
+    // Stores the quotes of one symbol, replacing any already there. They are
+    // ordered by (received_time, seq), keeping arrival order for ties.
+    void AddQuotes(const types::Symbol& symbol,
+                   std::vector<types::Quote> quotes);
     void SetSymbolInfo(const types::SymbolInfo& info);
     void SetTime(types::Timestamp now) { mNow = now; }
 
     // The stored bars of a series, oldest first; empty if there are none.
     const std::vector<types::Bar>& Series(const types::Symbol& symbol,
                                           types::Timeframe timeframe) const;
+
+    // The stored quotes of a symbol in arrival order; empty if there are none.
+    const std::vector<types::Quote>& QuotesFor(const types::Symbol& symbol) const;
+
+    // Delivers `quote` to the StreamQuotes subscription if it covers the
+    // quote's symbol. Returns false if not.
+    bool EmitQuote(const types::Quote& quote);
 
     // Delivers `bar` to the StreamBars subscription covering the series.
     // Returns false if nothing is subscribed to it.
@@ -52,6 +64,11 @@ class ReplayDataSource : public data::DataSource {
 
    private:
     class Subscription;
+    class QuoteSubscription;
+    struct QuoteStream {
+        std::set<types::Symbol> symbols;
+        data::QuoteCallback callback;
+    };
     struct Stream {
         std::set<types::Symbol> symbols;
         data::BarCallback callback;
@@ -60,6 +77,8 @@ class ReplayDataSource : public data::DataSource {
     std::map<std::pair<types::Symbol, types::Timeframe>,
              std::vector<types::Bar>>
         mBars;
+    std::map<types::Symbol, std::vector<types::Quote>> mQuotes;
+    std::optional<QuoteStream> mQuoteStream;
     std::map<types::Symbol, types::SymbolInfo> mInfo;
     std::optional<types::Timestamp> mNow;
     std::map<types::Timeframe, Stream> mStreams;
