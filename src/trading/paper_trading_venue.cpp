@@ -274,13 +274,14 @@ void PaperTradingVenue::TryMatch(Order& order, const types::Quote& quote,
 
 void PaperTradingVenue::ExpireDayOrders() {
     const auto now = mClock();
-    for (auto& [id, order] : mOrders) {
-        if (types::IsActive(order.status.state) && order.expires &&
-            now >= *order.expires) {
-            Close(order, OrderState::kExpired,
+    std::erase_if(mActive, [&](Order* order) {
+        if (types::IsActive(order->status.state) && order->expires &&
+            now >= *order->expires) {
+            Close(*order, OrderState::kExpired,
                   "day order expired at end of UTC day");
         }
-    }
+        return !types::IsActive(order->status.state);
+    });
 }
 
 void PaperTradingVenue::OnQuote(const types::Quote& quote) {
@@ -288,9 +289,9 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     mQuotes[quote.symbol].MergeFrom(quote);
     ExpireDayOrders();
     const types::Quote& latest = mQuotes[quote.symbol];
-    for (auto& [id, order] : mOrders) {
-        if (order.status.symbol == quote.symbol) {
-            TryMatch(order, latest, /*placing=*/false);
+    for (Order* order : mActive) {
+        if (order->status.symbol == quote.symbol) {
+            TryMatch(*order, latest, /*placing=*/false);
         }
     }
 }
@@ -426,6 +427,7 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     const auto [it, _] =
         mOrders.emplace(order.status.order_id, std::move(order));
     Order& placed = it->second;
+    mActive.push_back(&placed);
     if (quote) {
         TryMatch(placed, *quote, /*placing=*/true);
     }
@@ -466,12 +468,12 @@ Result<std::vector<std::string>> PaperTradingVenue::CancelAll() {
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     std::vector<std::string> cancelled;
-    for (auto& [id, order] : mOrders) {
-        if (!types::IsActive(order.status.state)) {
+    for (Order* order : mActive) {
+        if (!types::IsActive(order->status.state)) {
             continue;
         }
-        Close(order, OrderState::kCancelled, "cancelled by user");
-        cancelled.push_back(id);
+        Close(*order, OrderState::kCancelled, "cancelled by user");
+        cancelled.push_back(order->status.order_id);
     }
     return cancelled;
 }
@@ -480,9 +482,9 @@ Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     std::vector<types::OrderStatus> out;
-    for (const auto& [id, order] : mOrders) {
-        if (types::IsActive(order.status.state)) {
-            out.push_back(order.status);
+    for (const Order* order : mActive) {
+        if (types::IsActive(order->status.state)) {
+            out.push_back(order->status);
         }
     }
     return out;
@@ -491,10 +493,10 @@ Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
 Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
     types::Timestamp since) {
     std::lock_guard lock(mMutex);
-    std::vector<types::Fill> out;
-    std::ranges::copy_if(mFills, std::back_inserter(out),
-                         [&](const types::Fill& f) { return f.time >= since; });
-    return out;
+    // Fills are appended as they happen, so they are sorted by time.
+    const auto first = std::ranges::lower_bound(mFills, since, {},
+                                                &types::Fill::time);
+    return std::vector<types::Fill>(first, mFills.end());
 }
 
 Result<std::vector<types::Position>> PaperTradingVenue::GetPositions() {

@@ -98,6 +98,10 @@ class PaperTradingVenue : public TradingVenue {
     mutable std::mutex mMutex;
     std::map<std::string, Order>
         mOrders;  // by order id; ids sort in creation order
+    // The orders in mOrders that may still be active, in creation order
+    // (map nodes are stable). Closed orders are dropped by ExpireDayOrders(),
+    // so scans do not grow with the number of orders ever placed.
+    std::vector<Order*> mActive;
     std::vector<types::Fill> mFills;
     std::map<std::string, types::Decimal> mTotal;
     std::map<std::string, types::Decimal> mLocked;
