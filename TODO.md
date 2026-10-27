@@ -1,5 +1,46 @@
 # Kestrel TODO
 
+## Status
+
+The strategy, risk and backtest code has not run against a live venue, and
+`run` in live mode is refused until a trading venue is implemented. `run` has
+been exercised in paper mode on Binance.US, including an 8 hour market-making
+session.
+
+### Done
+- [x] Build system, `Decimal`, shared types, `Error` / `std::expected`
+- [x] `DataSource` / `TradingVenue` interfaces, `Configuration`, factory
+- [x] `PaperTradingVenue` (works with any `DataSource`)
+- [x] `KrakenDataSource`: REST bars and symbol info, WebSocket quotes (tested
+      live)
+- [x] `BinanceUSDataSource`: klines, symbol info, WebSocket quotes, closed-bar
+      stream
+- [x] Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables,
+      `BarStore`, `QuoteStore` / `QuoteWriter`, Binance.US closed-bar stream
+      (tested live)
+- [x] `PnlTracker`: realized P&L from fills, used by the paper venue and the
+      risk gate (tested with fakes)
+- [x] Strategy interface, `Runner` (event queue, warmup, gap backfill, fill
+      polling to `OnFill`), example `SmaCrossover` (tested with fakes)
+- [x] `RiskGatedVenue`: order and position size, open orders, order rate,
+      daily loss, symbol allowlist, kill switch (tested with fakes)
+- [x] `ReplayDataSource` and `RunBacktest`: the same `Runner`, a paper venue
+      and a simulated clock (tested with fakes)
+- [x] `kestrel_app run` and `backtest`, `[risk]` and `[strategy]` config,
+      strategy registry
+- [x] `MarketMaker` strategy with opt-in drawdown protection
+- [x] Run recording: fills and P&L snapshots in the database (`[recording]`)
+
+### Stubs
+- [ ] Schwab data source, and the Kraken, Schwab and Binance.US trading
+      venues return `kNotImplemented`; each header has a TODO listing the
+      endpoints and auth needed. The timeframe mappings, symbol mapping and
+      the Schwab token store are real. See Venues under Projects.
+
+### Not started
+- [ ] Indicators, more strategies, agent access (see Strategies under
+      Projects)
+
 ## Known limitations
 
 Things that work but have edges a user could trip over. Each is also noted in
@@ -156,8 +197,8 @@ the header of the code concerned.
 
 ## In progress: strategy system and risk gate
 
-Built and tested with fakes (206 tests). Not yet run against a live venue, and
-reachable from `kestrel_app run` and `backtest`.
+Built and tested with fakes. Not yet run against a live venue, and reachable
+from `kestrel_app run` and `backtest`.
 
 ### Done
 - [x] `Strategy` / `Context` / `Requirements` interface
@@ -193,13 +234,13 @@ reachable from `kestrel_app run` and `backtest`.
       for bad arguments
 
 ### To finish
-- [ ] Run the runner against Binance.US data end to end in paper mode (the only
-      live data source that is complete) and fix what that shakes out. (It
-      starts, streams and stops cleanly; a long run that actually trades has
-      not been done.)
-- [ ] `run` does not cancel open orders on shutdown; decide whether it should
-- [ ] `backtest` fetches bars from the provider on every run; load them from
-      `BarStore` instead (see Backtesting and research)
+- [x] Run the runner against Binance.US data end to end in paper mode: an 8 hour
+      `market_maker` session traded, recorded and stopped cleanly
+- [ ] `run` does not cancel open orders on shutdown; decide whether it should.
+      (`MarketMaker` cancels its own quotes in `OnStop`; `SmaCrossover` and
+      other strategies leave theirs resting.)
+- [x] `backtest` loads bars from `BarStore` first and falls back to the
+      provider (`LoadReplayData`), saving what it fetched
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
@@ -209,8 +250,8 @@ reachable from `kestrel_app run` and `backtest`.
       signal computed on a close at that same close is a look-ahead), keeping
       fill-on-close as an option; use bar high/low for limit and stop order
       triggering
-- [ ] Document the strategy system in the README (how to write a strategy,
-      threading rules, how the gate works)
+- [x] Document how to write a strategy in the README (hooks, threading rules,
+      `Context`, the risk gate)
 
 ## Projects
 
@@ -243,7 +284,7 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 
 ### Backtesting and research
 - [ ] Parameter sweeps and walk-forward testing
-- [ ] Load backtest bars from the database (`BarStore`) instead of building
+- [x] Load backtest bars from the database (`BarStore`) instead of building
       `ReplayDataSource` by hand
 - [ ] Order and cancel latency in the paper venue, so a quote can fill an
       order that the strategy has already asked to cancel

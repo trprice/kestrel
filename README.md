@@ -7,28 +7,7 @@ Market data and order execution are separate interfaces (`data::DataSource`,
 `trading::TradingVenue`). Only the execution side changes between paper and
 live trading; a factory picks the right one from the config.
 
-## Status
-
-| Piece | State |
-|---|---|
-| Build system, `Decimal`, shared types, `Error`/`std::expected` | done |
-| `DataSource` / `TradingVenue` interfaces, `Configuration`, factory | done |
-| `PaperTradingVenue` (works with any `DataSource`) | done |
-| `KrakenDataSource` (REST bars + symbol info, WebSocket quotes) | done, tested live |
-| `BinanceUSDataSource` (klines, symbol info, WebSocket quotes, closed-bar stream) | done |
-| Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables, `BarStore`, `QuoteStore`/`QuoteWriter`, Binance.US closed-bar stream | done, tested live |
-| `PnlTracker`: realized P&L from fills, used by the paper venue and the risk gate | done, tested with fakes |
-| Strategy interface, `Runner` (event queue, warmup, gap backfill, fill polling to `OnFill`), example `SmaCrossover` | done, tested with fakes |
-| `RiskGatedVenue` (order and position size, open orders, order rate, daily loss, symbol allowlist, kill switch) | done, tested with fakes |
-| `ReplayDataSource` + `RunBacktest` (same `Runner`, paper venue, simulated clock) | done, tested with fakes |
-| Schwab data source; Kraken, Schwab and Binance.US trading venues | **stubs** returning `kNotImplemented`; each header has a TODO listing the endpoints and auth needed. Timeframe mappings, symbol mapping and the Schwab token store are real |
-| `kestrel_app run` and `backtest`, `[risk]` and `[strategy]` config, strategy registry | done; `run` has only been exercised briefly in paper mode on Binance.US |
-| Indicators, more strategies, agent access | not started; see [TODO.md](TODO.md) |
-
-The strategy, risk and backtest code has not run against a live venue, and
-`run` in live mode is refused until a trading venue is implemented.
-
-Known limitations, work in progress and planned projects are tracked in
+Status, known limitations, work in progress and planned projects are tracked in
 [TODO.md](TODO.md).
 
 ## Build
@@ -316,7 +295,103 @@ The image includes `perf`. Docker's default seccomp profile blocks the
 `--cap-add SYS_ADMIN --security-opt seccomp=unconfined` on the `docker run`
 (and a host `kernel.perf_event_paranoid` that permits it).
 
-## Design notes
+## Design
+
+Kestrel is a library plus a thin command-line app. Everything the strategy
+code touches is an interface, so the same `Runner` and strategy run against a
+live feed, a recorded one (backtest), or a paper or live venue.
+
+### How information flows
+
+```
+  Provider: Kraken, Binance.US, Schwab (REST + WebSocket)
+        |
+        v
+  DataSource  ----------------------------->  --store: BarStore, QuoteWriter
+  GetBars, GetSymbolInfo,                              |
+  StreamQuotes, StreamBars                             v
+        |                                      PostgreSQL / TimescaleDB
+        | bars, quotes (WebSocket thread, enqueue only)  ^
+        v                                                |
+  Runner: event queue, warmup, gap backfill              |
+        |                                                |
+        | one event at a time (Run() thread)             |
+        v                                                |
+  Strategy: OnBar / OnQuote / OnFill / OnOrderUpdate     |
+        |                       ^                        |
+        | PlaceOrder,           | fills and order        |
+        | CancelOrder           | changes, polled        |
+        v                       |                        |
+  OrderTracker  (remembers active orders)                |
+        |                       |                        |
+        v                       |                        |
+  RiskGatedVenue  (optional: limits, kill switch)        |
+        |                       |                        |
+        v                       |                        |
+  TradingVenue: PaperTradingVenue or a live venue         |
+        ^                                                |
+        | quotes (paper only: matches resting orders)    |
+        +---- DataSource                                 |
+                                                         |
+  Runner --> RunRecorder (fills + marks) --> PnlTracker  |
+                  |                                      |
+                  v                                      |
+              TradeLog = TradeStore ---------------------+
+              (runs, fills, pnl_snapshots)
+```
+
+In words:
+
+1. The **data source** turns a provider's REST and WebSocket APIs into bars,
+   quotes and symbol info, with no provider types leaking out.
+2. The **runner** subscribes to what the strategy's `Needs()` asks for, loads
+   warmup bars, and queues the callbacks from the WebSocket thread. A single
+   thread takes events off the queue and calls the strategy's hooks.
+3. The **strategy** places orders through `Context::Venue()`. The call passes
+   through the order tracker and the optional risk gate to the real venue.
+4. The runner **polls the venue** for fills and order changes, and hands them
+   back to the strategy as `OnFill` and `OnOrderUpdate`.
+5. If recording is on, the runner also gives each fill and the latest prices to
+   the **recorder**, which keeps P&L and writes it to the database.
+
+`kestrel_app backtest` is the same picture with a `ReplayDataSource` in place
+of the live one: `RunBacktest` pushes recorded bars and quotes in, in time
+order, on one thread and a simulated clock.
+
+### Major classes
+
+| Class | Role |
+|---|---|
+| `Configuration` (`config/`) | The parsed TOML file plus credentials from the environment or the secrets file. Rejects credentials in the main config and unknown keys. |
+| `factory.hpp` | The only place that knows which concrete class goes with a provider name or strategy name. `CreateComponents` makes the data source and venue, `CreateStrategy` the strategy, `ResolveRiskLimits` the limits, and `CreateRunner` wires them into a ready-to-run `Runner`. |
+| `DataSource` (`data/`) | Read-only market data: `GetBars`, `GetSymbolInfo`, and `StreamQuotes`/`StreamBars`, which return a `Subscription` to stop. Implemented by `KrakenDataSource`, `BinanceUSDataSource` and `ReplayDataSource`; `SchwabDataSource` is a stub. |
+| `TradingVenue` (`trading/`) | Execution: place and cancel orders, list open orders and fills, positions and balances. Implemented by `PaperTradingVenue`; the Kraken, Schwab and Binance.US venues are stubs. |
+| `PaperTradingVenue` | A simulated exchange built on any `DataSource`. It fills orders from the quote stream with fees, slippage and a configurable limit-fill model, and keeps balances. |
+| `RiskGatedVenue` | A `TradingVenue` that wraps another one and refuses orders that break a limit (size, open orders, order rate, daily loss, drawdown, symbol allowlist). It has a kill switch, `Halt()`. |
+| `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
+| `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info and its bar history. `SmaCrossover` and `MarketMaker` are the two included. |
+| `Runner` | Owns one strategy. Queues events (conflating quotes per symbol), runs the strategy on one thread, polls for fills and order updates, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
+| `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills and periodic snapshots to a `TradeLog`. Failures are logged and retried, never fatal. |
+| `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`). |
+| `Database`, `BarStore`, `QuoteStore`/`QuoteWriter` (`db/`) | The connection, schema migrations, and the bar and quote tables. `QuoteWriter` buffers on the WebSocket thread and inserts from a background thread. |
+| `app/commands/*` | One class per subcommand. Each parses its arguments, calls the factory and drives the result; `run` also owns the signal-watching thread that calls `Runner::Stop()`. |
+
+Dependencies point one way: `app` uses `factory`, which uses everything else;
+`strategy` uses the `DataSource` and `TradingVenue` interfaces but no concrete
+provider; the providers know nothing about strategies.
+
+### Threads
+
+- **WebSocket thread** (one per stream): runs the data source's callbacks. The
+  runner's callbacks only enqueue, and `QuoteWriter` only buffers. Do not call
+  `Stop()` or destroy a subscription from inside a callback.
+- **Run() thread**: the only thread that calls the strategy. It is free to call
+  the venue over HTTP, take fills, and write to the database.
+- **Watch thread** (`run` only): collects SIGINT and SIGTERM and calls
+  `Runner::Stop()`, which is not async-signal-safe.
+- **Quote writer thread** (`--store` only): inserts buffered quotes in batches.
+
+### Design notes
 
 - **Decimal**: int64 mantissa + scale (0–18). No floating point for prices or
   quantities; JSON numbers are parsed from their literal text
@@ -349,6 +424,146 @@ The image includes `perf`. Docker's default seccomp profile blocks the
   Unsupported ones return `kUnsupported`. These lists come from memory of each
   provider's docs and should be re-verified before the stubs are completed (see
   [TODO.md](TODO.md)).
+
+## Writing a strategy
+
+A strategy is a class derived from `strategy::Strategy`
+(`include/kestrel/strategy/strategy.hpp`). The runner calls its hooks; the
+strategy reacts by placing orders. `SmaCrossover` is a small worked example and
+`MarketMaker` a larger one.
+
+### 1. Declare what you need
+
+`Needs()` returns a `Requirements`, which the runner reads once before it
+subscribes to anything:
+
+| Field | Meaning |
+|---|---|
+| `symbols` | the symbols the strategy trades |
+| `bar_timeframes` | closed-bar streams to subscribe to for every symbol (none by default) |
+| `quotes` | whether to receive `OnQuote` |
+| `warmup_bars` | closed bars kept per series and loaded before `OnStart`, so indicators start with a full window |
+
+A backtest replays stored quotes only if `quotes` is true, and fetches the
+warmup bars plus the range from the database or the provider.
+
+### 2. Implement the hooks
+
+All hooks are optional except `Name()` and `Needs()`.
+
+| Hook | Called |
+|---|---|
+| `OnStart` | once, after the warmup bars are loaded and before the first event |
+| `OnBar` | for each closed bar, in order; bars missed in a disconnect are backfilled |
+| `OnQuote` | for each quote, if `quotes` is set; quotes are conflated, so you may skip intermediate ones |
+| `OnFill` | once per fill of an order you placed, partial fills included |
+| `OnOrderUpdate` | when an order you placed changes state or fills further, ending with a closed state (filled, cancelled, rejected, expired) |
+| `OnStop` | once at shutdown, after the streams are closed; `run` does not cancel open orders itself, so cancel the ones you want gone |
+
+Every hook gets a `Context&`, valid only during that call:
+
+- `Now()`: the runner's clock (simulated in a backtest). Use it instead of
+  the system clock.
+- `Venue()`: the `TradingVenue` to trade through. Place and cancel orders
+  here, never on a venue you obtained elsewhere: this one carries the risk gate
+  and the order tracking that feeds `OnOrderUpdate`.
+- `SymbolInfo(symbol)`: tick size, lot size and minimums, for rounding prices
+  and quantities.
+- `Bars(symbol, timeframe)`: the last closed bars, oldest first, up to
+  `warmup_bars`. The span is invalidated by the next bar for that series, so
+  do not keep it.
+
+```cpp
+class MyStrategy : public strategy::Strategy {
+   public:
+    std::string_view Name() const override { return "my_strategy"; }
+
+    strategy::Requirements Needs() const override {
+        strategy::Requirements needs;
+        needs.symbols = {mSymbol};
+        needs.bar_timeframes = {types::Timeframe::kH1};
+        needs.warmup_bars = 50;
+        return needs;
+    }
+
+    void OnBar(strategy::Context& context, const types::Symbol& symbol,
+               types::Timeframe, const types::Bar&) override {
+        const auto bars = context.Bars(symbol, types::Timeframe::kH1);
+        if (!ShouldBuy(bars) || mPending) {
+            return;
+        }
+        types::OrderRequest request;
+        request.symbol = symbol;
+        request.side = types::Side::kBuy;
+        request.type = types::OrderType::kMarket;
+        request.quantity = mQuantity;
+        auto ack = context.Venue().PlaceOrder(request);
+        mPending = ack.has_value();
+    }
+
+    void OnFill(strategy::Context&, const types::Fill&) override {
+        mPending = false;  // update your own position here
+    }
+};
+```
+
+### 3. Rules to follow
+
+- **Threading:** every hook runs on the runner's one strategy thread, one at a
+  time, so the strategy needs no locks. Do not start your own threads that call
+  the venue or the context.
+- **Be quick:** events queue up behind a slow hook. Quotes are conflated, but
+  bars never are.
+- **Exceptions:** a hook that throws is logged and the runner moves on to the
+  next event. Do not rely on that; handle errors where they happen.
+- **Check every result:** `PlaceOrder` returns a `Result`. It can fail (a risk
+  limit, the venue), or succeed with an acknowledgement that is already
+  closed (for example an unfillable fill-or-kill order). Neither produces a
+  fill, so do not wait for one.
+- **Fills arrive late:** the runner finds fills and order changes by polling
+  the venue (`fill_poll_interval`, 1 s by default), so `OnFill` can lag the
+  order. Track your own pending orders and your own position from `OnFill`
+  rather than assuming an order filled when you placed it.
+- **Cancels race with fills:** an order can fill while your cancel is in
+  flight. `CancelOrder` reports `kAlreadyFilled` or `kAlreadyClosed` for that,
+  and it is a normal outcome, not an error. `MarketMaker` tracks the race as
+  `cancel_raced`.
+- **Round to the symbol's rules:** prices to the tick, quantities to the lot
+  size, using `SymbolInfo` and `Decimal::RoundToIncrement`.
+- **Use `Decimal`** for prices and quantities, never `double`.
+- **Spot only:** the paper venue does not short, so do not sell more than you
+  hold.
+- **The risk gate sits between you and the venue.** If `[risk]` is set, an
+  order that breaks a limit comes back as an error. After a loss, drawdown or
+  order-count limit trips, only orders that reduce a position are allowed.
+  The gate never closes your position for you; do that in the strategy, as
+  `MarketMaker`'s protection rules do.
+
+### 4. Register it
+
+1. Add `src/strategy/my_strategy.cpp` and `include/kestrel/strategy/my_strategy.hpp`
+   (and the source file to `CMakeLists.txt`, with a test under `tests/`).
+2. In `src/factory.cpp`, write a `Build` function that reads the strategy's
+   parameters from `[strategy]` with the `ParamReader` (`Symbol()`,
+   `Quantity(key)`, `Timeframe(key, default)`, `Count(key, default)`, and so
+   on), calls `p.Finish()` so an unknown parameter is an error, and returns
+   the new strategy. A constructor that throws `std::invalid_argument` becomes
+   a config error. Copy `BuildSmaCrossover`.
+3. Add `{"my_strategy", BuildMyStrategy}` to the `kStrategies` table. That one
+   entry makes `kestrel_app run my_strategy` and `backtest my_strategy` work,
+   and allows a `[risk.my_strategy]` section.
+4. Document the parameters in `config/kestrel.example.toml`.
+
+### 5. Test it
+
+`tests/strategy_fakes.hpp` has `FakeContext`, a recording `FakeVenue` and a
+`FakeTradeLog`. Feed the strategy bars or quotes and assert on the orders it
+placed, as `tests/sma_crossover_test.cpp` does. Then run a backtest over stored
+data (`kestrel_app backtest my_strategy --from ... --to ...`). Use
+`limit_fill_model = "conservative"` for anything that rests limit orders; the
+default `cross` model flatters those. Paper-trade it with `run` before trusting
+the result, and see [TODO.md](TODO.md) for what the paper venue and backtest do
+not model.
 
 ## Layout
 
