@@ -65,7 +65,7 @@ class RecordingVenue : public trading::TradingVenue {
         return positions;
     }
     types::Result<std::vector<types::Balance>> GetBalances() override {
-        return std::vector<types::Balance>{};
+        return balances;
     }
 
     // Set before the venue is shared with other threads.
@@ -74,6 +74,7 @@ class RecordingVenue : public trading::TradingVenue {
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
     std::vector<types::Position> positions;
+    std::vector<types::Balance> balances;
     std::vector<types::OrderStatus> open_orders;
     std::vector<types::Fill> fills;
     std::map<std::string, types::OrderStatus> order_states;  // GetOrder

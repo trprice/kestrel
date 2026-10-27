@@ -31,12 +31,15 @@ class ReplayDataSource::QuoteSubscription : public data::Subscription {
 
 void ReplayDataSource::AddQuotes(const types::Symbol& symbol,
                                  std::vector<types::Quote> quotes) {
-    std::stable_sort(quotes.begin(), quotes.end(),
-                     [](const types::Quote& a, const types::Quote& b) {
-                         return a.received_time != b.received_time
-                                    ? a.received_time < b.received_time
-                                    : a.seq < b.seq;
-                     });
+    const auto before = [](const types::Quote& a, const types::Quote& b) {
+        return a.received_time != b.received_time
+                   ? a.received_time < b.received_time
+                   : a.seq < b.seq;
+    };
+    // Stored quotes arrive in order, and sorting copies strings: skip it then.
+    if (!std::ranges::is_sorted(quotes, before)) {
+        std::stable_sort(quotes.begin(), quotes.end(), before);
+    }
     mQuotes[symbol] = std::move(quotes);
 }
 

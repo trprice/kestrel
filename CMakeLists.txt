@@ -60,6 +60,7 @@ add_library(kestrel
   src/backtest/backtest.cpp
   src/strategy/runner.cpp
   src/strategy/sma_crossover.cpp
+  src/strategy/market_maker.cpp
   src/config/configuration.cpp
   src/config/schwab_token_store.cpp
   src/factory.cpp
@@ -152,6 +153,7 @@ if(KESTREL_BUILD_TESTS)
     tests/backtest_test.cpp
     tests/backtest_db_test.cpp
     tests/sma_crossover_test.cpp
+    tests/market_maker_test.cpp
     tests/config_test.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)

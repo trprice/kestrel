@@ -456,10 +456,14 @@ std::size_t Runner::PollFills() {
                      fills.error().ToString());
         return 0;
     }
-    std::stable_sort(fills->begin(), fills->end(),
-                     [](const types::Fill& a, const types::Fill& b) {
-                         return a.time < b.time;
-                     });
+    const auto by_time = [](const types::Fill& a, const types::Fill& b) {
+        return a.time < b.time;
+    };
+    // Venues return fills oldest first, so this is usually a no-op (and a
+    // sort allocates a buffer on every poll).
+    if (!std::ranges::is_sorted(*fills, by_time)) {
+        std::stable_sort(fills->begin(), fills->end(), by_time);
+    }
 
     std::size_t delivered = 0;
     for (const types::Fill& fill : *fills) {

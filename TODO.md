@@ -62,6 +62,10 @@ the header of the code concerned.
   position's realized P&L is not visible through `GetPositions`.
 
 ### Paper venue (`trading/paper_trading_venue.hpp`)
+- Closed orders are kept for `GetOrder` and never dropped, so memory grows
+  with every order placed (a quoting strategy places thousands per hour).
+  Prune closed orders once the runner has reported their final state or after
+  an age.
 - Fill history grows without bound and `GetFills` scans all of it on every
   call; both the runner's fill poll and the risk gate's daily-loss check hit
   that path, so a paper venue left running for weeks gets slower and leaks
@@ -71,6 +75,21 @@ the header of the code concerned.
   results flatter anything above retail size. Limit fills can be capped at
   the touch (`cap_limit_fills_at_quote_size`); market fills should have the
   same option.
+
+### Market maker (`strategy/market_maker.hpp`)
+- No volatility scaling of the spread, and no pulling of quotes when the feed
+  goes quiet: it only acts when a quote arrives.
+- Inventory is the base-asset balance at start and the fills since; a fee
+  charged in the base asset (Binance without BNB) is not deducted from it.
+- Each requote goes to the back of the queue, so a tight `requote_bps` costs
+  fills under `limit_fill_model = "conservative"`. The ZEC/USDT example
+  replaces a quote on about every other update (29.5k placements for 51k
+  quotes).
+- Backtest ordering: a quote is matched against resting orders first, then
+  the strategy sees it, and the runner delivers the fills afterwards. So
+  on the quote that fills an order the strategy still believes it is resting
+  (its cancel loses the race, see `cancel_raced`). This resembles fill-poll
+  latency but is exactly one event, not a time.
 
 ### Backtesting (`backtest/backtest.hpp`)
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need

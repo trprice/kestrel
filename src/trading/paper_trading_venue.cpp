@@ -350,7 +350,11 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     std::lock_guard lock(mMutex);
     const bool seen_before = mQuotes.contains(quote.symbol);
     types::Quote& latest = mQuotes[quote.symbol];
-    const types::Quote before = latest;
+    // Only the trade fields are compared, so keep those, not a copy of the
+    // whole quote (its strings would be allocated for every update).
+    const auto before_last = latest.last;
+    const auto before_last_size = latest.last_size;
+    const auto before_time = latest.exchange_time;
     latest.MergeFrom(quote);
 
     // Streams repeat the last trade on every book update, so a trade is new
@@ -358,8 +362,8 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     // has nothing to compare with.
     std::optional<Trade> trade;
     if (seen_before && latest.last &&
-        (before.last != latest.last || before.last_size != latest.last_size ||
-         before.exchange_time != latest.exchange_time)) {
+        (before_last != latest.last || before_last_size != latest.last_size ||
+         before_time != latest.exchange_time)) {
         trade = Trade{*latest.last, latest.last_size};
     }
 

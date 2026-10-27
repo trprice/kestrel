@@ -11,6 +11,7 @@
 #include "kestrel/data/binanceus_data_source.hpp"
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
+#include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/kraken_trading_venue.hpp"
@@ -170,6 +171,40 @@ class ParamReader {
         return *d;
     }
 
+    // An optional decimal parameter.
+    Result<types::Decimal> Number(const std::string& key,
+                                  const types::Decimal& fallback) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        auto d = types::Decimal::Parse(it->second);
+        if (!d) {
+            return Bad(key, "a decimal number");
+        }
+        return *d;
+    }
+
+    // An optional whole number of milliseconds; zero is allowed.
+    Result<std::chrono::milliseconds> Millis(
+        const std::string& key, std::chrono::milliseconds fallback) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        std::int64_t value = 0;
+        const auto& text = it->second;
+        const auto [end, ec] =
+            std::from_chars(text.data(), text.data() + text.size(), value);
+        if (ec != std::errc() || end != text.data() + text.size() ||
+            value < 0) {
+            return Bad(key, "a whole number of milliseconds");
+        }
+        return std::chrono::milliseconds(value);
+    }
+
     Result<types::Timeframe> Timeframe(const std::string& key,
                                        types::Timeframe fallback) {
         auto it = mParams.find(key);
@@ -260,6 +295,41 @@ Result<StrategyPtr> BuildSmaCrossover(ParamReader& p) {
     }
 }
 
+Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
+    strategy::MarketMakerParams params;
+    auto symbol = p.Symbol();
+    auto quantity = p.Quantity("quantity");
+    auto half_spread = p.Quantity("half_spread_bps");
+    auto max_inventory = p.Quantity("max_inventory");
+    auto skew = p.Number("skew_bps", params.skew_bps);
+    auto requote = p.Number("requote_bps", params.requote_bps);
+    auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
+    if (!symbol) return std::unexpected(symbol.error());
+    if (!quantity) return std::unexpected(quantity.error());
+    if (!half_spread) return std::unexpected(half_spread.error());
+    if (!max_inventory) return std::unexpected(max_inventory.error());
+    if (!skew) return std::unexpected(skew.error());
+    if (!requote) return std::unexpected(requote.error());
+    if (!max_age) return std::unexpected(max_age.error());
+    if (auto ok = p.Finish(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    params.symbol = *symbol;
+    params.quantity = *quantity;
+    params.half_spread_bps = *half_spread;
+    params.max_inventory = *max_inventory;
+    params.skew_bps = *skew;
+    params.requote_bps = *requote;
+    params.max_quote_age = *max_age;
+    try {
+        return StrategyPtr(
+            std::make_unique<strategy::MarketMaker>(std::move(params)));
+    } catch (const std::invalid_argument& e) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         std::string("[strategy] ") + e.what());
+    }
+}
+
 struct StrategyEntry {
     const char* name;
     Result<StrategyPtr> (*build)(ParamReader&);
@@ -267,6 +337,7 @@ struct StrategyEntry {
 
 constexpr StrategyEntry kStrategies[] = {
     {"sma_crossover", BuildSmaCrossover},
+    {"market_maker", BuildMarketMaker},
 };
 
 // Whether the provider's TradingVenue is a real implementation. Update this

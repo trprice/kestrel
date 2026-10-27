@@ -13,14 +13,17 @@ using types::MakeError;
 
 namespace {
 
-// One thing to replay: a closed bar, or (when `is_quote`) a stored quote.
+// One thing to replay: a closed bar, or (when `is_quote`) a stored quote. It
+// points at the symbol and quote rather than holding them, since a timeline of
+// tens of thousands of these is sorted and every move would copy their
+// strings.
 struct Replayed {
     types::Timestamp time;  // when the bar closed / the quote arrived
     bool is_quote = false;
-    types::Symbol symbol;
+    const types::Symbol* symbol = nullptr;  // in the strategy's Requirements
     types::Timeframe timeframe{};
     types::Bar bar;
-    types::Quote quote;
+    const types::Quote* quote = nullptr;  // in the ReplayDataSource
 };
 
 // Whether `bars` (oldest first) reaches from `first` to the end of the window
@@ -143,7 +146,7 @@ types::Result<BacktestResult> RunBacktest(
                     bar.open_time < options.end) {
                     Replayed item;
                     item.time = bar.open_time + *step;
-                    item.symbol = symbol;
+                    item.symbol = &symbol;
                     item.timeframe = timeframe;
                     item.bar = bar;
                     timeline.push_back(std::move(item));
@@ -160,8 +163,8 @@ types::Result<BacktestResult> RunBacktest(
                     Replayed item;
                     item.time = quote.received_time;
                     item.is_quote = true;
-                    item.symbol = symbol;
-                    item.quote = quote;
+                    item.symbol = &symbol;
+                    item.quote = &quote;
                     timeline.push_back(std::move(item));
                 }
             }
@@ -192,22 +195,22 @@ types::Result<BacktestResult> RunBacktest(
         data->SetTime(now);
 
         if (item.is_quote) {
-            venue->OnQuote(item.quote);
-            data->EmitQuote(item.quote);
+            venue->OnQuote(*item.quote);
+            data->EmitQuote(*item.quote);
             runner.Drain();
             continue;
         }
         if (!needs.quotes) {
             // Without recorded quotes the bar's close stands in for the book.
             types::Quote quote;
-            quote.symbol = item.symbol;
+            quote.symbol = *item.symbol;
             quote.venue = std::string(data->Name());
             quote.received_time = now;
             quote.bid = quote.ask = quote.last = item.bar.close;
             venue->OnQuote(quote);
         }
 
-        data->Emit(item.symbol, item.timeframe, item.bar);
+        data->Emit(*item.symbol, item.timeframe, item.bar);
         runner.Drain();
     }
     runner.End();
