@@ -35,6 +35,10 @@ types::Result<std::vector<types::OrderStatus>>
 BinanceUSTradingVenue::GetOpenOrders() {
     return std::unexpected(NotImplemented("GetOpenOrders"));
 }
+types::Result<types::OrderStatus> BinanceUSTradingVenue::GetOrder(
+    const std::string&) {
+    return std::unexpected(NotImplemented("GetOrder"));
+}
 types::Result<std::vector<types::Fill>> BinanceUSTradingVenue::GetFills(
     types::Timestamp) {
     return std::unexpected(NotImplemented("GetFills"));

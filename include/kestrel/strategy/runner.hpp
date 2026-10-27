@@ -19,11 +19,14 @@
 
 namespace kestrel::strategy {
 
+class OrderTracker;
+
 struct RunnerOptions {
     // When set, the strategy gets a RiskGatedVenue with these limits instead
     // of the venue itself, fed with prices from the bars and quotes.
     std::optional<trading::RiskLimits> risk;
-    // How often Run() asks the venue for new fills; zero turns polling off.
+    // How often Run() asks the venue for new fills and for changes to the
+    // strategy's orders; zero turns polling off.
     std::chrono::milliseconds fill_poll_interval{1000};
 };
 
@@ -35,12 +38,21 @@ struct RunnerOptions {
 // called. The callbacks therefore only enqueue; the strategy runs on the
 // Run() thread, which is also free to call the venue over HTTP.
 //
+// Orders placed through the strategy's venue are remembered while they are
+// active. The same poll checks them (GetOpenOrders, plus GetOrder for one that
+// has left the open list) and delivers each change of state or filled quantity
+// to OnOrderUpdate, ending with the closed state. No orders, no calls.
+//
 // Fills are found by polling TradingVenue::GetFills and delivered to OnFill
 // once each. The poll starts from the time Begin() ran, and it assumes the
 // venue's fill times and the runner's clock roughly agree.
 //
-// The queue is unbounded, so a strategy that is slower than the quote stream
-// falls further and further behind.
+// Quotes are conflated per symbol: while one is queued for a symbol, newer
+// quotes for it are merged into it (Quote::MergeFrom) instead of queueing
+// behind it, so the strategy never sees a quote older than the last one that
+// arrived, and a slow strategy cannot fall behind on quotes. Intermediate
+// quotes are skipped. Bars are never dropped, so the queue still grows if bars
+// outpace the strategy.
 class Runner : private Context {
    public:
     Runner(std::shared_ptr<data::DataSource> data_source,
@@ -57,6 +69,10 @@ class Runner : private Context {
     // a watch thread, not a signal handler. Events already queued are
     // processed first. May be called before Run().
     void Stop();
+
+    // Quotes merged into an already queued one instead of being delivered
+    // separately. Thread-safe.
+    std::size_t ConflatedQuotes() const;
 
     // The risk gate the strategy trades through, if options.risk was set; use
     // it to halt trading from outside the strategy.
@@ -80,7 +96,10 @@ class Runner : private Context {
         types::Timeframe timeframe;
         types::Bar bar;
     };
+    // Names the symbol whose pending quote (mPendingQuotes) is next; the
+    // quote itself is filled in when the event is popped.
     struct QuoteEvent {
+        types::Symbol symbol;
         types::Quote quote;
     };
     struct StopEvent {};
@@ -89,6 +108,9 @@ class Runner : private Context {
     using SteadyTime = std::chrono::steady_clock::time_point;
 
     void Push(Event event);
+    void PushQuote(const types::Quote& quote);
+    // Both require mMutex and a non-empty queue.
+    Event TakeFront();
     // Waits for an event until `deadline` (forever if unset).
     std::optional<Event> Pop(std::optional<SteadyTime> deadline);
     std::optional<Event> TryPop();
@@ -103,6 +125,10 @@ class Runner : private Context {
                     const types::Bar& bar);
     // Hands the strategy the fills it has not seen; returns how many.
     std::size_t PollFills();
+    // Hands the strategy the order changes it has not seen; returns how many.
+    std::size_t PollOrders();
+    // PollFills, then PollOrders; returns how much they delivered.
+    std::size_t Poll();
     // Runs a strategy hook, logging instead of propagating an exception.
     void Guarded(const char* hook, const std::function<void()>& call);
 
@@ -118,14 +144,21 @@ class Runner : private Context {
 
     std::shared_ptr<data::DataSource> mData;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
-    std::shared_ptr<trading::TradingVenue> mVenue;   // the gate, or the venue
+    std::shared_ptr<OrderTracker> mTracker;
+    // What the strategy trades through: the tracker, over the gate if there is
+    // one, over the venue.
+    std::shared_ptr<trading::TradingVenue> mVenue;
     std::unique_ptr<Strategy> mStrategy;
     const RunnerOptions mOptions;
     std::function<types::Timestamp()> mClock;
 
-    std::mutex mMutex;  // guards mEvents
+    mutable std::mutex mMutex;  // guards the members below
     std::condition_variable mWake;
     std::deque<Event> mEvents;
+    // Quotes waiting in mEvents, by symbol: at most one QuoteEvent per symbol
+    // is queued, and it takes the quote from here when popped.
+    std::map<types::Symbol, types::Quote> mPendingQuotes;
+    std::size_t mConflated = 0;
 
     // Touched only on the thread driving the strategy.
     bool mBegun = false;

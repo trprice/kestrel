@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <vector>
 
 #include "kestrel/trading/trading_venue.hpp"
@@ -38,6 +39,14 @@ class RecordingVenue : public trading::TradingVenue {
         }
         return open_orders;
     }
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override {
+        ++get_order_calls;
+        if (auto it = order_states.find(order_id); it != order_states.end()) {
+            return it->second;
+        }
+        return types::MakeError(types::ErrorCategory::kNotFound, "unknown");
+    }
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override {
         ++get_fills_calls;
@@ -67,9 +76,11 @@ class RecordingVenue : public trading::TradingVenue {
     std::vector<types::Position> positions;
     std::vector<types::OrderStatus> open_orders;
     std::vector<types::Fill> fills;
+    std::map<std::string, types::OrderStatus> order_states;  // GetOrder
 
     int attempts = 0;
     int cancel_all_calls = 0;
+    int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
     std::vector<types::OrderRequest> orders;
 };

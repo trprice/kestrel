@@ -490,6 +490,17 @@ Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
     return out;
 }
 
+Result<types::OrderStatus> PaperTradingVenue::GetOrder(
+    const std::string& order_id) {
+    std::lock_guard lock(mMutex);
+    ExpireDayOrders();
+    auto it = mOrders.find(order_id);
+    if (it == mOrders.end()) {
+        return MakeError(ErrorCategory::kNotFound, "unknown order " + order_id);
+    }
+    return it->second.status;
+}
+
 Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
     types::Timestamp since) {
     std::lock_guard lock(mMutex);

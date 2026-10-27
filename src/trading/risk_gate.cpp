@@ -74,7 +74,23 @@ types::Result<std::vector<std::string>> RiskGatedVenue::Halt(
     const std::string& reason) {
     mHalted = true;
     spdlog::warn("risk: trading halted: {}", reason);
-    return mVenue->CancelAll();
+    auto cancelled = mVenue->CancelAll();
+
+    // An order already inside PlaceOrder read the flag before it was set and
+    // can still land after the cancel above. PlaceOrder holds the order lock
+    // from its checks to the venue call, so once the lock is ours that order
+    // has landed, and any later one sees the halt. Cancel again to catch it.
+    { std::lock_guard lock(mMutex); }
+    auto recancelled = mVenue->CancelAll();
+
+    if (!recancelled) {
+        return recancelled;
+    }
+    if (cancelled) {
+        recancelled->insert(recancelled->begin(), cancelled->begin(),
+                            cancelled->end());
+    }
+    return recancelled;
 }
 
 void RiskGatedVenue::NewDay(std::chrono::sys_days day) {

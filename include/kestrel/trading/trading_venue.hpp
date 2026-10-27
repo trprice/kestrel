@@ -42,6 +42,12 @@ class TradingVenue {
 
     virtual types::Result<std::vector<types::OrderStatus>> GetOpenOrders() = 0;
 
+    // The current state of one order, open or closed (filled, cancelled,
+    // rejected or expired). An unknown ID is kNotFound. Venues that forget
+    // closed orders after a while report those as kNotFound too.
+    virtual types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) = 0;
+
     // Every fill, partial fills included, with fill time >= since.
     virtual types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) = 0;

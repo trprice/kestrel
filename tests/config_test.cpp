@@ -468,6 +468,10 @@ struct FakeComponents {
             override {
             return mVenue->GetOpenOrders();
         }
+        types::Result<types::OrderStatus> GetOrder(
+            const std::string& id) override {
+            return mVenue->GetOrder(id);
+        }
         types::Result<std::vector<types::Fill>> GetFills(
             types::Timestamp since) override {
             return mVenue->GetFills(since);

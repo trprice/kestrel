@@ -6,8 +6,9 @@ Things that work but have edges a user could trip over. Each is also noted in
 the header of the code concerned.
 
 ### Strategy runner (`strategy/runner.hpp`)
-- The event queue is unbounded. A strategy slower than the quote stream falls
-  further and further behind; nothing drops or conflates old quotes.
+- Quotes are conflated per symbol, but the event queue is otherwise unbounded:
+  a strategy slower than the bar stream still falls behind (bars are never
+  dropped).
 - Fills are found by polling `GetFills`, not pushed, so `OnFill` can lag the
   fill by up to `fill_poll_interval` (default 1 s).
 - The fill poll starts from the time `Begin()` ran and assumes the venue's fill
@@ -17,11 +18,11 @@ the header of the code concerned.
   uses a 31-day estimate.
 - One `Runner` drives one strategy; running several means one runner (and one
   set of data subscriptions) each.
-- A strategy that places an order and never sees its fill (rejected or
-  cancelled asynchronously, after a successful acknowledgement) can get stuck.
-  `SmaCrossover` now handles an acknowledgement that is already closed
-  (`kExpired`, `kCancelled`, `kRejected`), but a later asynchronous rejection
-  still needs the `OnOrderUpdate` work below.
+- `OnOrderUpdate` is found by polling (`GetOpenOrders`, plus `GetOrder` for an
+  order that left the list) at `fill_poll_interval`, so a quick state change
+  can be seen late or have intermediate states skipped. An order that vanishes
+  with `kNotFound` is dropped without an update. A strategy that needs to know
+  about an order must have placed it through the runner's venue.
 - `Stop()` is not async-signal-safe (it takes a mutex). `kestrel_app run`
   calls it from a watch thread that collects SIGINT/SIGTERM with
   `sigtimedwait`; any other driver must do the same.
@@ -46,11 +47,10 @@ the header of the code concerned.
   position, and shorting is not modelled.
 - Checks and the venue call run under one lock, so concurrent orders are
   serialized (intended), and a slow venue call delays other orders.
-- `Halt()` sets the halt flag and calls `CancelAll()` without taking the order
-  lock, so an order already inside `PlaceOrder` (which read the flag before
-  the check) can still reach the venue after `Halt` returns. Halting should
-  hold the order lock, or re-cancel open orders once the in-flight order has
-  landed.
+- `Halt()` cancels at once, then waits for any order already inside
+  `PlaceOrder` to land and cancels again. A slow venue call therefore delays
+  `Halt` returning (not the first cancel). A position-reducing limit order
+  placed after the halt is allowed and stays open.
 
 ### P&L (`trading/pnl_tracker.hpp`)
 - Average-cost accounting only. Brokers and tax reports often use FIFO or
@@ -110,6 +110,11 @@ reachable from `kestrel_app run` and `backtest`.
       exceptions contained, fill polling, `Begin`/`Drain`/`End` for
       deterministic drivers
 - [x] `SmaCrossover` example strategy
+- [x] `OnOrderUpdate` hook and `TradingVenue::GetOrder`; the runner tracks the
+      strategy's active orders and reports state changes; `SmaCrossover` stops
+      waiting on an order that closed without a fill
+- [x] Per-symbol quote conflation in the runner
+- [x] `RiskGatedVenue::Halt` cancels again after an in-flight order lands
 - [x] `RiskGatedVenue`: order and position notional, open orders, order rate,
       daily loss, symbol allowlist, price staleness, kill switch
 - [x] `PnlTracker` as the single P&L implementation, used by both the paper
@@ -133,8 +138,6 @@ reachable from `kestrel_app run` and `backtest`.
       for bad arguments
 
 ### To finish
-- [ ] Close the risk gate's halt race: `Halt()` should hold the order lock or
-      re-cancel open orders after an in-flight placement lands
 - [ ] Run the runner against Binance.US data end to end in paper mode (the only
       live data source that is complete) and fix what that shakes out. (It
       starts, streams and stops cleanly; a long run that actually trades has
@@ -142,13 +145,9 @@ reachable from `kestrel_app run` and `backtest`.
 - [ ] `run` does not cancel open orders on shutdown; decide whether it should
 - [ ] `backtest` fetches bars from the provider on every run; load them from
       `BarStore` instead (see Backtesting and research)
-- [ ] Bound the runner's queue, or conflate quotes per symbol
+- [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
-- [ ] Give strategies a way to learn an order was rejected or cancelled
-      asynchronously (an `OnOrderUpdate` hook, or poll `GetOpenOrders`), and
-      use it in `SmaCrossover`. (Its handling of an already-closed
-      acknowledgement is done.)
 - [ ] Backtest summary: equity curve, total return, max drawdown, trade count,
       win rate, fees paid
 - [ ] Backtest fill model: fill at the next bar's open by default (filling a

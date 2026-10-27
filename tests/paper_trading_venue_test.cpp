@@ -208,6 +208,28 @@ TEST(PaperLimit, RestsThenFillsAtLimitPriceAsMaker) {
     EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
 }
 
+TEST(PaperLimit, GetOrderReportsOpenAndClosedOrders) {
+    Fixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0"));
+    ASSERT_OK(ack);
+
+    auto open = venue->GetOrder(ack->order_id);
+    ASSERT_OK(open);
+    EXPECT_EQ(open->state, OrderState::kNew);
+
+    ASSERT_OK(venue->CancelOrder(ack->order_id));
+    auto closed = venue->GetOrder(ack->order_id);
+    ASSERT_OK(closed);
+    EXPECT_EQ(closed->state, OrderState::kCancelled);
+
+    auto missing = venue->GetOrder("nope");
+    ASSERT_FALSE(missing);
+    EXPECT_EQ(missing.error().category, types::ErrorCategory::kNotFound);
+}
+
 TEST(PaperLimit, MarketableOnArrivalTakesTheTouch) {
     Fixture f;
     auto venue = f.Make();

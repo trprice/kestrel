@@ -21,8 +21,9 @@ struct SmaCrossoverParams {
 // strategy to trade.
 //
 // It goes long or flat when the order's fill arrives (OnFill), and places no
-// new order while one is outstanding. A market order that is accepted but never
-// fills would leave it waiting forever.
+// new order while one is outstanding. An order the venue accepted and later
+// cancelled, rejected or expired without filling (OnOrderUpdate) stops the
+// wait.
 class SmaCrossover : public Strategy {
    public:
     // Throws std::invalid_argument unless 0 < fast_period < slow_period and
@@ -34,6 +35,8 @@ class SmaCrossover : public Strategy {
     void OnBar(Context& context, const types::Symbol& symbol,
                types::Timeframe timeframe, const types::Bar& bar) override;
     void OnFill(Context& context, const types::Fill& fill) override;
+    void OnOrderUpdate(Context& context,
+                       const types::OrderStatus& status) override;
 
    private:
     void Trade(Context& context, types::Side side);
@@ -41,6 +44,7 @@ class SmaCrossover : public Strategy {
     SmaCrossoverParams mParams;
     bool mLong = false;
     bool mPending = false;  // an order was accepted and has not filled
+    std::string mOrderId;   // the pending order
 };
 
 }  // namespace kestrel::strategy

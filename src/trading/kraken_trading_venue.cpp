@@ -35,6 +35,10 @@ types::Result<std::vector<types::OrderStatus>>
 KrakenTradingVenue::GetOpenOrders() {
     return std::unexpected(NotImplemented("GetOpenOrders"));
 }
+types::Result<types::OrderStatus> KrakenTradingVenue::GetOrder(
+    const std::string&) {
+    return std::unexpected(NotImplemented("GetOrder"));
+}
 types::Result<std::vector<types::Fill>> KrakenTradingVenue::GetFills(
     types::Timestamp) {
     return std::unexpected(NotImplemented("GetFills"));

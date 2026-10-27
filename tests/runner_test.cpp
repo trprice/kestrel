@@ -3,6 +3,7 @@
 #include <atomic>
 #include <future>
 #include <thread>
+#include <tuple>
 
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
@@ -99,6 +100,14 @@ class RecordingStrategy : public strategy::Strategy {
     Requirements Needs() const override { return requirements; }
 
     void OnStart(strategy::Context& context) override {
+        for (int i = 0; i < orders_on_start; ++i) {
+            types::OrderRequest request;
+            request.symbol = kSymbol;
+            request.type = types::OrderType::kLimit;
+            request.quantity = types::Decimal::FromInt(1);
+            request.limit_price = types::Decimal::FromInt(10);
+            (void)context.Venue().PlaceOrder(request);
+        }
         auto bars = context.Bars(kSymbol, Timeframe::kH1);
         for (const auto& bar : bars) {
             start_window.push_back(bar.open_time);
@@ -116,6 +125,7 @@ class RecordingStrategy : public strategy::Strategy {
     }
     void OnQuote(strategy::Context&, const types::Quote& quote) override {
         quotes.push_back(quote.symbol);
+        full_quotes.push_back(quote);
     }
     void OnFill(strategy::Context&, const types::Fill& fill) override {
         fills.push_back(fill.fill_id);
@@ -123,17 +133,26 @@ class RecordingStrategy : public strategy::Strategy {
             throw std::runtime_error("boom");
         }
     }
+    void OnOrderUpdate(strategy::Context&,
+                       const types::OrderStatus& status) override {
+        updates.emplace_back(status.order_id, status.state,
+                             status.filled_quantity);
+    }
     void OnStop(strategy::Context&) override { stopped = true; }
 
     Requirements requirements;
     bool throw_on_bar = false;
     bool throw_on_fill = false;
+    int orders_on_start = 0;
+    std::vector<std::tuple<std::string, types::OrderState, types::Decimal>>
+        updates;
     std::vector<std::string> fills;
     std::promise<void> started;
     std::vector<types::Timestamp> start_window;
     std::vector<types::Timestamp> bars;
     std::vector<std::size_t> window_sizes;
     std::vector<types::Symbol> quotes;
+    std::vector<types::Quote> full_quotes;
     bool stopped = false;
 };
 
@@ -245,6 +264,169 @@ TEST_F(RunnerTest, DeliversQuotesOnlyWhenAskedFor) {
     data->quote_callback(quote);
     Finish();
     EXPECT_EQ(strategy->quotes, std::vector<types::Symbol>{kSymbol});
+}
+
+TEST_F(RunnerTest, ConflatesQueuedQuotesPerSymbol) {
+    strategy->requirements.quotes = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+
+    auto quote = [](const char* symbol, int second) {
+        types::Quote q;
+        q.symbol = symbol;
+        q.received_time = types::FromEpochSeconds(second);
+        return q;
+    };
+    types::Quote first = quote(kSymbol, 1);
+    first.bid = types::Decimal::FromInt(100);
+    first.ask = types::Decimal::FromInt(102);
+    types::Quote second = quote(kSymbol, 2);
+    second.bid = types::Decimal::FromInt(101);  // no ask: keeps the first's
+    types::Quote third = quote(kSymbol, 3);
+    third.last = types::Decimal::FromInt(101);
+    types::Quote other = quote("ETH/USD", 2);
+    other.bid = types::Decimal::FromInt(5);
+
+    data->quote_callback(first);
+    data->quote_callback(other);
+    data->quote_callback(second);
+    data->quote_callback(third);
+    EXPECT_EQ(runner->ConflatedQuotes(), 2u);
+
+    EXPECT_TRUE(runner->Drain());
+    // One quote per symbol, in the order the symbols first arrived.
+    ASSERT_EQ(strategy->full_quotes.size(), 2u);
+    const auto& merged = strategy->full_quotes[0];
+    EXPECT_EQ(merged.symbol, kSymbol);
+    EXPECT_EQ(merged.received_time, types::FromEpochSeconds(3));
+    EXPECT_EQ(merged.bid, types::Decimal::FromInt(101));
+    EXPECT_EQ(merged.ask, types::Decimal::FromInt(102));
+    EXPECT_EQ(merged.last, types::Decimal::FromInt(101));
+    EXPECT_EQ(strategy->full_quotes[1].symbol, "ETH/USD");
+
+    // Once delivered, the next quote starts afresh rather than merging into
+    // the old one.
+    types::Quote later = quote(kSymbol, 9);
+    later.bid = types::Decimal::FromInt(50);
+    data->quote_callback(later);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->full_quotes.size(), 3u);
+    EXPECT_EQ(strategy->full_quotes[2].bid, types::Decimal::FromInt(50));
+    EXPECT_FALSE(strategy->full_quotes[2].ask);
+    EXPECT_EQ(runner->ConflatedQuotes(), 2u);
+    runner->End();
+}
+
+types::OrderStatus StatusOf(const char* id, types::OrderState state,
+                            int filled = 0) {
+    types::OrderStatus status;
+    status.order_id = id;
+    status.state = state;
+    status.quantity = types::Decimal::FromInt(1);
+    status.filled_quantity = types::Decimal::FromInt(filled);
+    return status;
+}
+
+using Update =
+    std::tuple<std::string, types::OrderState, types::Decimal>;
+
+TEST_F(RunnerTest, ReportsAnOrderRejectedAfterItWasAccepted) {
+    strategy->orders_on_start = 1;  // acknowledged as kNew: "order-1"
+    Build();
+    ASSERT_OK(runner->Begin());
+
+    // Still resting: nothing to report.
+    venue->open_orders = {StatusOf("order-1", types::OrderState::kNew)};
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->updates.empty());
+
+    // It leaves the open list, and the venue says why.
+    venue->open_orders.clear();
+    venue->order_states["order-1"] =
+        StatusOf("order-1", types::OrderState::kRejected);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 1u);
+    EXPECT_EQ(strategy->updates[0],
+              Update("order-1", types::OrderState::kRejected,
+                     types::Decimal::FromInt(0)));
+
+    // A closed order is not looked at again.
+    const int lookups = venue->get_order_calls;
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(venue->get_order_calls, lookups);
+    EXPECT_EQ(strategy->updates.size(), 1u);
+    runner->End();
+}
+
+TEST_F(RunnerTest, ReportsPartialFillsThenTheFinalState) {
+    strategy->orders_on_start = 1;
+    Build();
+    ASSERT_OK(runner->Begin());
+
+    venue->open_orders = {
+        StatusOf("order-1", types::OrderState::kPartiallyFilled, 0)};
+    venue->open_orders[0].filled_quantity = types::Decimal(5, 1);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(runner->Drain());  // unchanged: not reported again
+    ASSERT_EQ(strategy->updates.size(), 1u);
+    EXPECT_EQ(std::get<1>(strategy->updates[0]),
+              types::OrderState::kPartiallyFilled);
+    EXPECT_EQ(std::get<2>(strategy->updates[0]), types::Decimal(5, 1));
+
+    venue->open_orders.clear();
+    venue->order_states["order-1"] =
+        StatusOf("order-1", types::OrderState::kFilled, 1);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 2u);
+    EXPECT_EQ(std::get<1>(strategy->updates[1]), types::OrderState::kFilled);
+    runner->End();
+}
+
+TEST_F(RunnerTest, DoesNotReportAnOrderThatWasAlreadyClosedWhenAcknowledged) {
+    strategy->orders_on_start = 1;
+    venue->ack_state = types::OrderState::kRejected;
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->updates.empty());
+    EXPECT_EQ(venue->get_order_calls, 0);
+    runner->End();
+}
+
+TEST_F(RunnerTest, GivesUpOnAnOrderTheVenueDoesNotKnow) {
+    strategy->orders_on_start = 1;
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());  // not open, not found
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(venue->get_order_calls, 1);
+    EXPECT_TRUE(strategy->updates.empty());
+    runner->End();
+}
+
+TEST_F(RunnerTest, RetriesAnOrderLookupThatFailedForOtherReasons) {
+    strategy->orders_on_start = 1;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->fail_reads = true;  // GetOpenOrders fails
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->updates.empty());
+
+    venue->fail_reads = false;
+    venue->order_states["order-1"] =
+        StatusOf("order-1", types::OrderState::kCancelled);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 1u);
+    EXPECT_EQ(std::get<1>(strategy->updates[0]), types::OrderState::kCancelled);
+    runner->End();
+}
+
+TEST_F(RunnerTest, DoesNotAskAboutOrdersWhenThereAreNone) {
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(venue->get_order_calls, 0);
+    runner->End();
 }
 
 TEST_F(RunnerTest, DoesNotSubscribeToQuotesNobodyWants) {

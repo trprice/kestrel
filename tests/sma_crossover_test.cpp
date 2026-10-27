@@ -171,4 +171,52 @@ TEST(SmaCrossoverTest, OrderClosedWithoutAFillDoesNotLeaveItWaiting) {
     EXPECT_EQ(context.venue.orders[1].side, Side::kBuy);
 }
 
+types::OrderStatus Update(const char* id, types::OrderState state,
+                          const char* filled = "0") {
+    types::OrderStatus status;
+    status.order_id = id;
+    status.state = state;
+    status.filled_quantity = D(filled);
+    return status;
+}
+
+TEST(SmaCrossoverTest, OrderCancelledLaterDoesNotLeaveItWaiting) {
+    SmaCrossover strategy(Params());
+    FakeContext context;
+    for (const char* close : {"10", "10", "10", "10", "20"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 1u);  // "order-1", accepted
+
+    strategy.OnOrderUpdate(context,
+                           Update("order-1", types::OrderState::kRejected));
+    for (const char* close : {"10", "10", "10", "30"}) {
+        Feed(strategy, context, close);
+    }
+    EXPECT_EQ(context.venue.orders.size(), 2u);  // tried again
+}
+
+TEST(SmaCrossoverTest, IgnoresUpdatesThatAreNotAFailureOfItsOrder) {
+    SmaCrossover strategy(Params());
+    FakeContext context;
+    for (const char* close : {"10", "10", "10", "10", "20"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+
+    // Someone else's order, a still-open one, and a filled one (its fill, not
+    // this update, decides the position).
+    strategy.OnOrderUpdate(context,
+                           Update("other", types::OrderState::kCancelled));
+    strategy.OnOrderUpdate(context, Update("order-1", types::OrderState::kNew));
+    strategy.OnOrderUpdate(
+        context, Update("order-1", types::OrderState::kFilled, "0.5"));
+    strategy.OnOrderUpdate(
+        context, Update("order-1", types::OrderState::kExpired, "0.2"));
+    for (const char* close : {"10", "10", "10", "30"}) {
+        Feed(strategy, context, close);
+    }
+    EXPECT_EQ(context.venue.orders.size(), 1u);  // still waiting for the fill
+}
+
 }  // namespace

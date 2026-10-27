@@ -31,6 +31,86 @@ std::optional<Decimal> QuotePrice(const types::Quote& quote) {
 
 }  // namespace
 
+// Passes everything to the venue it wraps and remembers the orders that were
+// still active when acknowledged.
+class OrderTracker : public trading::TradingVenue {
+   public:
+    struct Seen {
+        types::OrderState state;
+        Decimal filled;
+    };
+
+    explicit OrderTracker(std::shared_ptr<trading::TradingVenue> venue)
+        : mVenue(std::move(venue)) {}
+
+    std::string_view Name() const override { return mVenue->Name(); }
+    types::Result<types::OrderAcknowledgement> PlaceOrder(
+        const types::OrderRequest& request) override {
+        auto ack = mVenue->PlaceOrder(request);
+        if (ack && types::IsActive(ack->state)) {
+            std::lock_guard lock(mMutex);
+            mActive[ack->order_id] = Seen{ack->state, Decimal()};
+        }
+        return ack;
+    }
+    types::Result<trading::CancelOutcome> CancelOrder(
+        const std::string& order_id) override {
+        return mVenue->CancelOrder(order_id);
+    }
+    types::Result<std::vector<std::string>> CancelAll() override {
+        return mVenue->CancelAll();
+    }
+    types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override {
+        return mVenue->GetOpenOrders();
+    }
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override {
+        return mVenue->GetOrder(order_id);
+    }
+    types::Result<std::vector<types::Fill>> GetFills(
+        types::Timestamp since) override {
+        return mVenue->GetFills(since);
+    }
+    types::Result<std::vector<types::Position>> GetPositions() override {
+        return mVenue->GetPositions();
+    }
+    types::Result<std::vector<types::Balance>> GetBalances() override {
+        return mVenue->GetBalances();
+    }
+
+    // The orders last seen active, by venue order ID.
+    std::map<std::string, Seen> Active() const {
+        std::lock_guard lock(mMutex);
+        return mActive;
+    }
+    // Records `status` for a tracked order and returns whether it differs from
+    // what was last seen; a closed order is forgotten.
+    bool Note(const types::OrderStatus& status) {
+        std::lock_guard lock(mMutex);
+        auto it = mActive.find(status.order_id);
+        if (it == mActive.end()) {
+            return false;
+        }
+        const bool changed = it->second.state != status.state ||
+                             it->second.filled != status.filled_quantity;
+        if (types::IsActive(status.state)) {
+            it->second = Seen{status.state, status.filled_quantity};
+        } else {
+            mActive.erase(it);
+        }
+        return changed;
+    }
+    void Forget(const std::string& order_id) {
+        std::lock_guard lock(mMutex);
+        mActive.erase(order_id);
+    }
+
+   private:
+    const std::shared_ptr<trading::TradingVenue> mVenue;
+    mutable std::mutex mMutex;
+    std::map<std::string, Seen> mActive;
+};
+
 Runner::Runner(std::shared_ptr<data::DataSource> data_source,
                std::shared_ptr<trading::TradingVenue> venue,
                std::unique_ptr<Strategy> strategy, RunnerOptions options,
@@ -45,6 +125,8 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
             mVenue, *mOptions.risk, mClock);
         mVenue = mGate;
     }
+    mTracker = std::make_shared<OrderTracker>(mVenue);
+    mVenue = mTracker;
 }
 
 void Runner::Push(Event event) {
@@ -53,6 +135,35 @@ void Runner::Push(Event event) {
         mEvents.push_back(std::move(event));
     }
     mWake.notify_one();
+}
+
+void Runner::PushQuote(const types::Quote& quote) {
+    {
+        std::lock_guard lock(mMutex);
+        auto [it, inserted] = mPendingQuotes.try_emplace(quote.symbol, quote);
+        if (!inserted) {
+            it->second.MergeFrom(quote);
+            ++mConflated;
+            return;  // the queued event will carry the merged quote
+        }
+        mEvents.push_back(QuoteEvent{quote.symbol, {}});
+    }
+    mWake.notify_one();
+}
+
+Runner::Event Runner::TakeFront() {
+    Event event = std::move(mEvents.front());
+    mEvents.pop_front();
+    if (auto* quote = std::get_if<QuoteEvent>(&event)) {
+        auto pending = mPendingQuotes.extract(quote->symbol);
+        quote->quote = std::move(pending.mapped());
+    }
+    return event;
+}
+
+std::size_t Runner::ConflatedQuotes() const {
+    std::lock_guard lock(mMutex);
+    return mConflated;
 }
 
 std::optional<Runner::Event> Runner::Pop(std::optional<SteadyTime> deadline) {
@@ -66,9 +177,7 @@ std::optional<Runner::Event> Runner::Pop(std::optional<SteadyTime> deadline) {
     if (mEvents.empty()) {
         return std::nullopt;
     }
-    Event event = std::move(mEvents.front());
-    mEvents.pop_front();
-    return event;
+    return TakeFront();
 }
 
 std::optional<Runner::Event> Runner::TryPop() {
@@ -76,9 +185,7 @@ std::optional<Runner::Event> Runner::TryPop() {
     if (mEvents.empty()) {
         return std::nullopt;
     }
-    Event event = std::move(mEvents.front());
-    mEvents.pop_front();
-    return event;
+    return TakeFront();
 }
 
 void Runner::Stop() { Push(StopEvent{}); }
@@ -134,7 +241,7 @@ types::Result<void> Runner::Begin() {
     if (requirements.quotes) {
         auto sub = mData->StreamQuotes(
             requirements.symbols,
-            [this](const types::Quote& quote) { Push(QuoteEvent{quote}); });
+            [this](const types::Quote& quote) { PushQuote(quote); });
         if (!sub) {
             mSubscriptions.clear();
             return std::unexpected(sub.error());
@@ -187,7 +294,7 @@ types::Result<void> Runner::Run() {
             running = Handle(*event);
         }
         if (polling && std::chrono::steady_clock::now() >= next_poll) {
-            PollFills();
+            Poll();
             next_poll = std::chrono::steady_clock::now() + interval;
         }
     }
@@ -203,7 +310,7 @@ bool Runner::Drain() {
                 return false;
             }
         }
-    } while (PollFills() > 0);
+    } while (Poll() > 0);
     return true;
 }
 
@@ -290,6 +397,56 @@ void Runner::DeliverBar(const types::Symbol& symbol, types::Timeframe timeframe,
         mGate->NoteReferencePrice(symbol, bar.close);
     }
     Guarded("OnBar", [&] { mStrategy->OnBar(*this, symbol, timeframe, bar); });
+}
+
+std::size_t Runner::Poll() {
+    const std::size_t fills = PollFills();
+    return fills + PollOrders();
+}
+
+std::size_t Runner::PollOrders() {
+    const auto tracked = mTracker->Active();
+    if (tracked.empty()) {
+        return 0;
+    }
+    auto open = mVenue->GetOpenOrders();
+    if (!open) {
+        spdlog::warn("strategy {}: could not read open orders: {}",
+                     mStrategy->Name(), open.error().ToString());
+        return 0;
+    }
+    std::map<std::string, const types::OrderStatus*> open_by_id;
+    for (const types::OrderStatus& status : *open) {
+        open_by_id[status.order_id] = &status;
+    }
+
+    std::size_t delivered = 0;
+    for (const auto& entry : tracked) {
+        const std::string& order_id = entry.first;
+        types::OrderStatus status;
+        if (auto it = open_by_id.find(order_id); it != open_by_id.end()) {
+            status = *it->second;
+        } else {
+            // Not open any more: ask what became of it.
+            auto closed = mVenue->GetOrder(order_id);
+            if (!closed) {
+                spdlog::warn("strategy {}: could not look up order {}: {}",
+                             mStrategy->Name(), order_id,
+                             closed.error().ToString());
+                if (closed.error().category == ErrorCategory::kNotFound) {
+                    mTracker->Forget(order_id);  // it will never be found
+                }
+                continue;
+            }
+            status = std::move(*closed);
+        }
+        if (mTracker->Note(status)) {
+            ++delivered;
+            Guarded("OnOrderUpdate",
+                    [&] { mStrategy->OnOrderUpdate(*this, status); });
+        }
+    }
+    return delivered;
 }
 
 std::size_t Runner::PollFills() {

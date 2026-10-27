@@ -1,5 +1,9 @@
 #include "kestrel/trading/risk_gate.hpp"
 
+#include <condition_variable>
+#include <future>
+#include <mutex>
+
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
@@ -416,13 +420,71 @@ TEST_F(RiskGateTest, HaltCancelsEverythingAndStopsNewPositions) {
     Build();
     ASSERT_OK(gate->Halt("test"));
     EXPECT_TRUE(gate->IsHalted());
-    EXPECT_EQ(venue->cancel_all_calls, 1);
+    EXPECT_EQ(venue->cancel_all_calls, 2);  // see the in-flight test below
 
     ExpectRejected(Market(Side::kBuy, "1"));
     ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "3")));  // exit is fine
 
     gate->Resume();
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+// A venue whose PlaceOrder waits for the test, and which notes how many
+// orders had landed at each CancelAll.
+class SlowVenue : public RecordingVenue {
+   public:
+    types::Result<types::OrderAcknowledgement> PlaceOrder(
+        const OrderRequest& request) override {
+        entered.set_value();
+        release.get_future().wait();
+        return RecordingVenue::PlaceOrder(request);
+    }
+    types::Result<std::vector<std::string>> CancelAll() override {
+        {
+            std::lock_guard lock(mutex);
+            orders_at_cancel.push_back(orders.size());
+        }
+        cancelled.notify_all();
+        return RecordingVenue::CancelAll();
+    }
+
+    std::promise<void> entered;
+    std::promise<void> release;
+    std::mutex mutex;
+    std::condition_variable cancelled;
+    std::vector<std::size_t> orders_at_cancel;
+};
+
+TEST_F(RiskGateTest, HaltCancelsAnOrderThatWasInFlight) {
+    auto slow = std::make_shared<SlowVenue>();
+    gate = std::make_unique<RiskGatedVenue>(slow, limits,
+                                            [this] { return now; });
+
+    auto placing = std::async(std::launch::async, [&] {
+        return gate->PlaceOrder(Market(Side::kBuy, "1"));
+    });
+    slow->entered.get_future().wait();  // the order is inside the venue call
+
+    auto halting = std::async(std::launch::async,
+                              [&] { return gate->Halt("test"); });
+    {
+        // The first cancel goes out without waiting for the order.
+        std::unique_lock lock(slow->mutex);
+        ASSERT_TRUE(slow->cancelled.wait_for(
+            lock, std::chrono::seconds(5),
+            [&] { return !slow->orders_at_cancel.empty(); }));
+    }
+    EXPECT_EQ(halting.wait_for(std::chrono::milliseconds(50)),
+              std::future_status::timeout);  // now waiting for the order
+
+    slow->release.set_value();
+    ASSERT_OK(placing.get());
+    ASSERT_OK(halting.get());
+
+    // The second cancel ran after the order landed.
+    ASSERT_EQ(slow->orders_at_cancel.size(), 2u);
+    EXPECT_EQ(slow->orders_at_cancel[0], 0u);
+    EXPECT_EQ(slow->orders_at_cancel[1], 1u);
 }
 
 TEST_F(RiskGateTest, HaltHoldsEvenIfTheCancelFails) {

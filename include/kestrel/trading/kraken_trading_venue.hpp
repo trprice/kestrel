@@ -25,6 +25,8 @@ namespace kestrel::trading {
 //   an
 //             order that already filled returns EOrder:Unknown order -> look it
 //             up with /0/private/QueryOrders to report kAlreadyFilled.
+//   GetOrder: /0/private/QueryOrders (txid); the runner calls it for an order
+//             that has left OpenOrders, so it must report closed orders.
 //   Open orders: /0/private/OpenOrders.   Fills: /0/private/TradesHistory
 //   (start=
 //             <epoch>, paged with ofs).   Balances: /0/private/BalanceEx
@@ -45,6 +47,8 @@ class KrakenTradingVenue : public TradingVenue {
         const std::string& order_id) override;
     types::Result<std::vector<std::string>> CancelAll() override;
     types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override;
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override;
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override;
     types::Result<std::vector<types::Position>> GetPositions() override;

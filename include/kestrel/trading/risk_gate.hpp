@@ -100,8 +100,12 @@ class RiskGatedVenue : public TradingVenue {
     types::Result<void> ResetDailyBaseline();
 
     // Kill switch: stops all orders except position-reducing ones and cancels
-    // everything open. Does not take the order lock, so it is not delayed by
-    // an order in flight. The halt holds even if the cancel fails.
+    // everything open. The first cancel is issued at once, without the order
+    // lock. Halt then waits for any order already in flight to land and
+    // cancels again, so that order does not survive the halt. The result is
+    // the IDs from both cancels (an order can appear in only one). The halt
+    // holds even if a cancel fails; if the second cancel fails its error is
+    // returned.
     types::Result<std::vector<std::string>> Halt(const std::string& reason);
     void Resume() { mHalted = false; }
     bool IsHalted() const { return mHalted; }
@@ -118,6 +122,10 @@ class RiskGatedVenue : public TradingVenue {
     }
     types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override {
         return mVenue->GetOpenOrders();
+    }
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override {
+        return mVenue->GetOrder(order_id);
     }
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override {

@@ -68,6 +68,8 @@ class PaperTradingVenue : public TradingVenue {
         const std::string& order_id) override;
     types::Result<std::vector<std::string>> CancelAll() override;
     types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override;
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override;
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override;
     types::Result<std::vector<types::Position>> GetPositions() override;

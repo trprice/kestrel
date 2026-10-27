@@ -78,6 +78,22 @@ void SmaCrossover::OnFill(Context&, const types::Fill& fill) {
     mLong = fill.side == Side::kBuy;
 }
 
+void SmaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
+    if (!mPending || status.order_id != mOrderId) {
+        return;
+    }
+    // A closed order with nothing filled will never produce a fill. (A filled
+    // one is left to OnFill, which also learns the side.)
+    const bool dead = status.state == types::OrderState::kCancelled ||
+                      status.state == types::OrderState::kRejected ||
+                      status.state == types::OrderState::kExpired;
+    if (dead && status.filled_quantity.Sign() == 0) {
+        spdlog::warn("sma_crossover: order {} closed without a fill: {}",
+                     status.order_id, types::ToString(status.state));
+        mPending = false;
+    }
+}
+
 void SmaCrossover::Trade(Context& context, Side side) {
     types::OrderRequest request;
     request.symbol = mParams.symbol;
@@ -102,6 +118,7 @@ void SmaCrossover::Trade(Context& context, Side side) {
         return;
     }
     mPending = true;
+    mOrderId = ack->order_id;
     spdlog::info("sma_crossover: {} {} {} (order {})", types::ToString(side),
                  mParams.quantity.ToString(), mParams.symbol, ack->order_id);
 }
