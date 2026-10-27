@@ -73,8 +73,18 @@ the header of the code concerned.
   same option.
 
 ### Backtesting (`backtest/backtest.hpp`)
-- Bars only: strategies that need quotes, and monthly timeframes, are
-  rejected with `kUnsupported`.
+- Monthly timeframes are rejected with `kUnsupported`. Strategies that need
+  quotes replay stored quotes (`QuoteStore`); there are no stored quotes for
+  a range that was never recorded.
+- Resting limit orders fill per `[paper] limit_fill_model`. `cross` (the
+  default) is optimistic for quoting strategies. `conservative` models queue
+  position from trades, so it needs stored quotes carrying `last`/`last_size`
+  (Binance.US does; Kraken's ticker has no trade size, so only price-through
+  fills happen there). It assumes our order joins at the back of the displayed
+  size, ignores order and cancel latency, takes no account of our own orders
+  moving the market, and cannot see trades that print at our price while a
+  better-priced level still stands. Identical back-to-back trades (same price,
+  size and exchange time) look like one.
 - Orders fill at the close of the bar that triggered them, plus slippage and
   fees. Resting limit and stop orders can only trigger at closes, never on an
   intrabar high or low.
@@ -190,8 +200,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Parameter sweeps and walk-forward testing
 - [ ] Load backtest bars from the database (`BarStore`) instead of building
       `ReplayDataSource` by hand
-- [ ] Quote-level replay from stored quotes (`QuoteStore`), so quote-driven
-      strategies can be backtested
+- [ ] Order and cancel latency in the paper venue, so a quote can fill an
+      order that the strategy has already asked to cancel
+- [ ] Record the aggressor side of trades (Binance `m` flag) so trades can be
+      attributed to the right side of the book
 - [ ] Benchmark comparison against buy-and-hold
 
 ### Risk

@@ -13,6 +13,11 @@ maker_fee_bps = 25             # 0.25%
 taker_fee_bps = 40             # 0.40%
 slippage_bps  = 5              # market orders fill 0.05% through the touch
 cap_limit_fills_at_quote_size = false
+# When a resting limit order counts as filled:
+#   "cross"         the other side's touch reaches the limit (optimistic)
+#   "conservative"  the touch goes strictly through it, a trade prints through
+#                   it, or enough trades print at it to clear the queue ahead
+limit_fill_model = "cross"
 
 [risk]                         # optional in paper mode, required for live runs
 # Every limit is optional; omit one to leave it unchecked. Amounts are in the

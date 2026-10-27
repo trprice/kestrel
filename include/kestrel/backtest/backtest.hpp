@@ -75,6 +75,14 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // in [start, end) (AddQuotes), in arrival order and ahead of any bar closing at
 // the same instant. The paper venue is then fed those quotes instead of the
 // bar-close ones, so fills happen at the recorded bid and ask.
+// Resting limit orders fill according to paper.limit_fill_model. The default,
+// kCross, fills one as soon as the other side's quote reaches its limit, which
+// flatters a strategy that quotes (a market maker): use kConservative for
+// those. It fills only when the quote goes strictly through the limit, a
+// recorded trade prints through it, or trades at the limit clear the queue
+// ahead of the order (see LimitFillModel). Trades are visible only in stored
+// quotes that carry last/last_size (Binance.US does; Kraken sends no size).
+// Neither model simulates order or cancel latency.
 // A calendar-length timeframe (1M) fails with kUnsupported, and an end that is
 // not after the start with kInvalidArgument. `data` needs bars (and quotes if
 // asked for) and SetSymbolInfo for every symbol the strategy trades.

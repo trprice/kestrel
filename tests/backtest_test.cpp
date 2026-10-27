@@ -308,6 +308,59 @@ class RecordingBuyer : public strategy::Strategy {
     }
 };
 
+// Rests a buy limit at 99 on the first quote it sees.
+class RestingBuyer : public strategy::Strategy {
+   public:
+    std::string_view Name() const override { return "resting-buyer"; }
+    strategy::Requirements Needs() const override {
+        strategy::Requirements r;
+        r.symbols = {kSymbol};
+        r.quotes = true;
+        return r;
+    }
+    void OnQuote(strategy::Context& ctx, const types::Quote&) override {
+        if (placed) {
+            return;
+        }
+        placed = true;
+        types::OrderRequest order;
+        order.symbol = kSymbol;
+        order.type = types::OrderType::kLimit;
+        order.quantity = D("1");
+        order.limit_price = D("99");
+        (void)ctx.Venue().PlaceOrder(order);
+    }
+    bool placed = false;
+};
+
+TEST(BacktestTest, TheLimitFillModelDecidesWhenARestingOrderFills) {
+    auto data = [] {
+        auto d = Data(kCloses);
+        // The ask touches the limit at 0:20 and goes through it at 0:30.
+        d->AddQuotes(kSymbol, {QuoteAt(10, "98.9", "101"),
+                               QuoteAt(20, "98", "99"),
+                               QuoteAt(30, "97", "98.9")});
+        return d;
+    };
+    auto options = Options();
+    options.start = Hour(0);
+    options.end = Hour(1);
+
+    auto optimistic = RunBacktest(data(), std::make_unique<RestingBuyer>(),
+                                  options);
+    ASSERT_OK(optimistic);
+    ASSERT_EQ(optimistic->fills.size(), 1u);
+    EXPECT_EQ(optimistic->fills[0].time, Hour(0) + std::chrono::minutes(20));
+
+    options.paper.limit_fill_model = trading::LimitFillModel::kConservative;
+    auto conservative = RunBacktest(data(), std::make_unique<RestingBuyer>(),
+                                    options);
+    ASSERT_OK(conservative);
+    ASSERT_EQ(conservative->fills.size(), 1u);
+    EXPECT_EQ(conservative->fills[0].time, Hour(0) + std::chrono::minutes(30));
+    EXPECT_EQ(conservative->fills[0].price, D("99"));  // its limit, not 98.9
+}
+
 // Quotes at 0:30, 1:00 and 1:30; hour 0's bar closes at 1:00 and hour 1's at
 // 2:00, so the 1:00 quote and hour 0's close land on the same instant.
 std::shared_ptr<ReplayDataSource> MixedData() {

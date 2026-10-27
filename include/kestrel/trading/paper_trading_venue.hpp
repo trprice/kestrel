@@ -14,6 +14,31 @@
 
 namespace kestrel::trading {
 
+// How a resting limit order is decided to have filled.
+enum class LimitFillModel {
+    // Fills, at its limit price and in full, on the first quote whose touch on
+    // the other side has reached the limit (ask <= a buy's limit, bid >= a
+    // sell's). Ignores queue position and trades: optimistic.
+    kCross,
+    // Conservative, for quote-driven strategies such as market makers. An
+    // order fills only on evidence that it would have been reached:
+    //   - the opposite touch is strictly through the limit (ask < a buy's
+    //     limit): filled, in full unless capped by cap_limit_fills_at_quote_size;
+    //   - a trade prints through the limit (below a buy's, above a sell's):
+    //     filled in full, since every order at a better price filled first;
+    //   - trades print at the limit price: they first use up the orders queued
+    //     ahead of ours, and only what is left fills us.
+    // The queue ahead is the size shown at our price when we join it, and only
+    // trades shrink it: a smaller displayed size may be cancels behind or in
+    // front of us, so it is ignored. If that size is not known (the quote has
+    // none, or our price is behind the best), trades at the limit price never
+    // fill us until the price becomes the touch and shows a size. Trades are
+    // read off the quote's last/last_size/exchange_time changing; with no
+    // last_size a trade is known only by its price. A touch equal to the limit
+    // does not fill (kCross would).
+    kConservative,
+};
+
 struct PaperOptions {
     // Starting balances by asset. Defaults to 10,000 USD.
     std::map<std::string, types::Decimal> initial_balances{
@@ -29,14 +54,16 @@ struct PaperOptions {
     // When true, a limit fill is capped at the size shown at the touch, so
     // large orders fill in several partial fills as quotes arrive.
     bool cap_limit_fills_at_quote_size = false;
+    LimitFillModel limit_fill_model = LimitFillModel::kCross;
 };
 
 // Simulated venue that works with any DataSource. It decides fills from live
 // quotes:
 //   market  fills at ask*(1+slippage) (buy) or bid*(1-slippage) (sell), taker
-//   fee limit   marketable on arrival -> fills at the touch as taker; otherwise
-//           rests and fills at its limit price (maker fee) once the market
-//           crosses it
+//           fee
+//   limit   marketable on arrival -> fills at the touch as taker; otherwise
+//           rests and fills at its limit price (maker fee) when
+//           PaperOptions::limit_fill_model says it would have been reached
 //   stop    a stop-market: once the touch reaches the stop price it becomes a
 //           market order
 // Spot only: no shorting and no leverage. Buys reserve quote asset (including
@@ -78,6 +105,11 @@ class PaperTradingVenue : public TradingVenue {
    private:
     struct Order;
     struct Candidate;
+    // A trade seen in a quote stream.
+    struct Trade {
+        types::Decimal price;
+        std::optional<types::Decimal> size;
+    };
 
     // All of these require mMutex to be held.
     std::optional<Candidate> Evaluate(const Order& order,
@@ -86,7 +118,16 @@ class PaperTradingVenue : public TradingVenue {
     bool Execute(Order& order, const Candidate& candidate,
                  types::Liquidity liquidity);
     void Close(Order& order, types::OrderState state, std::string reason);
-    void TryMatch(Order& order, const types::Quote& quote, bool placing);
+    // For a resting limit order under LimitFillModel::kConservative: what, if
+    // anything, `trade` (new in `quote`) and `quote` fill, and the queue
+    // position afterwards.
+    std::optional<Candidate> EvaluateQueued(
+        Order& order, const types::Quote& quote,
+        const std::optional<Trade>& trade) const;
+    // Learns the size queued ahead of `order` from the book in `quote`.
+    void UpdateQueue(Order& order, const types::Quote& quote) const;
+    void TryMatch(Order& order, const types::Quote& quote, bool placing,
+                  const std::optional<Trade>& trade = std::nullopt);
     void ExpireDayOrders();
     types::Decimal Reserve(const Order& order,
                            const types::Decimal& remaining) const;

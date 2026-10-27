@@ -72,6 +72,7 @@ struct CommonSettings {
 //   maker_fee_bps = 25
 //   taker_fee_bps = 40
 //   slippage_bps  = 5
+//   limit_fill_model = "cross"   # or "conservative"
 //
 //   [risk]                       # optional; see RiskLimits. Required for live
 //                                # runs. A [risk] table with no limits is

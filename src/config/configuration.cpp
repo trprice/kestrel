@@ -232,6 +232,20 @@ class ConfigParser {
             if (const auto v = paper->get("cap_limit_fills_at_quote_size")) {
                 p.cap_limit_fills_at_quote_size = v->value_or(false);
             }
+            if (const auto v = paper->get("limit_fill_model")) {
+                const auto name = v->value<std::string>();
+                if (name == "cross") {
+                    p.limit_fill_model = trading::LimitFillModel::kCross;
+                } else if (name == "conservative") {
+                    p.limit_fill_model =
+                        trading::LimitFillModel::kConservative;
+                } else {
+                    return MakeError(
+                        ErrorCategory::kInvalidArgument,
+                        "[paper] limit_fill_model must be \"cross\" or "
+                        "\"conservative\"");
+                }
+            }
         }
         return c;
     }

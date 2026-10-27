@@ -53,6 +53,9 @@ struct PaperTradingVenue::Order {
     Decimal notional_filled;  // sum of price*quantity over fills
     bool triggered = false;   // stop orders only
     std::optional<types::Timestamp> expires;
+    // LimitFillModel::kConservative, resting limits only: size queued ahead of
+    // this order at its price, or unknown.
+    std::optional<Decimal> queue_ahead;
 
     Decimal Remaining() const {
         return status.quantity - status.filled_quantity;
@@ -188,6 +191,60 @@ std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::Evaluate(
     return std::nullopt;  // untriggered stop
 }
 
+void PaperTradingVenue::UpdateQueue(Order& order,
+                                    const types::Quote& quote) const {
+    const bool buy = order.status.side == Side::kBuy;
+    const Decimal& limit = *order.status.limit_price;
+    const auto& own = buy ? quote.bid : quote.ask;
+    if (!own) {
+        return;
+    }
+    if (buy ? *own < limit : *own > limit) {
+        order.queue_ahead = Decimal();  // nobody else is at our price
+    } else if (*own == limit && !order.queue_ahead) {
+        order.queue_ahead = buy ? quote.bid_size : quote.ask_size;
+    }
+}
+
+std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::EvaluateQueued(
+    Order& order, const types::Quote& quote,
+    const std::optional<Trade>& trade) const {
+    const bool buy = order.status.side == Side::kBuy;
+    const Decimal& limit = *order.status.limit_price;
+    Decimal fillable;
+
+    if (trade) {
+        if (buy ? trade->price < limit : trade->price > limit) {
+            fillable = order.Remaining();
+        } else if (trade->price == limit && trade->size && order.queue_ahead) {
+            const Decimal used = std::min(*order.queue_ahead, *trade->size);
+            *order.queue_ahead -= used;
+            fillable = std::min(order.Remaining(), *trade->size - used);
+        }
+    }
+
+    const auto& opposite = buy ? quote.ask : quote.bid;
+    if (opposite && (buy ? *opposite < limit : *opposite > limit)) {
+        Decimal crossed = order.Remaining();
+        if (mOptions.cap_limit_fills_at_quote_size) {
+            if (const auto size = TouchSize(quote, order.status.side)) {
+                crossed = std::min(crossed, std::max(*size, Decimal()));
+            }
+        }
+        fillable = std::max(fillable, crossed);
+    }
+
+    UpdateQueue(order, quote);
+    if (fillable.Sign() <= 0) {
+        return std::nullopt;
+    }
+    Candidate c;
+    c.price = limit;
+    c.quantity = fillable;
+    c.liquidity = Liquidity::kMaker;
+    return c;
+}
+
 bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
                                 Liquidity liquidity) {
     const Side side = order.status.side;
@@ -258,11 +315,16 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
 }
 
 void PaperTradingVenue::TryMatch(Order& order, const types::Quote& quote,
-                                 bool placing) {
+                                 bool placing,
+                                 const std::optional<Trade>& trade) {
     if (!types::IsActive(order.status.state)) {
         return;
     }
-    const auto candidate = Evaluate(order, quote, placing);
+    const bool queued =
+        !placing && order.status.type == OrderType::kLimit &&
+        mOptions.limit_fill_model == LimitFillModel::kConservative;
+    const auto candidate = queued ? EvaluateQueued(order, quote, trade)
+                                  : Evaluate(order, quote, placing);
     if (!candidate) {
         return;
     }
@@ -286,12 +348,25 @@ void PaperTradingVenue::ExpireDayOrders() {
 
 void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     std::lock_guard lock(mMutex);
-    mQuotes[quote.symbol].MergeFrom(quote);
+    const bool seen_before = mQuotes.contains(quote.symbol);
+    types::Quote& latest = mQuotes[quote.symbol];
+    const types::Quote before = latest;
+    latest.MergeFrom(quote);
+
+    // Streams repeat the last trade on every book update, so a trade is new
+    // only if its price, size or time changed. The first quote for a symbol
+    // has nothing to compare with.
+    std::optional<Trade> trade;
+    if (seen_before && latest.last &&
+        (before.last != latest.last || before.last_size != latest.last_size ||
+         before.exchange_time != latest.exchange_time)) {
+        trade = Trade{*latest.last, latest.last_size};
+    }
+
     ExpireDayOrders();
-    const types::Quote& latest = mQuotes[quote.symbol];
     for (Order* order : mActive) {
         if (order->status.symbol == quote.symbol) {
-            TryMatch(*order, latest, /*placing=*/false);
+            TryMatch(*order, latest, /*placing=*/false, trade);
         }
     }
 }
@@ -430,6 +505,11 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     mActive.push_back(&placed);
     if (quote) {
         TryMatch(placed, *quote, /*placing=*/true);
+        if (types::IsActive(placed.status.state) &&
+            placed.status.type == OrderType::kLimit &&
+            mOptions.limit_fill_model == LimitFillModel::kConservative) {
+            UpdateQueue(placed, *quote);  // joins the back of the queue
+        }
     }
     if (types::IsActive(placed.status.state) &&
         request.time_in_force == types::TimeInForce::kIoc) {

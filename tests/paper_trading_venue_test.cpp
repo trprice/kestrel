@@ -552,4 +552,202 @@ TEST(PaperThreading, ConcurrentQuotesAndOrdersKeepBooksConsistent) {
     EXPECT_EQ(Bal(*venue, "BTC").total, D("1") + net_btc);
 }
 
+// A quote that also carries a trade. Streams repeat the last trade on later
+// book updates, which is how the venue tells a new trade from an old one.
+types::Quote QT(const char* bid, const char* ask, const char* bid_size,
+                const char* ask_size, const char* last, const char* last_size,
+                int exchange_ms) {
+    types::Quote q = Q(bid, ask, bid_size, ask_size);
+    q.last = D(last);
+    if (last_size) {
+        q.last_size = D(last_size);
+    }
+    q.exchange_time = types::FromEpochMillis(exchange_ms);
+    return q;
+}
+
+struct ConservativeFixture : Fixture {
+    ConservativeFixture() {
+        options.limit_fill_model = trading::LimitFillModel::kConservative;
+        options.initial_balances["BTC"] = D("1");
+    }
+};
+
+types::OrderStatus Only(trading::TradingVenue& venue) {
+    auto open = venue.GetOpenOrders();
+    EXPECT_EQ(open->size(), 1u);
+    return open->at(0);
+}
+
+TEST(PaperConservative, ATouchEqualToTheLimitDoesNotFillButOneThroughItDoes) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+
+    venue->OnQuote(Q("48990.0", "49000.0", "2", "2"));  // ask == limit
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    venue->OnQuote(Q("48980.0", "48999.9", "2", "2"));  // ask < limit
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_EQ(fills->size(), 1u);
+    EXPECT_EQ((*fills)[0].price, D("49000.0"));  // its limit, not the ask
+    EXPECT_EQ((*fills)[0].liquidity, types::Liquidity::kMaker);
+}
+
+TEST(PaperConservative, CrossingFillsAreStillCappedAtTheTouchSizeWhenAsked) {
+    ConservativeFixture f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+    venue->OnQuote(Q("48980.0", "48999.9", "2", "0.04"));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0.04"));
+}
+
+TEST(PaperConservative, AMarketableLimitStillTakesTheTouchOnArrival) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0", "2", "2"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "50000.0"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kFilled);
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    EXPECT_EQ(fills->at(0).liquidity, types::Liquidity::kTaker);
+}
+
+TEST(PaperConservative, ATradeThroughTheLimitFillsInFull) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+    // Whatever its size, a sale at 48999.0 means the 49000.0 bids went first.
+    venue->OnQuote(QT("48999.0", "49010.0", "1", "2", "48999.0", "0.001", 10));
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("1.1"));
+}
+
+TEST(PaperConservative, TradesAtTheLimitMustFirstClearTheQueueAhead) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));  // 2 ahead of us
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+
+    venue->OnQuote(QT("49000.0", "49010.0", "2", "2", "49000.0", "1.5", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));  // 0.5 still ahead
+    // The same trade repeated on a book update is not a second trade.
+    venue->OnQuote(QT("49000.0", "49010.0", "1", "2", "49000.0", "1.5", 10));
+    venue->OnQuote(QT("49000.0", "49010.0", "1", "2", "49000.0", "1.5", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    venue->OnQuote(QT("49000.0", "49010.0", "1", "2", "49000.0", "0.45", 20));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));  // 0.05 still ahead
+
+    venue->OnQuote(QT("49000.0", "49010.0", "1", "2", "49000.0", "0.08", 30));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0.03"));  // the part after it
+    EXPECT_EQ(Only(*venue).state, OrderState::kPartiallyFilled);
+
+    venue->OnQuote(QT("49000.0", "49010.0", "1", "2", "49000.0", "5", 40));
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_EQ(fills->size(), 2u);
+    EXPECT_EQ((*fills)[0].quantity, D("0.03"));
+    EXPECT_EQ((*fills)[1].quantity, D("0.07"));
+}
+
+TEST(PaperConservative, ASmallerDisplayedSizeDoesNotMoveUsUpTheQueue) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+
+    // The queue shrinks on the screen (cancels, perhaps behind us)...
+    venue->OnQuote(Q("49000.0", "49010.0", "0.01", "2"));
+    // ...but only trades count, so 0.5 of trades leaves 1.5 still ahead.
+    venue->OnQuote(QT("49000.0", "49010.0", "0.01", "2", "49000.0", "0.5", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+}
+
+TEST(PaperConservative, BehindTheTouchTheQueueIsUnknownUntilItBecomesTheTouch) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "48990.0")));
+
+    // Trades at our price say nothing about our place in a queue we cannot see.
+    venue->OnQuote(QT("49000.0", "49010.0", "2", "2", "48990.0", "50", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    // The market falls to our price and shows 3 there: that is ahead of us.
+    venue->OnQuote(Q("48990.0", "49000.0", "3", "2"));
+    venue->OnQuote(QT("48990.0", "49000.0", "3", "2", "48990.0", "2", 20));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+    venue->OnQuote(QT("48990.0", "49000.0", "3", "2", "48990.0", "1.05", 30));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0.05"));
+}
+
+TEST(PaperConservative, ImprovingTheBestPriceMeansNoQueueAhead) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.1")));
+    venue->OnQuote(QT("49000.1", "49010.0", "0.1", "2", "49000.1", "0.04", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0.04"));
+}
+
+TEST(PaperConservative, UnknownQueueSizeOrTradeSizeNeverFillsAtTheLimit) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0"));  // no sizes
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+    venue->OnQuote(QT("49000.0", "49010.0", nullptr, nullptr, "49000.0", "9",
+                      10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    // A trade with no size is known only by its price: at the limit it
+    // proves nothing, through the limit it fills.
+    venue->OnQuote(QT("49000.0", "49010.0", "2", "2", "49000.0", nullptr, 20));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+    venue->OnQuote(QT("49000.0", "49010.0", "2", "2", "48999.0", nullptr, 30));
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+}
+
+TEST(PaperConservative, SellsMirrorBuys) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kSell, OrderType::kLimit, "0.1", "50000.0")));
+
+    venue->OnQuote(QT("49990.0", "50000.0", "2", "2", "50000.0", "1.9", 10));
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+    venue->OnQuote(Q("50000.0", "50010.0", "2", "2"));  // bid == limit
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+    venue->OnQuote(Q("50000.1", "50010.0", "2", "2"));  // bid > limit
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    EXPECT_EQ(fills->at(0).price, D("50000.0"));
+    EXPECT_EQ(fills->at(0).side, Side::kSell);
+}
+
+TEST(PaperCross, KeepsFillingOnATouchEqualToTheLimit) {
+    Fixture f;  // the default model
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+    venue->OnQuote(Q("48990.0", "49000.0", "2", "2"));
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+}
+
 }  // namespace

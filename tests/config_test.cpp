@@ -38,6 +38,24 @@ taker_fee_bps = 12.5
 slippage_bps = "3"
 )";
 
+TEST(Config, LimitFillModelDefaultsToCrossAndAcceptsConservative) {
+    auto def = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
+    ASSERT_OK(def);
+    EXPECT_EQ(def->GetPaperOptions().limit_fill_model,
+              trading::LimitFillModel::kCross);
+
+    const std::string base = kKrakenToml;
+    auto conservative = config::KrakenConfiguration::Parse(
+        base + "limit_fill_model = \"conservative\"\n", NoEnv());
+    ASSERT_OK(conservative);
+    EXPECT_EQ(conservative->GetPaperOptions().limit_fill_model,
+              trading::LimitFillModel::kConservative);
+
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "limit_fill_model = \"nope\"\n", NoEnv())
+                     .has_value());
+}
+
 TEST(Config, DatabaseSectionIsOptionalAndTakesPasswordFromEnv) {
     auto none = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
     ASSERT_OK(none);
