@@ -327,8 +327,7 @@ types::OrderStatus StatusOf(const char* id, types::OrderState state,
     return status;
 }
 
-using Update =
-    std::tuple<std::string, types::OrderState, types::Decimal>;
+using Update = std::tuple<std::string, types::OrderState, types::Decimal>;
 
 TEST_F(RunnerTest, ReportsAnOrderRejectedAfterItWasAccepted) {
     strategy->orders_on_start = 1;  // acknowledged as kNew: "order-1"
@@ -504,6 +503,62 @@ TEST_F(RunnerTest, DrainProcessesEventsAndFillsOnTheCallingThread) {
     runner->End();
     EXPECT_TRUE(strategy->stopped);
     EXPECT_EQ(data->stops.load(), 1);
+}
+
+TEST_F(RunnerTest, RecordsFillsAndAFinalPnlSnapshotWhenAskedTo) {
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    auto buy = FillAt("f1", 6);
+    buy.quantity = types::Decimal::FromInt(2);
+    buy.price = types::Decimal::FromInt(100);
+    venue->fills = {buy};
+    Build();
+    ASSERT_OK(runner->Begin());
+    data->Close(5);  // the mark: this bar closes at 5
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->fills == std::vector<std::string>{"f1"});
+    runner->End();
+
+    ASSERT_EQ(log->fills.size(), 1u);
+    EXPECT_EQ(log->fills[0].fill_id, "f1");
+    ASSERT_TRUE(log->finished.has_value());
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.symbol, kSymbol);
+    EXPECT_EQ(row.quantity, types::Decimal::FromInt(2));
+    EXPECT_EQ(row.average_price, types::Decimal::FromInt(100));
+    EXPECT_EQ(row.mark_price, types::Decimal::FromInt(5));
+    EXPECT_EQ(row.unrealized, types::Decimal::FromInt(-190));
+}
+
+TEST_F(RunnerTest, SnapshotsPnlWhileRunning) {
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(1);
+    options.fill_poll_interval = std::chrono::milliseconds(2);
+    // A clock that moves, so the interval elapses.
+    std::atomic<int> ticks{0};
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&ticks] { return Hour(5) + std::chrono::milliseconds(10 * ticks++); });
+    auto started = strategy->started.get_future();
+    thread = std::thread([this] { result = runner->Run(); });
+    started.wait();
+    data->Close(5);
+    for (int i = 0; i < 1000 && log->snapshots.size() < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    Finish();
+    EXPECT_GE(log->snapshots.size(), 2u);
+}
+
+TEST_F(RunnerTest, RecordsNothingWithoutATradeLog) {
+    venue->fills = {FillAt("f1", 6)};
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    runner->End();
+    EXPECT_EQ(venue->get_fills_calls.load(), 2);  // Drain's polls only
 }
 
 TEST_F(RunnerTest, DrainReturnsFalseAfterStop) {

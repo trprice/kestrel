@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "kestrel/strategy/run_recorder.hpp"
+
 namespace kestrel::strategy {
 
 using types::Decimal;
@@ -127,7 +129,13 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     }
     mTracker = std::make_shared<OrderTracker>(mVenue);
     mVenue = mTracker;
+    if (mOptions.trade_log) {
+        mRecorder = std::make_unique<RunRecorder>(mOptions.trade_log,
+                                                  mOptions.pnl_interval);
+    }
 }
+
+Runner::~Runner() = default;
 
 void Runner::Push(Event event) {
     {
@@ -262,6 +270,18 @@ types::Result<void> Runner::Begin() {
 
     mFillCursor = mClock();
     mSeenFills.clear();
+    if (mRecorder) {
+        // The venue's holdings are the cost basis. Without them a sale of
+        // what was held at the start would realize nothing.
+        auto positions = mVenue->GetPositions();
+        if (!positions) {
+            spdlog::warn(
+                "strategy {}: recording P&L without the starting positions: {}",
+                mStrategy->Name(), positions.error().ToString());
+        }
+        mRecorder->Start(
+            positions ? *positions : std::vector<types::Position>{}, mClock());
+    }
     mBegun = true;
     Guarded("OnStart", [this] { mStrategy->OnStart(*this); });
     return {};
@@ -272,12 +292,18 @@ void Runner::End() {
         return;
     }
     mBegun = false;
+    if (mRecorder) {
+        PollFills();  // fills that landed since the last poll
+    }
     // Stop the streams first so nothing is enqueued after the last hook.
     for (auto& sub : mSubscriptions) {
         sub->Stop();
     }
     mSubscriptions.clear();
     Guarded("OnStop", [this] { mStrategy->OnStop(*this); });
+    if (mRecorder) {
+        mRecorder->Finish(mClock());
+    }
 }
 
 types::Result<void> Runner::Run() {
@@ -296,6 +322,9 @@ types::Result<void> Runner::Run() {
         if (polling && std::chrono::steady_clock::now() >= next_poll) {
             Poll();
             next_poll = std::chrono::steady_clock::now() + interval;
+        }
+        if (mRecorder) {
+            mRecorder->Tick(mClock());
         }
     }
 
@@ -318,9 +347,14 @@ bool Runner::Handle(const Event& event) {
     if (const auto* bar = std::get_if<BarEvent>(&event)) {
         HandleBar(*bar);
     } else if (const auto* quote = std::get_if<QuoteEvent>(&event)) {
-        if (mGate) {
+        if (mGate || mRecorder) {
             if (auto price = QuotePrice(quote->quote)) {
-                mGate->NoteReferencePrice(quote->quote.symbol, *price);
+                if (mGate) {
+                    mGate->NoteReferencePrice(quote->quote.symbol, *price);
+                }
+                if (mRecorder) {
+                    mRecorder->NotePrice(quote->quote.symbol, *price);
+                }
             }
         }
         Guarded("OnQuote", [&] { mStrategy->OnQuote(*this, quote->quote); });
@@ -351,8 +385,13 @@ types::Result<void> Runner::Warmup(const Requirements& requirements) {
             const std::size_t keep =
                 std::min(bars->size(), requirements.warmup_bars);
             window.assign(bars->end() - keep, bars->end());
-            if (mGate && !window.empty()) {
-                mGate->NoteReferencePrice(symbol, window.back().close);
+            if (!window.empty()) {
+                if (mGate) {
+                    mGate->NoteReferencePrice(symbol, window.back().close);
+                }
+                if (mRecorder) {
+                    mRecorder->NotePrice(symbol, window.back().close);
+                }
             }
         }
     }
@@ -395,6 +434,9 @@ void Runner::DeliverBar(const types::Symbol& symbol, types::Timeframe timeframe,
     }
     if (mGate) {
         mGate->NoteReferencePrice(symbol, bar.close);
+    }
+    if (mRecorder) {
+        mRecorder->NotePrice(symbol, bar.close);
     }
     Guarded("OnBar", [&] { mStrategy->OnBar(*this, symbol, timeframe, bar); });
 }
@@ -474,7 +516,13 @@ std::size_t Runner::PollFills() {
         }
         mFillCursor = std::max(mFillCursor, fill.time);
         ++delivered;
+        if (mRecorder) {
+            mRecorder->NoteFill(fill);
+        }
         Guarded("OnFill", [&] { mStrategy->OnFill(*this, fill); });
+    }
+    if (mRecorder) {
+        mRecorder->Flush();
     }
     std::erase_if(mSeenFills, [this](const auto& seen) {
         return seen.second < mFillCursor;

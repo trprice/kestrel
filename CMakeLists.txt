@@ -49,6 +49,7 @@ add_library(kestrel
   src/db/migrations.cpp
   src/db/bar_store.cpp
   src/db/quote_store.cpp
+  src/db/trade_store.cpp
   src/trading/order_rules.cpp
   src/trading/pnl_tracker.cpp
   src/trading/risk_gate.cpp
@@ -59,6 +60,7 @@ add_library(kestrel
   src/backtest/replay_data_source.cpp
   src/backtest/backtest.cpp
   src/strategy/runner.cpp
+  src/strategy/run_recorder.cpp
   src/strategy/sma_crossover.cpp
   src/strategy/market_maker.cpp
   src/config/configuration.cpp
@@ -145,11 +147,13 @@ if(KESTREL_BUILD_TESTS)
     tests/binanceus_bar_stream_test.cpp
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
+    tests/trade_store_test.cpp
     tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp
     tests/pnl_tracker_test.cpp
     tests/risk_gate_test.cpp
     tests/runner_test.cpp
+    tests/run_recorder_test.cpp
     tests/backtest_test.cpp
     tests/backtest_db_test.cpp
     tests/sma_crossover_test.cpp

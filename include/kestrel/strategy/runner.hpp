@@ -15,11 +15,13 @@
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/risk_gate.hpp"
+#include "kestrel/trading/trade_log.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
 namespace kestrel::strategy {
 
 class OrderTracker;
+class RunRecorder;
 
 struct RunnerOptions {
     // When set, the strategy gets a RiskGatedVenue with these limits instead
@@ -28,6 +30,11 @@ struct RunnerOptions {
     // How often Run() asks the venue for new fills and for changes to the
     // strategy's orders; zero turns polling off.
     std::chrono::milliseconds fill_poll_interval{1000};
+    // When set, every fill and a P&L snapshot per symbol every pnl_interval
+    // (zero: only at the end) go to this log; see RunRecorder. Run() only:
+    // Drain-driven runs (backtests) get the fills but no periodic snapshots.
+    std::shared_ptr<trading::TradeLog> trade_log;
+    std::chrono::milliseconds pnl_interval{60'000};
 };
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events
@@ -47,6 +54,10 @@ struct RunnerOptions {
 // once each. The poll starts from the time Begin() ran, and it assumes the
 // venue's fill times and the runner's clock roughly agree.
 //
+// With options.trade_log the runner also records the fills it sees (as it
+// polls them) and periodic P&L snapshots, valued at the last bar close or
+// quote mid seen; the last poll before OnStop picks up late fills.
+//
 // Quotes are conflated per symbol: while one is queued for a symbol, newer
 // quotes for it are merged into it (Quote::MergeFrom) instead of queueing
 // behind it, so the strategy never sees a quote older than the last one that
@@ -59,6 +70,7 @@ class Runner : private Context {
            std::shared_ptr<trading::TradingVenue> venue,
            std::unique_ptr<Strategy> strategy, RunnerOptions options = {},
            std::function<types::Timestamp()> clock = types::Now);
+    ~Runner();
 
     // Begin(), then processes events until Stop(), then End(). Blocks.
     // Returns an error only if Begin() fails; once the loop is running,
@@ -145,6 +157,7 @@ class Runner : private Context {
     std::shared_ptr<data::DataSource> mData;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
     std::shared_ptr<OrderTracker> mTracker;
+    std::unique_ptr<RunRecorder> mRecorder;  // null without options.trade_log
     // What the strategy trades through: the tracker, over the gate if there is
     // one, over the venue.
     std::shared_ptr<trading::TradingVenue> mVenue;

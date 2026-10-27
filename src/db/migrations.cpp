@@ -52,6 +52,50 @@ ALTER TABLE quotes ADD CONSTRAINT quotes_seq_unique
 CREATE INDEX quotes_venue_symbol_seq
     ON quotes (venue, symbol, seq DESC);
 )sql"},
+        {4, "create run, fill and P&L tables", R"sql(
+CREATE TABLE runs (
+    run_id     BIGSERIAL   PRIMARY KEY,
+    strategy   TEXT        NOT NULL,
+    venue      TEXT        NOT NULL,
+    mode       TEXT        NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    ended_at   TIMESTAMPTZ
+);
+CREATE TABLE fills (
+    run_id          BIGINT      NOT NULL REFERENCES runs (run_id),
+    fill_id         TEXT        NOT NULL,
+    order_id        TEXT        NOT NULL,
+    client_order_id TEXT        NOT NULL,
+    symbol          TEXT        NOT NULL,
+    side            TEXT        NOT NULL,
+    quantity        NUMERIC     NOT NULL,
+    price           NUMERIC     NOT NULL,
+    fee             NUMERIC     NOT NULL,
+    fee_asset       TEXT        NOT NULL,
+    liquidity       TEXT        NOT NULL,
+    fill_time       TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (run_id, fill_id)
+);
+CREATE INDEX fills_run_time ON fills (run_id, fill_time);
+CREATE TABLE pnl_snapshots (
+    run_id        BIGINT      NOT NULL REFERENCES runs (run_id),
+    snapshot_time TIMESTAMPTZ NOT NULL,
+    symbol        TEXT        NOT NULL,
+    quantity      NUMERIC     NOT NULL,
+    average_price NUMERIC     NOT NULL,
+    mark_price    NUMERIC,
+    realized      NUMERIC     NOT NULL,
+    unrealized    NUMERIC,
+    PRIMARY KEY (run_id, snapshot_time, symbol)
+);
+CREATE VIEW pnl_totals AS
+SELECT run_id, snapshot_time,
+       sum(realized)                       AS realized,
+       sum(COALESCE(unrealized, 0))        AS unrealized,
+       sum(realized + COALESCE(unrealized, 0)) AS total
+FROM pnl_snapshots
+GROUP BY run_id, snapshot_time;
+)sql"},
     };
     return kMigrations;
 }

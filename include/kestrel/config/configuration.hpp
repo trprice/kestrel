@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -39,6 +40,14 @@ struct LoadOptions {
 // parses and validates them.
 using StrategyParams = std::map<std::string, std::string>;
 
+// The [recording] table: whether `run` stores its fills and P&L in the
+// database (see db::TradeStore). Needs a [database].
+struct RecordingOptions {
+    bool enabled = false;
+    // How often a P&L snapshot is written; zero writes only the last one.
+    std::chrono::milliseconds pnl_interval{60'000};
+};
+
 // Settings shared by every provider.
 struct CommonSettings {
     Mode mode = Mode::kPaper;
@@ -49,6 +58,7 @@ struct CommonSettings {
     // [risk.<strategy>]: limits that replace the [risk] ones key by key.
     std::map<std::string, trading::RiskLimits> strategy_risk;
     StrategyParams strategy;  // empty: no [strategy]
+    RecordingOptions recording;
 };
 
 // Base class for per-provider configuration, loaded from a TOML file:
@@ -93,6 +103,10 @@ struct CommonSettings {
 //                                # that strategy only (allowed_symbols
 //                                # replaces the whole list)
 //
+//   [recording]                  # optional; `run` stores its fills and P&L
+//   enabled = true               # in the [database] (default false)
+//   pnl_interval_ms = 60000      # snapshot period; 0: only the last one
+//
 //   [strategy]                   # optional; parameters, meaning depends on
 //   symbol = "BTC/USD"           # the strategy named on the command line
 //   ...
@@ -125,6 +139,7 @@ class Configuration {
         return mCommon.paper;
     }
     const StrategyParams& GetStrategyParams() const { return mCommon.strategy; }
+    const RecordingOptions& GetRecording() const { return mCommon.recording; }
 
    protected:
     explicit Configuration(CommonSettings common)

@@ -11,6 +11,7 @@
 #include "kestrel/strategy/runner.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/risk_gate.hpp"
+#include "kestrel/trading/trade_log.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
 namespace kestrel {
@@ -70,16 +71,33 @@ types::Result<void> ValidateForRun(
 using ComponentsFactory =
     std::function<types::Result<Components>(const config::Configuration&)>;
 
+// Where a run's fills and P&L are recorded: given the configuration, the
+// strategy's name and the venue's, returns the log the run writes to. The
+// default, OpenTradeLog, connects to the [database], applies the migrations
+// and starts a row in `runs`; it fails with kNotFound without a [database].
+// Tests pass one that returns a fake.
+using TradeLogFactory =
+    std::function<types::Result<std::shared_ptr<trading::TradeLog>>(
+        const config::Configuration&, const std::string& strategy,
+        const std::string& venue)>;
+types::Result<std::shared_ptr<trading::TradeLog>> OpenTradeLog(
+    const config::Configuration& configuration, const std::string& strategy,
+    const std::string& venue);
+
 // Builds everything `kestrel_app run` needs, ready for Runner::Run(): checks
 // the configuration may trade (ValidateForRun), resolves the strategy's risk
 // limits, builds the strategy, the provider connection (CreateComponents) and
 // a Runner with the risk gate when limits apply, and starts the gate's
 // daily-loss count. Any failure is returned, with a prefix saying which step
-// failed, and nothing is left running. The runner has no risk gate (see
+// failed, and nothing is left running. With `[recording] enabled` the runner
+// records its fills and P&L through `make_log` (a failure to set that up is
+// an error: a run that was asked to be recorded does not start unrecorded).
+// The runner has no risk gate (see
 // Runner::RiskGate) when no limits apply, which is allowed only in paper mode.
 types::Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const std::string& strategy_name,
     const config::Configuration& configuration,
-    const ComponentsFactory& make_components = CreateComponents);
+    const ComponentsFactory& make_components = CreateComponents,
+    const TradeLogFactory& make_log = OpenTradeLog);
 
 }  // namespace kestrel

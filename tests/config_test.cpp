@@ -543,6 +543,91 @@ TEST(Factory, CreateRunnerBuildsARunnerWithAGateWhenLimitsApply) {
     EXPECT_FALSE((*runner)->RiskGate()->IsHalted());
 }
 
+TEST(Config, RecordingSectionIsParsed) {
+    auto off = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
+    ASSERT_OK(off);
+    EXPECT_FALSE(off->GetRecording().enabled);
+    EXPECT_EQ(off->GetRecording().pnl_interval, std::chrono::seconds(60));
+
+    auto on = config::BinanceUSConfiguration::Parse(
+        WithTables("[recording]\nenabled=true\npnl_interval_ms=5000\n"),
+        NoEnv());
+    ASSERT_OK(on);
+    EXPECT_TRUE(on->GetRecording().enabled);
+    EXPECT_EQ(on->GetRecording().pnl_interval, std::chrono::seconds(5));
+
+    for (const char* bad :
+         {"[recording]\nenabled='yes'\n", "[recording]\npnl_interval_ms=-1\n",
+          "[recording]\npnl_interval_ms=1.5\n", "[recording]\nenable=true\n"}) {
+        EXPECT_FALSE(
+            config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv())
+                .has_value())
+            << bad;
+    }
+}
+
+TEST(Factory, CreateRunnerRecordsThroughTheLogWhenEnabled) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) +
+                   "[recording]\nenabled=true\npnl_interval_ms=0\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    std::string strategy_seen, venue_seen;
+    auto runner =
+        CreateRunner("sma_crossover", *cfg, fake.Factory(),
+                     [&](const config::Configuration&,
+                         const std::string& strategy, const std::string& venue)
+                         -> types::Result<std::shared_ptr<trading::TradeLog>> {
+                         strategy_seen = strategy;
+                         venue_seen = venue;
+                         return log;
+                     });
+    ASSERT_OK(runner);
+    EXPECT_EQ(strategy_seen, "sma_crossover");
+    EXPECT_EQ(venue_seen, "recording");
+}
+
+TEST(Factory, CreateRunnerDoesNotRecordUnlessEnabled) {
+    auto cfg =
+        config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    bool asked = false;
+    auto runner =
+        CreateRunner("sma_crossover", *cfg, fake.Factory(),
+                     [&](const config::Configuration&, const std::string&,
+                         const std::string&)
+                         -> types::Result<std::shared_ptr<trading::TradeLog>> {
+                         asked = true;
+                         return std::shared_ptr<trading::TradeLog>();
+                     });
+    ASSERT_OK(runner);
+    EXPECT_FALSE(asked);
+}
+
+TEST(Factory, CreateRunnerFailsWhenRecordingCannotBeSetUp) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[recording]\nenabled=true\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    auto failing = CreateRunner(
+        "sma_crossover", *cfg, fake.Factory(),
+        [](const config::Configuration&, const std::string&, const std::string&)
+            -> types::Result<std::shared_ptr<trading::TradeLog>> {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        });
+    ASSERT_FALSE(failing.has_value());
+    EXPECT_NE(failing.error().message.find("recording"), std::string::npos);
+
+    // The default log needs a [database], which this configuration lacks.
+    auto no_database = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    ASSERT_FALSE(no_database.has_value());
+    EXPECT_EQ(no_database.error().category, types::ErrorCategory::kNotFound);
+}
+
 TEST(Factory, CreateRunnerAppliesThePerStrategyLimits) {
     // Only the override sets a limit, so only sma_crossover gets a gate.
     auto cfg = config::BinanceUSConfiguration::Parse(

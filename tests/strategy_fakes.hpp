@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 
+#include "kestrel/trading/trade_log.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
 namespace kestrel::testing {
@@ -84,6 +85,41 @@ class RecordingVenue : public trading::TradingVenue {
     int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
     std::vector<types::OrderRequest> orders;
+};
+
+// Remembers what a run writes.
+class FakeTradeLog : public trading::TradeLog {
+   public:
+    types::Result<void> WriteFills(
+        std::span<const types::Fill> batch) override {
+        ++fill_writes;
+        if (fail_fills) {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
+        fills.insert(fills.end(), batch.begin(), batch.end());
+        return {};
+    }
+    types::Result<void> WritePnl(
+        types::Timestamp time, std::span<const trading::PnlRow> rows) override {
+        if (fail_pnl) {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
+        snapshots.emplace_back(
+            time, std::vector<trading::PnlRow>(rows.begin(), rows.end()));
+        return {};
+    }
+    types::Result<void> Finish(types::Timestamp time) override {
+        finished = time;
+        return {};
+    }
+
+    bool fail_fills = false;
+    bool fail_pnl = false;
+    int fill_writes = 0;
+    std::vector<types::Fill> fills;
+    std::vector<std::pair<types::Timestamp, std::vector<trading::PnlRow>>>
+        snapshots;
+    std::optional<types::Timestamp> finished;
 };
 
 }  // namespace kestrel::testing

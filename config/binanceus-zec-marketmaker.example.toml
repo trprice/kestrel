@@ -15,6 +15,11 @@ host   = "localhost"
 user   = "kestrel"
 # password: KESTREL_DATABASE_PASSWORD
 
+# Uncomment to store the fills and a P&L snapshot every minute of `run` in the
+# database above; see "Recording a run" in the README.
+# [recording]
+# enabled = true
+
 [paper]
 initial_balances = { USDT = "10000", ZEC = "2" }
 maker_fee_bps = 0              # 0%

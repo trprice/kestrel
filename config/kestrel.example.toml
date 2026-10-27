@@ -39,6 +39,10 @@ limit_fill_model = "cross"
 # max_orders_per_day     = 6
 # max_consecutive_losses = 2
 
+[recording]                    # optional; `run` stores its fills and P&L in [database]
+# enabled         = true       # default false; needs [database]
+# pnl_interval_ms = 60000      # P&L snapshot period; 0: only the last one
+
 [strategy]                     # parameters for the run / backtest subcommands
 # symbol      = "BTC/USD"      # must be in [general] symbols
 # quantity    = "0.001"        # base-asset units per order

@@ -125,6 +125,20 @@ the header of the code concerned.
 - Symbol info (tick, lot, minimum size) must be supplied by hand for every
   symbol.
 
+### Run recording (`strategy/run_recorder.hpp`)
+- Fills are recorded when the runner polls them, so a fill the venue reports
+  after the final poll at shutdown is missed. Fills and snapshots are written
+  on the strategy thread, so a slow database delays the strategy.
+- Unwritten fills are kept in memory (up to 100k) while the database is down;
+  a snapshot that fails is skipped. A process that dies loses what was queued.
+- P&L is only as good as the start: if the venue's positions cannot be read at
+  startup the recorder warns and counts from zero, and a balance held at the
+  start (not a position) has no cost basis, so selling it realizes nothing.
+- Snapshot values in the market maker's own protection P&L and the recorder
+  are computed separately and can differ (the strategy's covers only the
+  position beyond its starting balance).
+- `backtest` records nothing.
+
 ### Venues and data
 - Kraken, Schwab and Binance.US trading venues are stubs that return
   `kNotImplemented`.
@@ -249,7 +263,8 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       reports that use them
 
 ### Operations
-- [ ] Persist orders, fills and strategy decisions to the database
+- [ ] Persist orders and strategy decisions to the database (fills and P&L
+      snapshots are recorded with `[recording]`; see `RunRecorder`)
 - [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
       stays down
 - [ ] Health checks: stale-data detection, stream reconnect counts, clock-skew

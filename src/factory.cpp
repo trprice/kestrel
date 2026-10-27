@@ -11,6 +11,7 @@
 #include "kestrel/data/binanceus_data_source.hpp"
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
+#include "kestrel/db/trade_store.hpp"
 #include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
@@ -485,9 +486,36 @@ std::unexpected<types::Error> WithContext(types::Error error,
 
 }  // namespace
 
+Result<std::shared_ptr<trading::TradeLog>> OpenTradeLog(
+    const config::Configuration& cfg, const std::string& strategy,
+    const std::string& venue) {
+    const auto& options = cfg.GetDatabase();
+    if (!options) {
+        return MakeError(ErrorCategory::kNotFound,
+                         "[recording] needs a [database] section");
+    }
+    auto connected = db::Database::Connect(*options);
+    if (!connected) {
+        return std::unexpected(connected.error());
+    }
+    std::shared_ptr<db::Database> database = std::move(*connected);
+    if (auto migrated = database->Migrate(); !migrated) {
+        return std::unexpected(migrated.error());
+    }
+    auto store = db::TradeStore::StartRun(
+        database, db::RunInfo{strategy, venue,
+                              std::string(config::ToString(cfg.GetMode())),
+                              types::Now()});
+    if (!store) {
+        return std::unexpected(store.error());
+    }
+    spdlog::info("recording run {} to the database", (*store)->RunId());
+    return std::shared_ptr<trading::TradeLog>(std::move(*store));
+}
+
 Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const std::string& strategy_name, const config::Configuration& cfg,
-    const ComponentsFactory& make_components) {
+    const ComponentsFactory& make_components, const TradeLogFactory& make_log) {
     auto limits = ResolveRiskLimits(strategy_name, cfg);
     if (!limits) {
         return WithContext(limits.error(), "risk");
@@ -506,6 +534,15 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
 
     strategy::RunnerOptions options;
     options.risk = *limits;
+    if (cfg.GetRecording().enabled) {
+        auto log = make_log(cfg, strategy_name,
+                            std::string(components->venue->Name()));
+        if (!log) {
+            return WithContext(log.error(), "recording");
+        }
+        options.trade_log = *log;
+        options.pnl_interval = cfg.GetRecording().pnl_interval;
+    }
     auto runner = std::make_unique<strategy::Runner>(
         components->data_source,
         std::shared_ptr<trading::TradingVenue>(std::move(components->venue)),

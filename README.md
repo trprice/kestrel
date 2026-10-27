@@ -140,6 +140,30 @@ come after the subcommand's arguments.
   the stop and cap rules close the position instead of only blocking entries.
   See `config/binanceus-zec-marketmaker.example.toml`.
 
+### Recording a run
+
+With `[recording] enabled = true` (and a `[database]`), `run` writes what it
+does to the database as it goes, so a long run can be watched from `psql` and
+studied afterwards:
+
+| table / view | contents |
+|---|---|
+| `runs` | one row per run: strategy, venue, mode, `started_at`, `ended_at` (NULL until a clean stop, so NULL on an old run means the process died) |
+| `fills` | every fill of the run, with fee, fee asset and maker/taker |
+| `pnl_snapshots` | every `pnl_interval_ms` (default 60 s) and at the end: per symbol, the position, average price, mark price, realized and unrealized P&L |
+| `pnl_totals` | view summing the snapshots over symbols (only meaningful when they share a quote asset) |
+
+```sql
+SELECT * FROM pnl_totals WHERE run_id = (SELECT max(run_id) FROM runs)
+ORDER BY snapshot_time DESC LIMIT 10;
+```
+
+P&L is the same average-cost figure the risk gate uses, realized net of fees,
+starting from the positions the venue reported at startup; the mark is the
+last quote mid or bar close. A failed write is logged and retried, never fatal
+to the run; if the database cannot be reached at startup, `run` refuses to
+start. `backtest` does not record.
+
 ## Database
 
 Bars are stored in PostgreSQL with the TimescaleDB extension (`bars`

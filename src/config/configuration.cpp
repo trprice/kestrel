@@ -193,6 +193,34 @@ class ConfigParser {
             }
         }
 
+        if (const auto* recording = root["recording"].as_table()) {
+            for (const auto& [key, node] : *recording) {
+                if (key.str() == "enabled") {
+                    const auto v = node.value<bool>();
+                    if (!v || !node.is_boolean()) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "[recording] enabled must be true or "
+                                         "false");
+                    }
+                    c.recording.enabled = *v;
+                } else if (key.str() == "pnl_interval_ms") {
+                    const auto v = node.is_integer()
+                                       ? node.value<std::int64_t>()
+                                       : std::nullopt;
+                    if (!v || *v < 0) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "[recording] pnl_interval_ms must be "
+                                         "a whole number of milliseconds");
+                    }
+                    c.recording.pnl_interval = std::chrono::milliseconds(*v);
+                } else {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[recording] has an unknown key '" +
+                                         std::string(key.str()) + "'");
+                }
+            }
+        }
+
         if (const auto* paper = root["paper"].as_table()) {
             auto& p = c.paper;
             if (const auto* balances =
