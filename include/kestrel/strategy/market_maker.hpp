@@ -1,13 +1,69 @@
 #pragma once
 
 #include <chrono>
+#include <deque>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/types/decimal.hpp"
 
 namespace kestrel::strategy {
+
+// Drawdown protection. Every rule is off until its flag is set, and each has
+// its own parameters, so a run chooses which to use. The rules came out of the
+// live and replayed ZEC/USDT runs, where wins were a few basis points and a
+// trending move cost tens of them.
+//
+// "The position" is the base held beyond what the strategy started with
+// (inventory - start), with its average entry price worked out from the
+// strategy's own fills; the starting holding is never sold by a rule. "P&L" is
+// the cash from the strategy's fills (fees in the quote or base asset
+// included) plus that position marked at the mid, so it is measured on every
+// quote rather than when an order is attempted.
+struct MarketMakerProtection {
+    // Exit the position at market once it is this many basis points under its
+    // average entry (the bid for a long, the ask for a short), then cancel the
+    // quotes until the position is closed. The live runs used 40; the replays
+    // found tighter stops only added stop-outs.
+    bool stop_loss = false;
+    types::Decimal stop_loss_bps{40, 0};
+
+    // Halt for good, once the P&L since the start falls to -loss_cap_amount:
+    // cancel the quotes, exit the position at market and quote no more.
+    bool loss_cap = false;
+    types::Decimal loss_cap_amount;  // quote asset; required when enabled
+
+    // As loss_cap, but for the fall from the P&L's peak.
+    bool drawdown_cap = false;
+    types::Decimal drawdown_cap_amount;  // quote asset; required when enabled
+
+    // Cancel both quotes and hold off quoting for spike_pause after the mid
+    // moves (either way) by at least spike_3m_bps in 3 minutes, spike_5m_bps
+    // in 5 or spike_15m_bps in 15. A move is measured against the newest mid
+    // that is at least that old, and counts as nil until the strategy has seen
+    // that much history.
+    bool spike_standdown = false;
+    types::Decimal spike_3m_bps{50, 0};
+    types::Decimal spike_5m_bps{80, 0};
+    types::Decimal spike_15m_bps{120, 0};
+    std::chrono::milliseconds spike_pause{std::chrono::minutes(15)};
+
+    // No bid while the 15 minute move is at or below -downtrend_bps.
+    bool downtrend_filter = false;
+    types::Decimal downtrend_bps{30, 0};
+
+    // No bid while the 3 minute move is below -momentum_bps (zero: any fall).
+    // The replays found this the one rule that helped on both tapes.
+    bool momentum_filter = false;
+    types::Decimal momentum_bps{0, 0};
+
+    // After a stop_loss exit, quote neither side for cooldown. Does nothing
+    // without stop_loss.
+    bool cooldown_after_stop = false;
+    std::chrono::milliseconds cooldown{std::chrono::minutes(30)};
+};
 
 struct MarketMakerParams {
     types::Symbol symbol;
@@ -31,6 +87,7 @@ struct MarketMakerParams {
     // Replace a quote older than this even if its price is still right;
     // zero never does.
     std::chrono::milliseconds max_quote_age{0};
+    MarketMakerProtection protection;
 };
 
 // Quotes a bid and an ask around a reservation price: the mid, shifted away
@@ -47,14 +104,20 @@ struct MarketMakerParams {
 // counted twice. Fills move the inventory (OnFill); order state comes from
 // OnOrderUpdate, so a rejected or expired quote is requoted.
 //
+// Protection rules (MarketMakerProtection) are opt-in. A rule that pauses a
+// side cancels its resting quote; the exits are market orders for the whole
+// position, and no second exit is sent until the first one's fills arrive.
+//
 // Not modelled yet: scaling the spread with volatility, pulling quotes when
 // the feed goes quiet (the strategy only runs when a quote arrives), and fees
-// charged in the base asset.
+// charged in the base asset (the P&L counts them, the inventory does not).
 class MarketMaker : public Strategy {
    public:
     // Throws std::invalid_argument unless quantity, half_spread_bps and
     // max_inventory are positive (max_inventory at least quantity) and
-    // skew_bps, requote_bps and max_quote_age are not negative.
+    // skew_bps, requote_bps and max_quote_age are not negative. Each enabled
+    // protection rule's amounts must be positive (the filters' and the
+    // durations may be zero).
     explicit MarketMaker(MarketMakerParams params);
 
     std::string_view Name() const override { return "market_maker"; }
@@ -88,6 +151,32 @@ class MarketMaker : public Strategy {
     bool Pull(Context& context, Resting& quote);
     types::Decimal Size(const types::Decimal& room) const;
 
+    // Protection. All run on the quote's mid and the book.
+    struct Pause {
+        bool bid = false;
+        bool ask = false;
+    };
+    // Applies the rules enabled in mParams.protection and says which sides
+    // must not quote.
+    Pause Protect(Context& context, const types::Quote& quote,
+                  const types::Decimal& mid);
+    // Basis-point move of the mid over `window`; zero without that history.
+    types::Decimal Move(types::Timestamp now, std::chrono::milliseconds window,
+                        const types::Decimal& mid) const;
+    // Cancels both quotes and sells (or buys back) the position at market.
+    // False if it could not (a quote cannot be pulled yet, the order was
+    // refused) or nothing needs doing. Does nothing while an exit is pending.
+    bool ExitPosition(Context& context, const char* why);
+    void Halt(const char* why);
+    types::Decimal Position() const { return mInventory - mStart; }
+
+    // The exit order in flight; empty id: none.
+    struct Exit {
+        std::string order_id;
+        types::Decimal quantity;
+        types::Decimal filled;
+    };
+
     MarketMakerParams mParams;
     types::SymbolInfo mInfo;
     bool mReady = false;
@@ -95,6 +184,17 @@ class MarketMaker : public Strategy {
     types::Decimal mStart;      // what was held at the start
     Resting mBid;
     Resting mAsk;
+
+    types::Symbol mBaseAsset;
+    types::Symbol mQuoteAsset;
+    types::Decimal mCash;             // quote asset from fills, net of fees
+    types::Decimal mEntry;            // average entry price of Position()
+    types::Decimal mPeak;             // highest P&L seen
+    types::Timestamp mStandUntil;     // spike stand-down ends
+    types::Timestamp mCooldownUntil;  // stop-out cooldown ends
+    std::optional<Exit> mExit;
+    bool mHalted = false;
+    std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
 };
 
 }  // namespace kestrel::strategy

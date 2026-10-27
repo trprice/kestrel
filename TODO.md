@@ -77,6 +77,18 @@ the header of the code concerned.
   same option.
 
 ### Market maker (`strategy/market_maker.hpp`)
+- Protection rules (stop loss, loss and drawdown caps, spike stand-down,
+  downtrend and momentum filters, post-stop cooldown) are opt-in and off by
+  default. They come from the Oct 2026 live and replay ZEC/USDT runs; those
+  replays were one down-trending 4 h sample with an uncalibrated fill model,
+  so the default thresholds are hints, not tuned values. Tighter stops than
+  40 bps and the cooldown showed no reliable gain.
+- Protection P&L covers only the position beyond the starting balance, so a
+  fall in the starting holding itself trips nothing. It values the position
+  at the mid, and exits are market orders (taker fee and slippage).
+- A halt is permanent for the run; only restarting the process resumes it.
+  Nothing is persisted, so a restart starts with fresh P&L and a fresh peak.
+- Rules run only when a quote arrives, so a silent feed trips none of them.
 - No volatility scaling of the spread, and no pulling of quotes when the feed
   goes quiet: it only acts when a quote arrives.
 - Inventory is the base-asset balance at start and the fills since; a fee

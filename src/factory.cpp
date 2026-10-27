@@ -186,6 +186,18 @@ class ParamReader {
         return *d;
     }
 
+    // An optional true / false parameter.
+    Result<bool> Flag(const std::string& key, bool fallback) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        if (it->second == "true") return true;
+        if (it->second == "false") return false;
+        return Bad(key, "true or false");
+    }
+
     // An optional whole number of milliseconds; zero is allowed.
     Result<std::chrono::milliseconds> Millis(
         const std::string& key, std::chrono::milliseconds fallback) {
@@ -295,6 +307,50 @@ Result<StrategyPtr> BuildSmaCrossover(ParamReader& p) {
     }
 }
 
+// Stores a read parameter, keeping the first error.
+template <typename T>
+void Take(Result<T> read, T& target, std::optional<types::Error>& error) {
+    if (read) {
+        target = *read;
+    } else if (!error) {
+        error = read.error();
+    }
+}
+
+// The protection rules: each is off unless its flag is set. Every parameter
+// is read (and so checked) whether or not its rule is on.
+Result<void> ReadProtection(ParamReader& p,
+                            strategy::MarketMakerProtection& r) {
+    std::optional<types::Error> error;
+    Take(p.Flag("stop_loss", r.stop_loss), r.stop_loss, error);
+    Take(p.Number("stop_loss_bps", r.stop_loss_bps), r.stop_loss_bps, error);
+    Take(p.Flag("loss_cap", r.loss_cap), r.loss_cap, error);
+    Take(p.Number("loss_cap_amount", r.loss_cap_amount), r.loss_cap_amount,
+         error);
+    Take(p.Flag("drawdown_cap", r.drawdown_cap), r.drawdown_cap, error);
+    Take(p.Number("drawdown_cap_amount", r.drawdown_cap_amount),
+         r.drawdown_cap_amount, error);
+    Take(p.Flag("spike_standdown", r.spike_standdown), r.spike_standdown,
+         error);
+    Take(p.Number("spike_3m_bps", r.spike_3m_bps), r.spike_3m_bps, error);
+    Take(p.Number("spike_5m_bps", r.spike_5m_bps), r.spike_5m_bps, error);
+    Take(p.Number("spike_15m_bps", r.spike_15m_bps), r.spike_15m_bps, error);
+    Take(p.Millis("spike_pause_ms", r.spike_pause), r.spike_pause, error);
+    Take(p.Flag("downtrend_filter", r.downtrend_filter), r.downtrend_filter,
+         error);
+    Take(p.Number("downtrend_bps", r.downtrend_bps), r.downtrend_bps, error);
+    Take(p.Flag("momentum_filter", r.momentum_filter), r.momentum_filter,
+         error);
+    Take(p.Number("momentum_bps", r.momentum_bps), r.momentum_bps, error);
+    Take(p.Flag("cooldown_after_stop", r.cooldown_after_stop),
+         r.cooldown_after_stop, error);
+    Take(p.Millis("cooldown_ms", r.cooldown), r.cooldown, error);
+    if (error) {
+        return std::unexpected(*error);
+    }
+    return {};
+}
+
 Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     strategy::MarketMakerParams params;
     auto symbol = p.Symbol();
@@ -304,6 +360,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     auto skew = p.Number("skew_bps", params.skew_bps);
     auto requote = p.Number("requote_bps", params.requote_bps);
     auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
+    auto protection = ReadProtection(p, params.protection);
     if (!symbol) return std::unexpected(symbol.error());
     if (!quantity) return std::unexpected(quantity.error());
     if (!half_spread) return std::unexpected(half_spread.error());
@@ -311,6 +368,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!skew) return std::unexpected(skew.error());
     if (!requote) return std::unexpected(requote.error());
     if (!max_age) return std::unexpected(max_age.error());
+    if (!protection) return std::unexpected(protection.error());
     if (auto ok = p.Finish(); !ok) {
         return std::unexpected(ok.error());
     }

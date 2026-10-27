@@ -132,6 +132,13 @@ come after the subcommand's arguments.
   parameters and unknown `[risk]` keys are errors. `sma_crossover` takes
   `symbol` and `quantity` (required), `timeframe` (`1h`), `fast_period` (10)
   and `slow_period` (30); the symbol must be listed in `[general] symbols`.
+- `market_maker` also takes opt-in drawdown protection, switched on one rule at
+  a time in `[strategy]`: `stop_loss`, `loss_cap`, `drawdown_cap`,
+  `spike_standdown`, `downtrend_filter`, `momentum_filter` and
+  `cooldown_after_stop` (each `true` / `false`, default `false`, with its own
+  parameters). Unlike the `[risk]` limits they are checked on every quote and
+  the stop and cap rules close the position instead of only blocking entries.
+  See `config/binanceus-zec-marketmaker.example.toml`.
 
 ## Database
 

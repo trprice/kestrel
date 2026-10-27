@@ -62,8 +62,7 @@ types::Quote QuoteOf(const char* bid, const char* ask,
     return q;
 }
 
-types::Fill FillOf(Side side, const char* quantity,
-                   const char* order_id = "") {
+types::Fill FillOf(Side side, const char* quantity, const char* order_id = "") {
     types::Fill f;
     f.symbol = kSymbol;
     f.side = side;
@@ -85,8 +84,8 @@ struct Maker {
     explicit Maker(const char* held = "1", MarketMakerParams p = Params())
         : strategy(std::move(p)) {
         if (D(held).Sign() > 0) {
-            context.venue.balances = {
-                {"ZEC", D(held), D(held), D("0")}, {"USDT", D("1000"), D("1000"), D("0")}};
+            context.venue.balances = {{"ZEC", D(held), D(held), D("0")},
+                                      {"USDT", D("1000"), D("1000"), D("0")}};
         }
         strategy.OnStart(context);
     }
@@ -211,7 +210,8 @@ TEST(MarketMakerTest, StopsBuyingAtTheInventoryLimitAndSizesDownNearIt) {
     EXPECT_EQ(m.Orders()[0].quantity, D("0.2"));
 
     m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.2", "order-1"));
-    m.strategy.OnOrderUpdate(m.context, StatusOf("order-1", OrderState::kFilled));
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kFilled));
     m.context.venue.orders.clear();
     m.Quote("99.99", "100.01");
     for (const auto& order : m.Orders()) {
@@ -227,7 +227,8 @@ TEST(MarketMakerTest, CannotSellWhatItDoesNotHold) {
 
     // After a buy there is something to sell.
     m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
-    m.strategy.OnOrderUpdate(m.context, StatusOf("order-1", OrderState::kFilled));
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kFilled));
     m.Quote("99.99", "100.01");
     bool sells = false;
     for (const auto& order : m.Orders()) {
@@ -266,7 +267,8 @@ TEST(MarketMakerTest, WaitsOutACancelThatLostToAFill) {
     // The bid's final state arrives, so it quotes again; the ask is still
     // unsettled.
     m.context.venue.outcome = CancelOutcome::kCancelled;
-    m.strategy.OnOrderUpdate(m.context, StatusOf("order-1", OrderState::kFilled));
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kFilled));
     m.Quote("100.09", "100.11");
     ASSERT_EQ(m.Orders().size(), 3u);
     EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
@@ -317,6 +319,293 @@ TEST(MarketMakerTest, CancelsItsQuotesWhenStopped) {
     m.strategy.OnStop(m.context);
     EXPECT_EQ(m.context.venue.cancelled,
               (std::vector<std::string>{"order-1", "order-2"}));
+}
+
+// ---- Protection rules ----
+
+using std::chrono::minutes;
+using std::chrono::seconds;
+
+// The orders that are market orders, in the order placed.
+std::vector<types::OrderRequest> MarketOrders(const Maker& m) {
+    std::vector<types::OrderRequest> out;
+    for (const auto& order : m.Orders()) {
+        if (order.type == types::OrderType::kMarket) out.push_back(order);
+    }
+    return out;
+}
+
+bool Quotes(const Maker& m, Side side, std::size_t after = 0) {
+    for (std::size_t i = after; i < m.Orders().size(); ++i) {
+        if (m.Orders()[i].type == types::OrderType::kLimit &&
+            m.Orders()[i].side == side) {
+            return true;
+        }
+    }
+    return false;
+}
+
+TEST(MarketMakerProtectionTest, EveryRuleIsOffByDefault) {
+    Maker m;
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));
+    m.Quote("50.00", "50.02");  // a 50% fall from the fill at 100
+    m.context.now += minutes(5);
+    m.Quote("40.00", "40.02");
+    EXPECT_TRUE(MarketOrders(m).empty());
+    EXPECT_TRUE(Quotes(m, Side::kBuy));
+}
+
+TEST(MarketMakerProtectionTest, RejectsBadProtectionParameters) {
+    for (auto change : std::vector<void (*)(MarketMakerParams&)>{
+             [](MarketMakerParams& p) {
+                 p.protection.stop_loss = true;
+                 p.protection.stop_loss_bps = D("0");
+             },
+             [](MarketMakerParams& p) { p.protection.loss_cap = true; },
+             [](MarketMakerParams& p) { p.protection.drawdown_cap = true; },
+             [](MarketMakerParams& p) {
+                 p.protection.spike_standdown = true;
+                 p.protection.spike_5m_bps = D("0");
+             },
+             [](MarketMakerParams& p) {
+                 p.protection.downtrend_filter = true;
+                 p.protection.downtrend_bps = D("0");
+             },
+             [](MarketMakerParams& p) {
+                 p.protection.momentum_filter = true;
+                 p.protection.momentum_bps = D("-1");
+             },
+             [](MarketMakerParams& p) {
+                 p.protection.cooldown = std::chrono::milliseconds(-1);
+             }}) {
+        auto p = Params();
+        change(p);
+        EXPECT_THROW(MarketMaker{p}, std::invalid_argument);
+    }
+}
+
+TEST(MarketMakerProtectionTest, StopLossExitsAtMarketOnceAndPausesQuoting) {
+    auto p = Params();
+    p.protection.stop_loss = true;  // 40 bps
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // entry 100
+    m.Quote("99.70", "99.72");  // 30 bps under: no stop yet
+    EXPECT_TRUE(MarketOrders(m).empty());
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    m.Quote("99.59", "99.61");  // bid 41 bps under the entry
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);  // quotes pulled first
+
+    const auto placed = m.Orders().size();
+    m.Quote("99.50", "99.52");  // the exit's fill has not arrived
+    EXPECT_EQ(m.Orders().size(), placed);
+
+    // The fill arrives; the position is closed and quoting resumes.
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-3"));
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_GT(m.Orders().size(), placed);
+}
+
+TEST(MarketMakerProtectionTest, StopLossAveragesTheEntryAcrossFills) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // at 100
+    auto dearer = FillOf(Side::kBuy, "0.5");
+    dearer.price = D("102");  // average 101, a stop at 100.596
+    m.strategy.OnFill(m.context, dearer);
+    m.Quote("100.60", "100.62");
+    EXPECT_TRUE(MarketOrders(m).empty());
+    m.Quote("100.58", "100.60");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("1"));
+}
+
+TEST(MarketMakerProtectionTest, StopLossBuysBackAPositionBelowTheStart) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5"));  // short at 100
+    m.Quote("100.40", "100.42");  // ask 42 bps over
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kBuy);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+}
+
+TEST(MarketMakerProtectionTest, StopLossNeverSellsTheStartingHolding) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);  // no fills: nothing beyond the start
+    m.Quote("50.00", "50.02");
+    EXPECT_TRUE(MarketOrders(m).empty());
+}
+
+TEST(MarketMakerProtectionTest, CooldownHoldsBothSidesAfterAStop) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    p.protection.cooldown_after_stop = true;
+    p.protection.cooldown = std::chrono::milliseconds(60000);
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.59", "99.61");  // stop
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-1"));
+    const auto placed = m.Orders().size();
+
+    m.context.now += seconds(30);
+    m.Quote("99.59", "99.61");
+    EXPECT_EQ(m.Orders().size(), placed);
+
+    m.context.now += seconds(31);
+    m.Quote("99.59", "99.61");
+    EXPECT_GT(m.Orders().size(), placed);
+}
+
+TEST(MarketMakerProtectionTest, NoCooldownUnlessItsRuleIsOn) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.59", "99.61");
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-1"));
+    const auto placed = m.Orders().size();
+    m.Quote("99.59", "99.61");
+    EXPECT_GT(m.Orders().size(), placed);
+}
+
+TEST(MarketMakerProtectionTest, LossCapHaltsAndFlattensForGood) {
+    auto p = Params();
+    p.protection.loss_cap = true;
+    p.protection.loss_cap_amount = D("1");
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));  // -100 cash
+    m.Quote("99.20", "99.22");  // P&L about -0.79: still quoting
+    EXPECT_TRUE(MarketOrders(m).empty());
+
+    m.Quote("98.98", "99.00");  // mid 98.99: -1.01
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("1"));
+
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "1", "order-3"));
+    const auto placed = m.Orders().size();
+    m.context.now += minutes(60);
+    m.Quote("110.00", "110.02");  // recovered, but the halt is permanent
+    EXPECT_EQ(m.Orders().size(), placed);
+}
+
+TEST(MarketMakerProtectionTest, LossCapCountsFees) {
+    auto p = Params();
+    p.protection.loss_cap = true;
+    p.protection.loss_cap_amount = D("1");
+    Maker m("1", p);
+    auto fill = FillOf(Side::kBuy, "1");
+    fill.fee = D("0.5");
+    fill.fee_asset = "USDT";
+    m.strategy.OnFill(m.context, fill);
+    m.Quote("99.40", "99.42");  // -0.59 on the price, -1.09 with the fee
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+}
+
+TEST(MarketMakerProtectionTest, DrawdownCapMeasuresFromThePeak) {
+    auto p = Params();
+    p.protection.drawdown_cap = true;
+    p.protection.drawdown_cap_amount = D("1");
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));
+    m.Quote("100.99", "101.01");  // +1.00: the peak
+    m.Quote("100.20", "100.22");  // 0.79 off the peak
+    EXPECT_TRUE(MarketOrders(m).empty());
+    m.Quote("99.98", "100.00");  // 1.01 off the peak, though still ahead of 0
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+}
+
+TEST(MarketMakerProtectionTest, SpikeStandsDownThenResumes) {
+    auto p = Params();
+    p.protection.spike_standdown = true;  // 50 bps in 3 minutes
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    m.context.now += seconds(200);
+    m.Quote("100.59", "100.61");  // 60 bps in 200 s
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+    EXPECT_EQ(m.Orders().size(), 2u);
+
+    m.context.now += minutes(10);
+    m.Quote("100.59", "100.61");  // inside the 15 minutes
+    EXPECT_EQ(m.Orders().size(), 2u);
+
+    m.context.now += minutes(6);
+    m.Quote("100.59", "100.61");
+    EXPECT_GT(m.Orders().size(), 2u);
+}
+
+TEST(MarketMakerProtectionTest, SpikeNeedsEnoughHistoryToCount) {
+    auto p = Params();
+    p.protection.spike_standdown = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.context.now += seconds(10);  // nothing 3 minutes old to compare with
+    m.Quote("102.99", "103.01");
+    EXPECT_EQ(m.Orders().size(), 4u);  // requoted, not stood down
+}
+
+TEST(MarketMakerProtectionTest, DowntrendFilterPullsOnlyTheBid) {
+    auto p = Params();
+    p.protection.downtrend_filter = true;  // 30 bps in 15 minutes
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    m.context.now += seconds(901);
+    m.Quote("99.59", "99.61");  // 40 bps down
+    EXPECT_EQ(m.context.venue.cancelled.front(), "order-1");
+    EXPECT_FALSE(Quotes(m, Side::kBuy, 2));
+    EXPECT_TRUE(Quotes(m, Side::kSell, 2));
+}
+
+TEST(MarketMakerProtectionTest, MomentumFilterBlocksBidsOnAFallOnly) {
+    auto p = Params();
+    p.protection.momentum_filter = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.context.now += seconds(181);
+    m.Quote("99.89", "99.91");  // down over 3 minutes
+    EXPECT_FALSE(Quotes(m, Side::kBuy, 2));
+
+    m.context.now += seconds(181);
+    m.Quote("99.99", "100.01");  // up over 3 minutes
+    EXPECT_TRUE(Quotes(m, Side::kBuy, 2));
+}
+
+TEST(MarketMakerProtectionTest, ExitIsRetriedWhenTheVenueRefusesIt) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    // The order closes without filling, so the next quote tries again.
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kRejected));
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 2u);
+}
+
+TEST(MarketMakerProtectionTest, DoesNotExitWhileACancelIsUnsettled) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // at 100
+    m.context.venue.outcome = CancelOutcome::kAlreadyFilled;
+    m.Quote("99.50", "99.52");
+    EXPECT_TRUE(MarketOrders(m).empty());
 }
 
 }  // namespace

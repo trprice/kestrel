@@ -367,6 +367,27 @@ TEST(Factory, CreateStrategyBuildsSmaCrossoverFromParameters) {
     EXPECT_EQ(needs.warmup_bars, 9u);
 }
 
+TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
+    const std::string base =
+        "[strategy]\nsymbol='BTC/USD'\nquantity='0.05'\n"
+        "half_spread_bps=2\nmax_inventory='0.5'\n";
+    auto make = [&](const std::string& extra) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(base + extra), NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("market_maker", *cfg);
+    };
+    EXPECT_TRUE(make("").has_value());
+    EXPECT_TRUE(make("stop_loss=true\nstop_loss_bps=25\nloss_cap=true\n"
+                     "loss_cap_amount='3'\nspike_standdown=false\n"
+                     "cooldown_ms=60000\n")
+                    .has_value());
+    // An enabled rule needs its amount; a bad flag or a typo is an error.
+    EXPECT_FALSE(make("loss_cap=true\n").has_value());
+    EXPECT_FALSE(make("stop_loss='yes'\n").has_value());
+    EXPECT_FALSE(make("stop_los=true\n").has_value());
+}
+
 TEST(Factory, CreateStrategyRejectsBadInput) {
     auto make = [](const char* strategy_table) {
         auto cfg = config::BinanceUSConfiguration::Parse(

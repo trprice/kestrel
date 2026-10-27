@@ -237,8 +237,7 @@ class ConfigParser {
                 if (name == "cross") {
                     p.limit_fill_model = trading::LimitFillModel::kCross;
                 } else if (name == "conservative") {
-                    p.limit_fill_model =
-                        trading::LimitFillModel::kConservative;
+                    p.limit_fill_model = trading::LimitFillModel::kConservative;
                 } else {
                     return MakeError(
                         ErrorCategory::kInvalidArgument,
@@ -256,6 +255,9 @@ class ConfigParser {
         if (const auto s = node.value<std::string>()) {
             return *s;
         }
+        if (const auto b = node.value<bool>(); b && node.is_boolean()) {
+            return std::string(*b ? "true" : "false");
+        }
         if (node.is_integer() || node.is_floating_point()) {
             auto d = NumberNode(node, name);
             if (!d) {
@@ -264,7 +266,7 @@ class ConfigParser {
             return d->ToString();
         }
         return MakeError(ErrorCategory::kInvalidArgument,
-                         name + " must be a string or a number");
+                         name + " must be a string, a number or a boolean");
     }
 
     static Result<std::optional<Decimal>> RiskAmount(const toml::table& t,
