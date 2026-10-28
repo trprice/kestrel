@@ -1,9 +1,13 @@
 #pragma once
 
+#include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "kestrel/data/data_source.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/orders.hpp"
 
@@ -15,6 +19,19 @@ enum class CancelOutcome {
                      // error)
     kAlreadyClosed,  // already cancelled, expired or rejected
 };
+
+// Something that happened to an order, as the venue pushes it: a new fill, the
+// order's state, or both (the state after the fill).
+struct ExecutionUpdate {
+    std::optional<types::Fill> fill;
+    std::optional<types::OrderStatus> order;
+};
+
+// THREADING: called from whichever thread the venue learns of the change on
+// (a stream thread, or the thread that called PlaceOrder or CancelOrder), one
+// update at a time and in the order they happened. It must be thread-safe,
+// return quickly, not throw, and not call back into the venue.
+using ExecutionCallback = std::function<void(const ExecutionUpdate&)>;
 
 // Order execution, separated from market data. Live and paper venues
 // implement the same interface so strategies never know which one they use.
@@ -54,6 +71,21 @@ class TradingVenue {
 
     virtual types::Result<std::vector<types::Position>> GetPositions() = 0;
     virtual types::Result<std::vector<types::Balance>> GetBalances() = 0;
+
+    // Pushes fills and order changes to `callback` as they happen, until the
+    // subscription is stopped or destroyed, so a caller need not wait for its
+    // next GetFills poll. Optional: a venue without a push channel returns
+    // kNotImplemented, and callers poll. A pushed update may also show up in
+    // GetFills / GetOpenOrders, and an update can be missed (a stream that
+    // reconnects), so callers keep polling now and then and drop duplicates
+    // by fill ID.
+    virtual types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        ExecutionCallback callback) {
+        (void)callback;
+        return types::MakeError(
+            types::ErrorCategory::kNotImplemented,
+            std::string(Name()) + " does not push executions");
+    }
 };
 
 }  // namespace kestrel::trading

@@ -30,6 +30,14 @@ struct RunnerOptions {
     // How often Run() asks the venue for new fills and for changes to the
     // strategy's orders; zero turns polling off.
     std::chrono::milliseconds fill_poll_interval{1000};
+    // The poll period instead, when the venue pushes executions
+    // (TradingVenue::StreamExecutions): the poll is then only a backstop for
+    // updates the push missed. Zero turns it off, which is safe only for a
+    // venue that cannot miss an update (the in-process paper venue): with a
+    // stream that drops messages while it reconnects, nothing would catch the
+    // fills and order changes it missed until End(), and that final poll only
+    // runs with a trade_log.
+    std::chrono::milliseconds fill_backstop_interval{30'000};
     // When set, every fill and a P&L snapshot per symbol every pnl_interval
     // (zero: only at the end) go to this log; see RunRecorder. Run() only:
     // Drain-driven runs (backtests) get the fills but no periodic snapshots.
@@ -55,9 +63,15 @@ struct RunnerOptions {
 // has left the open list) and delivers each change of state or filled quantity
 // to OnOrderUpdate, ending with the closed state. No orders, no calls.
 //
-// Fills are found by polling TradingVenue::GetFills and delivered to OnFill
-// once each. The poll starts from the time Begin() ran, and it assumes the
-// venue's fill times and the runner's clock roughly agree.
+// Fills are delivered to OnFill once each. When the venue pushes executions
+// (TradingVenue::StreamExecutions), its fills and order changes are queued as
+// events like quotes and bars, so the strategy hears of a fill as soon as the
+// venue reports it, and polling drops to fill_backstop_interval to catch what
+// the push missed. Otherwise fills are found by polling TradingVenue::GetFills
+// every fill_poll_interval. The poll starts from the time Begin() ran, and it
+// assumes the venue's fill times and the runner's clock roughly agree; a fill
+// is recognised as a duplicate by its ID for kSeenFillHorizon behind the
+// newest fill seen.
 //
 // With options.trade_log the runner also records the fills it sees (as it
 // polls them) and periodic P&L snapshots, valued at the last bar close or
@@ -71,6 +85,11 @@ struct RunnerOptions {
 // outpace the strategy.
 class Runner : private Context {
    public:
+    // How far behind the newest fill seen the IDs of older ones are kept, to
+    // drop a fill that arrives both pushed and polled. A pushed fill older
+    // than that is dropped as stale (and logged).
+    static constexpr std::chrono::minutes kSeenFillHorizon{10};
+
     Runner(std::shared_ptr<data::DataSource> data_source,
            std::shared_ptr<trading::TradingVenue> venue,
            std::unique_ptr<Strategy> strategy, RunnerOptions options = {},
@@ -119,8 +138,11 @@ class Runner : private Context {
         types::Symbol symbol;
         types::Quote quote;
     };
+    struct ExecutionEvent {
+        trading::ExecutionUpdate update;
+    };
     struct StopEvent {};
-    using Event = std::variant<BarEvent, QuoteEvent, StopEvent>;
+    using Event = std::variant<BarEvent, QuoteEvent, ExecutionEvent, StopEvent>;
     using Series = std::pair<types::Symbol, types::Timeframe>;
     using SteadyTime = std::chrono::steady_clock::time_point;
 
@@ -142,6 +164,13 @@ class Runner : private Context {
                     const types::Bar& bar);
     // Hands the strategy the fills it has not seen; returns how many.
     std::size_t PollFills();
+    // Hands one fill to the strategy (and the recorder) unless it was seen
+    // before; returns whether it did.
+    bool DeliverFill(const types::Fill& fill);
+    // Hands a pushed fill and order change to the strategy.
+    void HandleExecution(const trading::ExecutionUpdate& update);
+    // Subscribes to the venue's executions, if it pushes them.
+    void SubscribeExecutions();
     // Hands the strategy the order changes it has not seen; returns how many.
     std::size_t PollOrders();
     // PollFills, then PollOrders; returns how much they delivered.
@@ -180,10 +209,13 @@ class Runner : private Context {
 
     // Touched only on the thread driving the strategy.
     bool mBegun = false;
+    bool mPushed = false;  // the venue pushes executions
     std::map<Series, std::vector<types::Bar>> mBars;
     std::size_t mWindowSize = 1;
-    types::Timestamp mFillCursor;
-    std::map<std::string, types::Timestamp> mSeenFills;  // at or after cursor
+    types::Timestamp mRunStart;    // when Begin() ran; no fill before it counts
+    types::Timestamp mFillCursor;  // the newest fill time seen
+    // Fill IDs seen, by fill time, kept for kSeenFillHorizon behind the cursor.
+    std::map<std::string, types::Timestamp> mSeenFills;
 
     // Last: destroyed first, so no callback outlives the members above.
     std::vector<std::unique_ptr<data::Subscription>> mSubscriptions;

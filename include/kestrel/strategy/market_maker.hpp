@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <deque>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -170,6 +171,24 @@ class MarketMaker : public Strategy {
     void Halt(const char* why);
     types::Decimal Position() const { return mInventory - mStart; }
 
+    // Fills the venue has reported in an order's state (an acknowledgement
+    // that it filled at once, or its closing state) but whose OnFill has not
+    // arrived yet. They count against the room on their side until it does,
+    // so a quote that filled on arrival is not placed again and again before
+    // the inventory catches up.
+    struct Unconfirmed {
+        types::Side side;
+        types::Decimal expected;  // filled, per the venue
+        types::Decimal seen;      // in OnFill so far
+        types::Timestamp since;
+        bool warned = false;
+    };
+    void ExpectFills(const std::string& order_id, types::Side side,
+                     const types::Decimal& filled, const types::Decimal& seen,
+                     types::Timestamp now);
+    // Base units on `side` still to be confirmed by OnFill.
+    types::Decimal UnconfirmedFills(types::Side side, types::Timestamp now);
+
     // The exit order in flight; empty id: none.
     struct Exit {
         std::string order_id;
@@ -195,6 +214,7 @@ class MarketMaker : public Strategy {
     std::optional<Exit> mExit;
     bool mHalted = false;
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
+    std::map<std::string, Unconfirmed> mUnconfirmed;  // by order ID
 };
 
 }  // namespace kestrel::strategy

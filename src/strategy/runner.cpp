@@ -79,6 +79,10 @@ class OrderTracker : public trading::TradingVenue {
     types::Result<std::vector<types::Balance>> GetBalances() override {
         return mVenue->GetBalances();
     }
+    types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        trading::ExecutionCallback callback) override {
+        return mVenue->StreamExecutions(std::move(callback));
+    }
 
     // The orders last seen active, by venue order ID.
     std::map<std::string, Seen> Active() const {
@@ -270,8 +274,9 @@ types::Result<void> Runner::Begin() {
         return ready;
     }
 
-    mFillCursor = mClock();
+    mRunStart = mFillCursor = mClock();
     mSeenFills.clear();
+    SubscribeExecutions();
     if (mRecorder) {
         // The venue's holdings are the cost basis. Without them a sale of
         // what was held at the start would realize nothing.
@@ -313,7 +318,8 @@ types::Result<void> Runner::Run() {
         return begun;
     }
 
-    const auto interval = mOptions.fill_poll_interval;
+    const auto interval =
+        mPushed ? mOptions.fill_backstop_interval : mOptions.fill_poll_interval;
     const bool polling = interval > std::chrono::milliseconds::zero();
     auto next_poll = std::chrono::steady_clock::now() + interval;
     for (bool running = true; running;) {
@@ -345,9 +351,41 @@ bool Runner::Drain() {
     return true;
 }
 
+void Runner::SubscribeExecutions() {
+    mPushed = false;
+    auto sub = mVenue->StreamExecutions(
+        [this](const trading::ExecutionUpdate& update) {
+            Push(ExecutionEvent{update});
+        });
+    if (!sub) {
+        if (sub.error().category != ErrorCategory::kNotImplemented) {
+            spdlog::warn("strategy {}: no pushed executions, polling: {}",
+                         mStrategy->Name(), sub.error().ToString());
+        }
+        return;
+    }
+    mPushed = true;
+    mSubscriptions.push_back(std::move(*sub));
+}
+
+void Runner::HandleExecution(const trading::ExecutionUpdate& update) {
+    if (update.fill) {
+        DeliverFill(*update.fill);
+        if (mRecorder) {
+            mRecorder->Flush();
+        }
+    }
+    if (update.order && mTracker->Note(*update.order)) {
+        Guarded("OnOrderUpdate",
+                [&] { mStrategy->OnOrderUpdate(*this, *update.order); });
+    }
+}
+
 bool Runner::Handle(const Event& event) {
     if (const auto* bar = std::get_if<BarEvent>(&event)) {
         HandleBar(*bar);
+    } else if (const auto* execution = std::get_if<ExecutionEvent>(&event)) {
+        HandleExecution(execution->update);
     } else if (const auto* quote = std::get_if<QuoteEvent>(&event)) {
         if (mGate || mRecorder) {
             if (auto price = QuotePrice(quote->quote)) {
@@ -494,7 +532,13 @@ std::size_t Runner::PollOrders() {
 }
 
 std::size_t Runner::PollFills() {
-    auto fills = mVenue->GetFills(mFillCursor);
+    // A pushed fill moves the cursor on, so a fill the push missed can be
+    // older than it: with pushes, look back as far as the duplicate check
+    // reaches.
+    const types::Timestamp since =
+        mPushed ? std::max(mRunStart, mFillCursor - kSeenFillHorizon)
+                : mFillCursor;
+    auto fills = mVenue->GetFills(since);
     if (!fills) {
         spdlog::warn("strategy {}: could not read fills: {}", mStrategy->Name(),
                      fills.error().ToString());
@@ -512,24 +556,40 @@ std::size_t Runner::PollFills() {
     std::size_t delivered = 0;
     for (const types::Fill& fill : *fills) {
         // GetFills includes fills at exactly the cursor, so the last poll's
-        // newest fills come back every time.
-        if (!mSeenFills.emplace(fill.fill_id, fill.time).second) {
-            continue;
+        // newest fills come back every time; pushed ones come back too.
+        if (DeliverFill(fill)) {
+            ++delivered;
         }
-        mFillCursor = std::max(mFillCursor, fill.time);
-        ++delivered;
-        if (mRecorder) {
-            mRecorder->NoteFill(fill);
-        }
-        Guarded("OnFill", [&] { mStrategy->OnFill(*this, fill); });
     }
     if (mRecorder) {
         mRecorder->Flush();
     }
-    std::erase_if(mSeenFills, [this](const auto& seen) {
-        return seen.second < mFillCursor;
-    });
     return delivered;
+}
+
+bool Runner::DeliverFill(const types::Fill& fill) {
+    const types::Timestamp horizon = mFillCursor - kSeenFillHorizon;
+    if (fill.time < horizon) {
+        spdlog::warn(
+            "strategy {}: dropping fill {} from {}, older than the "
+            "duplicate check reaches",
+            mStrategy->Name(), fill.fill_id, types::FormatIso8601(fill.time));
+        return false;
+    }
+    if (!mSeenFills.emplace(fill.fill_id, fill.time).second) {
+        return false;
+    }
+    if (fill.time > mFillCursor) {
+        mFillCursor = fill.time;
+        const types::Timestamp keep = mFillCursor - kSeenFillHorizon;
+        std::erase_if(mSeenFills,
+                      [keep](const auto& seen) { return seen.second < keep; });
+    }
+    if (mRecorder) {
+        mRecorder->NoteFill(fill);
+    }
+    Guarded("OnFill", [&] { mStrategy->OnFill(*this, fill); });
+    return true;
 }
 
 }  // namespace kestrel::strategy

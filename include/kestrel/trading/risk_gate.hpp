@@ -131,6 +131,10 @@ class RiskGatedVenue : public TradingVenue {
         types::Timestamp since) override {
         return mVenue->GetFills(since);
     }
+    types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        ExecutionCallback callback) override {
+        return mVenue->StreamExecutions(std::move(callback));
+    }
     types::Result<std::vector<types::Position>> GetPositions() override {
         return mVenue->GetPositions();
     }

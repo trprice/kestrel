@@ -50,8 +50,13 @@ the header of the code concerned.
 - Quotes are conflated per symbol, but the event queue is otherwise unbounded:
   a strategy slower than the bar stream still falls behind (bars are never
   dropped).
-- Fills are found by polling `GetFills`, not pushed, so `OnFill` can lag the
-  fill by up to `fill_poll_interval` (default 1 s).
+- Fills and order changes are pushed only by venues that implement
+  `StreamExecutions` (today only the paper venue). Others are polled, so
+  `OnFill` can lag the fill by up to `fill_poll_interval` (default 1 s).
+- With pushes, the backstop poll looks back `Runner::kSeenFillHorizon`
+  (10 minutes) behind the newest fill, and a pushed fill older than that is
+  dropped as stale. The paper venue pushes with no delay, so live latency is
+  not modelled in paper runs (see the paper-delay item under Projects).
 - The fill poll starts from the time `Begin()` ran and assumes the venue's fill
   times and the runner's clock roughly agree. A fill stamped earlier than the
   start (clock skew) is missed.
@@ -59,9 +64,9 @@ the header of the code concerned.
   uses a 31-day estimate.
 - One `Runner` drives one strategy; running several means one runner (and one
   set of data subscriptions) each.
-- `OnOrderUpdate` is found by polling (`GetOpenOrders`, plus `GetOrder` for an
-  order that left the list) at `fill_poll_interval`, so a quick state change
-  can be seen late or have intermediate states skipped. An order that vanishes
+- Without pushes, `OnOrderUpdate` is found by polling (`GetOpenOrders`, plus
+  `GetOrder` for an order that left the list) at `fill_poll_interval`, so a
+  quick state change can be seen late or have intermediate states skipped. An order that vanishes
   with `kNotFound` is dropped without an update. A strategy that needs to know
   about an order must have placed it through the runner's venue.
 - `Stop()` is not async-signal-safe (it takes a mutex). `kestrel_app run`
@@ -138,11 +143,21 @@ the header of the code concerned.
   fills under `limit_fill_model = "conservative"`. The ZEC/USDT example
   replaces a quote on about every other update (29.5k placements for 51k
   quotes).
-- Backtest ordering: a quote is matched against resting orders first, then
-  the strategy sees it, and the runner delivers the fills afterwards. So
-  on the quote that fills an order the strategy still believes it is resting
-  (its cancel loses the race, see `cancel_raced`). This resembles fill-poll
-  latency but is exactly one event, not a time.
+- Fills the venue has reported but `OnFill` has not delivered
+  (`mUnconfirmed`) are cleared only by that `OnFill`. If it never comes, the
+  room on that side stays held for the rest of the run (logged once after
+  30 s): safe, but the side can stop quoting for good. Ways it can never come:
+  the runner drops a pushed fill older than `kSeenFillHorizon`; a fill stamped
+  before the run started (clock skew) is never polled; and an order
+  acknowledged as filled is assumed filled at the size asked for, so if a live
+  venue fills a different (rounded) quantity the fills never add up to it.
+  There is no reconciliation yet (see the project item under Strategies).
+- Backtest ordering: a quote is matched against resting orders first, and
+  the paper venue pushes the fill and the order's state, so the strategy hears
+  of the fill before it sees the quote that caused it. That is better informed
+  than live trading, where the fill report takes a round trip; there is no
+  fill latency in a backtest at all (see the paper-delay item under
+  Projects).
 
 ### Backtesting (`backtest/backtest.hpp`)
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
@@ -281,11 +296,22 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
       until a fill shows in `GetFills`, and the venue's clock against ours.
       Needs order placement first; store it beside `venue_latency`.
-- [ ] A user-data stream (WebSocket) for order and fill updates on venues that
-      offer one, replacing fill polling. On Binance.US this also matters for the
-      rate limit: polling `GetFills` (weight 10) and `GetOpenOrders` (weight 3)
-      every second uses about 780 of the 1200 weight per minute for one symbol,
-      so until the stream exists a live run needs a longer `fill_poll_interval`.
+- [x] Pushed executions: `TradingVenue::StreamExecutions`, the runner queues
+      pushed fills and order changes as events and drops to a 30 s backstop
+      poll, and the paper venue pushes. `MarketMaker` counts fills the venue
+      has reported but `OnFill` has not delivered against its inventory room.
+- [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
+      the API key (no new credentials), keepalive about every 30 minutes,
+      `executionReport` to fills and order states, a REST catch-up after a
+      reconnect, and the event time against ours for the fill-visibility
+      latency. Check the current Binance.US docs first: Binance.com has been
+      moving from listen keys to a WebSocket API subscription. Until it lands
+      the venue is polled, and polling `GetFills` (weight 10) and
+      `GetOpenOrders` (weight 3) every second uses about 780 of the 1200
+      weight per minute for one symbol, so a live run needs a longer
+      `fill_poll_interval`.
+- [ ] An optional delay on the paper venue's pushes (and fills), so paper
+      runs can model live latency instead of seeing fills instantly.
 - [ ] Re-verify the timeframe lists for Schwab, Kraken and Binance.US against
       each provider's docs before completing the stubs. The lists in the code
       and README came from memory.
@@ -300,6 +326,16 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Multi-symbol strategies (pairs trading, momentum rotation across a basket)
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
+- [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
+      timeout (a few backstop polls), ask the venue: `GetOrder` for its real
+      filled quantity (correcting a size assumed from the acknowledgement),
+      and if the missing fill is older than the runner's duplicate check it
+      will never be delivered, so resync the inventory from `GetBalances` and
+      clear the entry. Reading `GetFills` from the strategy alone is not
+      enough: it cannot tell a fill that is still on its way to `OnFill` from
+      one that was lost, and counting it would count it twice when it lands.
+      The cleaner long-term fix may be in the runner (report fills it drops,
+      or let a strategy ask whether a fill ID was delivered).
 
 ### Backtesting and research
 - [ ] Parameter sweeps and walk-forward testing

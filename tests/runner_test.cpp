@@ -486,6 +486,99 @@ TEST_F(RunnerTest, DoesNotPollWhenIntervalIsZero) {
     EXPECT_TRUE(strategy->fills.empty());
 }
 
+types::Fill FillAtMinute(const char* id, int minutes_after_start) {
+    types::Fill fill = FillAt(id, 5);
+    fill.time += std::chrono::minutes(minutes_after_start);
+    return fill;
+}
+
+trading::ExecutionUpdate Pushed(const types::Fill& fill) {
+    return trading::ExecutionUpdate{fill, std::nullopt};
+}
+
+TEST_F(RunnerTest, DeliversPushedFillsWithoutPolling) {
+    venue->pushes = true;
+    options.fill_poll_interval = std::chrono::milliseconds(1);
+    options.fill_backstop_interval = std::chrono::milliseconds(0);
+    Start();
+    venue->Push(Pushed(FillAtMinute("f1", 1)));
+    venue->Push(Pushed(FillAtMinute("f2", 2)));
+    Finish();
+    EXPECT_EQ(strategy->fills, (std::vector<std::string>{"f1", "f2"}));
+    EXPECT_EQ(venue->get_fills_calls, 0);  // the 1 ms poll is not used
+    EXPECT_EQ(venue->push_stops.load(), 1);
+}
+
+TEST_F(RunnerTest, AFillThatIsPushedAndPolledIsDeliveredOnce) {
+    venue->pushes = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->fills = {FillAtMinute("f1", 1)};
+    venue->Push(Pushed(FillAtMinute("f1", 1)));
+    EXPECT_TRUE(runner->Drain());  // handles the push, then polls
+    EXPECT_EQ(strategy->fills, std::vector<std::string>{"f1"});
+    runner->End();
+}
+
+TEST_F(RunnerTest, TheBackstopPollFindsAnOlderFillThePushMissed) {
+    venue->pushes = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->fills = {FillAt("before-the-run", 4), FillAtMinute("missed", 1),
+                    FillAtMinute("pushed", 2)};
+    venue->Push(Pushed(FillAtMinute("pushed", 2)));
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->fills, (std::vector<std::string>{"pushed", "missed"}));
+    runner->End();
+}
+
+TEST_F(RunnerTest, DropsAPushedFillOlderThanTheDuplicateCheckReaches) {
+    venue->pushes = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->Push(Pushed(FillAtMinute("new", 30)));
+    venue->Push(Pushed(FillAtMinute("stale", 19)));  // 11 minutes older
+    venue->Push(Pushed(FillAtMinute("recent", 21)));
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->fills, (std::vector<std::string>{"new", "recent"}));
+    runner->End();
+}
+
+TEST_F(RunnerTest, PushedOrderChangesReachOnOrderUpdate) {
+    venue->pushes = true;
+    strategy->orders_on_start = 1;
+    Build();
+    ASSERT_OK(runner->Begin());
+    types::OrderStatus status;
+    status.order_id = "order-1";
+    status.state = types::OrderState::kFilled;
+    status.filled_quantity = types::Decimal::FromInt(1);
+    types::Fill fill = FillAtMinute("f1", 1);
+    fill.order_id = "order-1";
+    venue->Push(trading::ExecutionUpdate{fill, status});
+    venue->Push(trading::ExecutionUpdate{std::nullopt, status});  // again
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->fills, std::vector<std::string>{"f1"});
+    ASSERT_EQ(strategy->updates.size(), 1u);
+    EXPECT_EQ(std::get<1>(strategy->updates[0]), types::OrderState::kFilled);
+    // The order is closed, so the poll does not ask about it.
+    EXPECT_EQ(venue->get_order_calls, 0);
+    runner->End();
+}
+
+TEST_F(RunnerTest, PollsAsBeforeWhenTheVenueDoesNotPush) {
+    venue->fills = {FillAtMinute("f1", 1)};
+    options.fill_poll_interval = std::chrono::milliseconds(1);
+    options.fill_backstop_interval = std::chrono::milliseconds(0);
+    Start();
+    for (int i = 0; i < 1000 && venue->get_fills_calls < 2; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    Finish();
+    EXPECT_GE(venue->get_fills_calls, 2);
+    EXPECT_EQ(strategy->fills, std::vector<std::string>{"f1"});
+}
+
 TEST_F(RunnerTest, DrainProcessesEventsAndFillsOnTheCallingThread) {
     Build();
     ASSERT_OK(runner->Begin());

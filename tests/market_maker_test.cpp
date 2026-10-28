@@ -1,5 +1,7 @@
 #include "kestrel/strategy/market_maker.hpp"
 
+#include <algorithm>
+
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
@@ -217,6 +219,61 @@ TEST(MarketMakerTest, StopsBuyingAtTheInventoryLimitAndSizesDownNearIt) {
     for (const auto& order : m.Orders()) {
         EXPECT_EQ(order.side, Side::kSell);  // no bid
     }
+}
+
+int CountSide(const std::vector<types::OrderRequest>& orders, Side side) {
+    return static_cast<int>(
+        std::ranges::count(orders, side, &types::OrderRequest::side));
+}
+
+TEST(MarketMakerTest, QuotesThatFillOnArrivalCountAgainstTheRoom) {
+    Maker m;  // holds 1, may go to 3 and down to 0
+    m.context.venue.ack_state = OrderState::kFilled;  // every quote fills
+    for (int i = 0; i < 10; ++i) {
+        m.Quote("99.99", "100.01");  // and no OnFill has arrived yet
+    }
+    // 0.5 per quote: 2 of room to buy, 1 held to sell.
+    EXPECT_EQ(CountSide(m.Orders(), Side::kBuy), 4);
+    EXPECT_EQ(CountSide(m.Orders(), Side::kSell), 2);
+
+    // However late the fills are, the room stays taken.
+    m.context.now += std::chrono::hours(1);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().size(), 6u);
+
+    // An arriving buy fill moves the inventory, so it frees no buying room,
+    // but there is now 0.5 more to sell.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(CountSide(m.Orders(), Side::kBuy), 4);
+    EXPECT_EQ(CountSide(m.Orders(), Side::kSell), 3);
+
+    // The first two sells arrive: 0.5 is held, and 1.5 of buys and 0.5 of
+    // sells are still on their way, so there is room for one more buy.
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-2"));
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-4"));
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(CountSide(m.Orders(), Side::kBuy), 5);
+    EXPECT_EQ(CountSide(m.Orders(), Side::kSell), 3);
+}
+
+TEST(MarketMakerTest, AQuoteClosedWithFillsStillToComeKeepsItsRoom) {
+    Maker m;
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);  // bid order-1, ask order-2
+    types::OrderStatus filled = StatusOf("order-1", OrderState::kFilled);
+    filled.side = Side::kBuy;
+    filled.filled_quantity = D("0.5");
+    m.strategy.OnOrderUpdate(m.context, filled);  // before its OnFill
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5", "elsewhere"));
+    m.context.venue.orders.clear();
+    m.Quote("99.99", "100.01");
+    // 1 + 1.5 held, and 0.5 more on its way: the limit of 3 is reached.
+    EXPECT_EQ(CountSide(m.Orders(), Side::kBuy), 0);
+
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(CountSide(m.Orders(), Side::kBuy), 0);  // still at the limit
 }
 
 TEST(MarketMakerTest, CannotSellWhatItDoesNotHold) {

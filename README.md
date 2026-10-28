@@ -367,7 +367,7 @@ live feed, a recorded one (backtest), or a paper or live venue.
   Strategy: OnBar / OnQuote / OnFill / OnOrderUpdate     |
         |                       ^                        |
         | PlaceOrder,           | fills and order        |
-        | CancelOrder           | changes, polled        |
+        | CancelOrder           | changes, pushed/polled |
         v                       |                        |
   OrderTracker  (remembers active orders)                |
         |                       |                        |
@@ -396,8 +396,12 @@ In words:
    thread takes events off the queue and calls the strategy's hooks.
 3. The **strategy** places orders through `Context::Venue()`. The call passes
    through the order tracker and the optional risk gate to the real venue.
-4. The runner **polls the venue** for fills and order changes, and hands them
-   back to the strategy as `OnFill` and `OnOrderUpdate`.
+4. The runner hands fills and order changes back to the strategy as `OnFill`
+   and `OnOrderUpdate`. A venue that **pushes executions**
+   (`TradingVenue::StreamExecutions`; today the paper venue) has them queued
+   as events the moment they happen, and the runner **polls** only as a
+   backstop every `fill_backstop_interval` (30 s). Other venues are polled
+   every `fill_poll_interval` (1 s).
 5. If recording is on, the runner also gives each fill and the latest prices to
    the **recorder**, which keeps P&L and writes it to the database.
 
@@ -417,7 +421,7 @@ order, on one thread and a simulated clock.
 | `RiskGatedVenue` | A `TradingVenue` that wraps another one and refuses orders that break a limit (size, open orders, order rate, daily loss, drawdown, symbol allowlist). It has a kill switch, `Halt()`. |
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
 | `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info and its bar history. `SmaCrossover` and `MarketMaker` are the two included. |
-| `Runner` | Owns one strategy. Queues events (conflating quotes per symbol), runs the strategy on one thread, polls for fills and order updates, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
+| `Runner` | Owns one strategy. Queues events (conflating quotes per symbol), runs the strategy on one thread, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
 | `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`, `venue_latency`). |
@@ -432,7 +436,10 @@ provider; the providers know nothing about strategies.
 
 - **WebSocket thread** (one per stream): runs the data source's callbacks. The
   runner's callbacks only enqueue, and `QuoteWriter` only buffers. Do not call
-  `Stop()` or destroy a subscription from inside a callback.
+  `Stop()` or destroy a subscription from inside a callback. The paper venue
+  pushes executions from here too (a resting order filled by a quote), or
+  from the Run() thread when an order fills or closes inside `PlaceOrder` /
+  `CancelOrder`; the runner's execution callback also only enqueues.
 - **Run() thread**: the only thread that calls the strategy. It is free to call
   the venue over HTTP, take fills, and write to the database.
 - **Watch thread** (`run` only): collects SIGINT and SIGTERM and calls
@@ -568,10 +575,14 @@ class MyStrategy : public strategy::Strategy {
   limit, the venue), or succeed with an acknowledgement that is already
   closed (for example an unfillable fill-or-kill order). Neither produces a
   fill, so do not wait for one.
-- **Fills arrive late:** the runner finds fills and order changes by polling
-  the venue (`fill_poll_interval`, 1 s by default), so `OnFill` can lag the
-  order. Track your own pending orders and your own position from `OnFill`
-  rather than assuming an order filled when you placed it.
+- **Fills arrive late:** `OnFill` always comes after the fill, even from a
+  venue that pushes executions (an order that fills inside `PlaceOrder` is
+  reported on a later event), and a polled venue can lag by
+  `fill_poll_interval` (1 s by default). Track your own pending orders and
+  your own position from `OnFill` rather than assuming an order filled when
+  you placed it, and count a fill the venue has already reported (an
+  acknowledgement in `kFilled`, a closing `OnOrderUpdate`) against your limits
+  until its `OnFill` arrives, as `MarketMaker` does.
 - **Cancels race with fills:** an order can fill while your cancel is in
   flight. `CancelOrder` reports `kAlreadyFilled` or `kAlreadyClosed` for that,
   and it is a normal outcome, not an error. `MarketMaker` tracks the race as

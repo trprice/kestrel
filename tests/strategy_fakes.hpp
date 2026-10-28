@@ -69,8 +69,21 @@ class RecordingVenue : public trading::TradingVenue {
     types::Result<std::vector<types::Balance>> GetBalances() override {
         return balances;
     }
+    // Without `pushes`, the venue has no push channel (the default).
+    types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        trading::ExecutionCallback callback) override {
+        if (!pushes) {
+            return TradingVenue::StreamExecutions(std::move(callback));
+        }
+        pushed = std::move(callback);
+        return std::unique_ptr<data::Subscription>(
+            std::make_unique<PushSubscription>(*this));
+    }
+    // Pushes `update` as the venue would.
+    void Push(const trading::ExecutionUpdate& update) { pushed(update); }
 
     // Set before the venue is shared with other threads.
+    bool pushes = false;
     bool reject_orders = false;
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
@@ -86,6 +99,24 @@ class RecordingVenue : public trading::TradingVenue {
     int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
     std::vector<types::OrderRequest> orders;
+    trading::ExecutionCallback pushed;
+    std::atomic<int> push_stops{0};
+
+   private:
+    class PushSubscription : public data::Subscription {
+       public:
+        explicit PushSubscription(RecordingVenue& venue) : mVenue(venue) {}
+        void Stop() override {
+            if (!mStopped.exchange(true)) {
+                ++mVenue.push_stops;
+            }
+        }
+        ~PushSubscription() override { Stop(); }
+
+       private:
+        RecordingVenue& mVenue;
+        std::atomic<bool> mStopped{false};
+    };
 };
 
 // Remembers what a run writes. The writes lock, so SnapshotCount can be polled

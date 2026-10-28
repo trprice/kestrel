@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <map>
 #include <memory>
@@ -23,7 +24,8 @@ enum class LimitFillModel {
     // Conservative, for quote-driven strategies such as market makers. An
     // order fills only on evidence that it would have been reached:
     //   - the opposite touch is strictly through the limit (ask < a buy's
-    //     limit): filled, in full unless capped by cap_limit_fills_at_quote_size;
+    //     limit): filled, in full unless capped by
+    //     cap_limit_fills_at_quote_size;
     //   - a trade prints through the limit (below a buy's, above a sell's):
     //     filled in full, since every order at a better price filled first;
     //   - trades print at the limit price: they first use up the orders queued
@@ -73,6 +75,12 @@ struct PaperOptions {
 // Thread-safe. Quotes typically arrive on the data source's WebSocket thread
 // while strategies call the TradingVenue API from other threads; one mutex
 // guards all state, and no network I/O happens while it is held.
+//
+// StreamExecutions pushes every fill (with the order's state after it) and
+// every cancel or expiry as it happens: from the quote thread for a resting
+// order, or from inside PlaceOrder / CancelOrder for one that fills or closes
+// there. Updates are delivered after the state mutex is released, in the
+// order they happened.
 class PaperTradingVenue : public TradingVenue {
    public:
     PaperTradingVenue(std::shared_ptr<data::DataSource> data_source,
@@ -101,9 +109,26 @@ class PaperTradingVenue : public TradingVenue {
         types::Timestamp since) override;
     types::Result<std::vector<types::Position>> GetPositions() override;
     types::Result<std::vector<types::Balance>> GetBalances() override;
+    types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        ExecutionCallback callback) override;
 
    private:
     struct Order;
+    // The StreamExecutions callbacks, shared with their subscriptions so one
+    // can outlive the venue.
+    struct Listeners {
+        std::mutex mutex;  // held while delivering, so updates stay in order
+        std::map<std::uint64_t, ExecutionCallback> callbacks;
+        std::uint64_t next = 1;
+        std::atomic<std::size_t> count{0};
+    };
+    class ExecutionSubscription;
+    // Runs Deliver() when it goes out of scope. Declare it before the
+    // lock_guard, so it runs once the lock is released.
+    struct DeliverOnExit {
+        PaperTradingVenue& venue;
+        ~DeliverOnExit() { venue.Deliver(); }
+    };
     struct Candidate;
     // A trade seen in a quote stream.
     struct Trade {
@@ -111,7 +136,13 @@ class PaperTradingVenue : public TradingVenue {
         std::optional<types::Decimal> size;
     };
 
+    // Hands the updates queued by Notice() to the listeners. Must be called
+    // without mMutex.
+    void Deliver();
+
     // All of these require mMutex to be held.
+    // Queues `order`'s state, and `fill` if there is one, for the listeners.
+    void Notice(const Order& order, const std::optional<types::Fill>& fill);
     std::optional<Candidate> Evaluate(const Order& order,
                                       const types::Quote& quote,
                                       bool placing) const;
@@ -152,6 +183,8 @@ class PaperTradingVenue : public TradingVenue {
     std::map<types::Symbol, types::Quote> mQuotes;
     std::uint64_t mNextOrder = 1;
     std::uint64_t mNextFill = 1;
+    std::vector<ExecutionUpdate> mNotices;  // queued for Deliver()
+    const std::shared_ptr<Listeners> mListeners = std::make_shared<Listeners>();
 
     std::unique_ptr<data::Subscription> mSubscription;  // last: destroyed first
 };

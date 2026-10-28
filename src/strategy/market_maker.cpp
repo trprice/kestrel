@@ -16,6 +16,8 @@ namespace {
 constexpr int kScale = 8;
 // The longest window a protection rule looks back over.
 constexpr std::chrono::minutes kHistory{15};
+// How long a reported fill may go without its OnFill before it is logged.
+constexpr std::chrono::seconds kUnconfirmedWarning{30};
 const Decimal kBpsDivisor = Decimal::FromInt(10000);
 
 // `value` * `bps` / 10000.
@@ -139,9 +141,13 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     ask = std::max(ask, *quote.bid + tick);
 
     // Room to add to the position, and to sell down. Spot cannot go short.
-    const Decimal bid_room = mStart + mParams.max_inventory - mInventory;
+    // Fills the venue reported but OnFill has not delivered yet count as done.
+    const auto now = context.Now();
+    const Decimal bid_room = mStart + mParams.max_inventory - mInventory -
+                             UnconfirmedFills(Side::kBuy, now);
     const Decimal ask_room =
-        mInventory - std::max(Decimal(), mStart - mParams.max_inventory);
+        mInventory - std::max(Decimal(), mStart - mParams.max_inventory) -
+        UnconfirmedFills(Side::kSell, now);
 
     const Decimal threshold = std::max(Bps(mid, mParams.requote_bps), tick);
     Manage(context, mBid, Side::kBuy,
@@ -338,7 +344,12 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
         return;
     }
     if (!types::IsActive(ack->state)) {
-        return;  // filled or refused at once; OnFill has any fill
+        // Filled or refused at once. A fill is on its way to OnFill; until it
+        // arrives the inventory does not show it.
+        if (ack->state == types::OrderState::kFilled) {
+            ExpectFills(ack->order_id, side, size, Decimal(), context.Now());
+        }
+        return;
     }
     quote =
         Resting{ack->order_id, *price, size, Decimal(), context.Now(), false};
@@ -383,12 +394,19 @@ void MarketMaker::OnFill(Context&, const types::Fill& fill) {
             quote->filled += fill.quantity;
         }
     }
+    if (auto it = mUnconfirmed.find(fill.order_id); it != mUnconfirmed.end()) {
+        it->second.seen += fill.quantity;
+        if (it->second.seen >= it->second.expected) {
+            mUnconfirmed.erase(it);
+        }
+    }
     spdlog::info("market_maker: {} {} @ {}, inventory {}",
                  types::ToString(fill.side), fill.quantity.ToString(),
                  fill.price.ToString(), mInventory.ToString());
 }
 
-void MarketMaker::OnOrderUpdate(Context&, const types::OrderStatus& status) {
+void MarketMaker::OnOrderUpdate(Context& context,
+                                const types::OrderStatus& status) {
     if (types::IsActive(status.state)) {
         return;
     }
@@ -398,9 +416,43 @@ void MarketMaker::OnOrderUpdate(Context&, const types::OrderStatus& status) {
     }
     for (Resting* quote : {&mBid, &mAsk}) {
         if (!quote->order_id.empty() && quote->order_id == status.order_id) {
+            // Closed with fills OnFill has not delivered: keep counting them.
+            ExpectFills(status.order_id, status.side, status.filled_quantity,
+                        quote->filled, context.Now());
             *quote = Resting();
         }
     }
+}
+
+void MarketMaker::ExpectFills(const std::string& order_id, Side side,
+                              const Decimal& filled, const Decimal& seen,
+                              types::Timestamp now) {
+    if (filled > seen) {
+        mUnconfirmed[order_id] = Unconfirmed{side, filled, seen, now, false};
+    }
+}
+
+Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
+    Decimal total;
+    for (auto& [order_id, pending] : mUnconfirmed) {
+        if (pending.side != side) {
+            continue;
+        }
+        total += pending.expected - pending.seen;
+        // Kept until the fill arrives, however long: a fill that never
+        // arrives leaves that side short of room rather than over the limit.
+        if (!pending.warned && now - pending.since >= kUnconfirmedWarning) {
+            pending.warned = true;
+            spdlog::warn(
+                "market_maker: order {} filled {} but only {} has arrived "
+                "after {} s; that side keeps the room for it",
+                order_id, pending.expected.ToString(), pending.seen.ToString(),
+                std::chrono::duration_cast<std::chrono::seconds>(now -
+                                                                 pending.since)
+                    .count());
+        }
+    }
+    return total;
 }
 
 void MarketMaker::OnStop(Context& context) {

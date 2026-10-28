@@ -1,6 +1,7 @@
 #include "kestrel/trading/paper_trading_venue.hpp"
 
 #include <atomic>
+#include <mutex>
 #include <thread>
 
 #include "test_helpers.hpp"
@@ -710,8 +711,8 @@ TEST(PaperConservative, UnknownQueueSizeOrTradeSizeNeverFillsAtTheLimit) {
     venue->OnQuote(Q("49000.0", "49010.0"));  // no sizes
     ASSERT_OK(venue->PlaceOrder(
         Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
-    venue->OnQuote(QT("49000.0", "49010.0", nullptr, nullptr, "49000.0", "9",
-                      10));
+    venue->OnQuote(
+        QT("49000.0", "49010.0", nullptr, nullptr, "49000.0", "9", 10));
     EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
 
     // A trade with no size is known only by its price: at the limit it
@@ -748,6 +749,138 @@ TEST(PaperCross, KeepsFillingOnATouchEqualToTheLimit) {
         Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
     venue->OnQuote(Q("48990.0", "49000.0", "2", "2"));
     EXPECT_TRUE(venue->GetOpenOrders()->empty());
+}
+
+// What a StreamExecutions callback received.
+struct Pushed {
+    std::vector<trading::ExecutionUpdate> updates;
+    trading::ExecutionCallback Callback() {
+        return
+            [this](const trading::ExecutionUpdate& u) { updates.push_back(u); };
+    }
+};
+
+TEST(PaperPush, ARestingFillIsPushedWithTheOrdersState) {
+    Fixture f;
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0"));
+    ASSERT_OK(ack);
+    EXPECT_TRUE(pushed.updates.empty());  // resting: nothing happened yet
+
+    venue->OnQuote(Q("48890.0", "48900.0"));  // crosses
+    ASSERT_EQ(pushed.updates.size(), 1u);
+    const auto& u = pushed.updates[0];
+    ASSERT_TRUE(u.fill.has_value());
+    ASSERT_TRUE(u.order.has_value());
+    EXPECT_EQ(u.fill->order_id, ack->order_id);
+    EXPECT_EQ(u.fill->price, D("49000.0"));
+    EXPECT_EQ(u.fill->fill_id,
+              venue->GetFills(types::FromEpochSeconds(0))->at(0).fill_id);
+    EXPECT_EQ(u.order->state, OrderState::kFilled);
+    EXPECT_EQ(u.order->filled_quantity, D("0.1"));
+}
+
+TEST(PaperPush, AFillOnArrivalIsPushedBeforePlaceOrderReturns) {
+    Fixture f;
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kFilled);
+    ASSERT_EQ(pushed.updates.size(), 1u);
+    EXPECT_TRUE(pushed.updates[0].fill.has_value());
+    EXPECT_EQ(pushed.updates[0].order->order_id, ack->order_id);
+}
+
+TEST(PaperPush, PartialFillsAndACancelArePushedInOrder) {
+    Fixture f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.15", "49000.0"));
+    ASSERT_OK(ack);
+    venue->OnQuote(Q("48890.0", "48900.0", "1", "0.05"));
+    venue->OnQuote(Q("48890.0", "48900.0", "1", "0.05"));
+    ASSERT_OK(venue->CancelOrder(ack->order_id));
+
+    ASSERT_EQ(pushed.updates.size(), 3u);
+    EXPECT_EQ(pushed.updates[0].order->state, OrderState::kPartiallyFilled);
+    EXPECT_EQ(pushed.updates[0].order->filled_quantity, D("0.05"));
+    EXPECT_EQ(pushed.updates[1].order->filled_quantity, D("0.1"));
+    EXPECT_FALSE(pushed.updates[2].fill.has_value());
+    EXPECT_EQ(pushed.updates[2].order->state, OrderState::kCancelled);
+    EXPECT_EQ(pushed.updates[2].order->filled_quantity, D("0.1"));
+}
+
+TEST(PaperPush, StoppingTheSubscriptionStopsThePushes) {
+    Fixture f;
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    (*sub)->Stop();
+    ASSERT_OK(venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1")));
+    EXPECT_TRUE(pushed.updates.empty());
+    sub->reset();  // destroying it after Stop is fine
+}
+
+TEST(PaperPush, ASubscriptionMayOutliveTheVenue) {
+    Fixture f;
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue.reset();
+    (*sub)->Stop();  // must not touch the destroyed venue
+}
+
+TEST(PaperPush, ConcurrentQuotesAndOrdersPushEveryFillOnce) {
+    Fixture f;
+    f.options.initial_balances = {{"USD", D("1000000")}};
+    auto venue = f.Make();
+    std::mutex mutex;
+    std::vector<std::string> fill_ids;
+    auto sub = venue->StreamExecutions([&](const trading::ExecutionUpdate& u) {
+        if (u.fill) {
+            std::lock_guard lock(mutex);
+            fill_ids.push_back(u.fill->fill_id);
+        }
+    });
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    std::thread quotes([&] {
+        for (int i = 0; i < 200; ++i) {
+            venue->OnQuote(i % 2 ? Q("48890.0", "48900.0")
+                                 : Q("49990.0", "50000.0"));
+        }
+    });
+    for (int i = 0; i < 100; ++i) {
+        (void)venue->PlaceOrder(
+            Order(Side::kBuy, OrderType::kLimit, "0.001", "49000.0"));
+    }
+    quotes.join();
+    venue->OnQuote(Q("48890.0", "48900.0"));  // fills whatever still rests
+    const auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    std::lock_guard lock(mutex);
+    ASSERT_EQ(fill_ids.size(), fills->size());
+    for (std::size_t i = 0; i < fills->size(); ++i) {
+        EXPECT_EQ(fill_ids[i],
+                  (*fills)[i].fill_id);  // in the order they happened
+    }
 }
 
 }  // namespace

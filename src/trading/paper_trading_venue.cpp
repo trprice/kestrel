@@ -116,6 +116,60 @@ Decimal PaperTradingVenue::Reserve(const Order& order,
     return ToBookScale(order.reserve_unit * remaining, Rounding::kUp);
 }
 
+class PaperTradingVenue::ExecutionSubscription : public data::Subscription {
+   public:
+    ExecutionSubscription(std::weak_ptr<Listeners> listeners, std::uint64_t id)
+        : mListeners(std::move(listeners)), mId(id) {}
+    ~ExecutionSubscription() override { Stop(); }
+    void Stop() override {
+        if (auto listeners = mListeners.lock()) {
+            std::lock_guard lock(listeners->mutex);
+            if (listeners->callbacks.erase(mId) > 0) {
+                --listeners->count;
+            }
+        }
+    }
+
+   private:
+    std::weak_ptr<Listeners> mListeners;
+    std::uint64_t mId;
+};
+
+Result<std::unique_ptr<data::Subscription>> PaperTradingVenue::StreamExecutions(
+    ExecutionCallback callback) {
+    std::lock_guard lock(mListeners->mutex);
+    const std::uint64_t id = mListeners->next++;
+    mListeners->callbacks.emplace(id, std::move(callback));
+    ++mListeners->count;
+    return std::unique_ptr<data::Subscription>(
+        std::make_unique<ExecutionSubscription>(mListeners, id));
+}
+
+void PaperTradingVenue::Notice(const Order& order,
+                               const std::optional<types::Fill>& fill) {
+    if (mListeners->count == 0) {
+        return;  // nobody to tell; do not let the queue grow
+    }
+    mNotices.push_back(ExecutionUpdate{fill, order.status});
+}
+
+void PaperTradingVenue::Deliver() {
+    if (mListeners->count == 0) {
+        return;
+    }
+    std::lock_guard deliver(mListeners->mutex);
+    std::vector<ExecutionUpdate> batch;
+    {
+        std::lock_guard lock(mMutex);
+        batch.swap(mNotices);
+    }
+    for (const ExecutionUpdate& update : batch) {
+        for (const auto& [id, callback] : mListeners->callbacks) {
+            callback(update);
+        }
+    }
+}
+
 void PaperTradingVenue::Close(Order& order, OrderState state,
                               std::string reason) {
     Adjust(mLocked, order.reserve_asset, -Reserve(order, order.Remaining()));
@@ -124,6 +178,7 @@ void PaperTradingVenue::Close(Order& order, OrderState state,
     if (!reason.empty()) {
         order.status.reason = std::move(reason);
     }
+    Notice(order, std::nullopt);
 }
 
 std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::Evaluate(
@@ -310,6 +365,7 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     fill.liquidity = liquidity;
     fill.time = order.status.updated_time;
     mPnl.Apply(fill);
+    Notice(order, fill);
     mFills.push_back(std::move(fill));
     return true;
 }
@@ -347,6 +403,7 @@ void PaperTradingVenue::ExpireDayOrders() {
 }
 
 void PaperTradingVenue::OnQuote(const types::Quote& quote) {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     const bool seen_before = mQuotes.contains(quote.symbol);
     types::Quote& latest = mQuotes[quote.symbol];
@@ -411,6 +468,7 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
         return std::unexpected(parts.error());
     }
 
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     const auto now = mClock();
@@ -531,6 +589,7 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
 
 Result<CancelOutcome> PaperTradingVenue::CancelOrder(
     const std::string& order_id) {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     const auto it = mOrders.find(order_id);
@@ -549,6 +608,7 @@ Result<CancelOutcome> PaperTradingVenue::CancelOrder(
 }
 
 Result<std::vector<std::string>> PaperTradingVenue::CancelAll() {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     std::vector<std::string> cancelled;
@@ -563,6 +623,7 @@ Result<std::vector<std::string>> PaperTradingVenue::CancelAll() {
 }
 
 Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     std::vector<types::OrderStatus> out;
@@ -576,6 +637,7 @@ Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
 
 Result<types::OrderStatus> PaperTradingVenue::GetOrder(
     const std::string& order_id) {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
     ExpireDayOrders();
     auto it = mOrders.find(order_id);
@@ -589,8 +651,8 @@ Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
     types::Timestamp since) {
     std::lock_guard lock(mMutex);
     // Fills are appended as they happen, so they are sorted by time.
-    const auto first = std::ranges::lower_bound(mFills, since, {},
-                                                &types::Fill::time);
+    const auto first =
+        std::ranges::lower_bound(mFills, since, {}, &types::Fill::time);
     return std::vector<types::Fill>(first, mFills.end());
 }
 
