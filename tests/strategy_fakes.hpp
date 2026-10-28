@@ -115,14 +115,14 @@ class FakeTradeLog : public trading::TradeLog {
     }
     types::Result<void> WriteLatency(
         types::Timestamp start, types::Timestamp end,
-        std::span<const net::EndpointLatency> rows) override {
+        std::span<const types::EndpointLatency> rows) override {
         std::lock_guard lock(mMutex);
         if (fail_latency) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         }
         latency.push_back(
             {start, end,
-             std::vector<net::EndpointLatency>(rows.begin(), rows.end())});
+             std::vector<types::EndpointLatency>(rows.begin(), rows.end())});
         return {};
     }
     types::Result<void> Finish(types::Timestamp time) override {
@@ -145,7 +145,7 @@ class FakeTradeLog : public trading::TradeLog {
     struct LatencyWindow {
         types::Timestamp start;
         types::Timestamp end;
-        std::vector<net::EndpointLatency> rows;
+        std::vector<types::EndpointLatency> rows;
     };
     std::vector<LatencyWindow> latency;
     std::optional<types::Timestamp> finished;

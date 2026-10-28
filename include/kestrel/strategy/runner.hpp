@@ -39,7 +39,7 @@ struct RunnerOptions {
     // this length (zero: not at all); see RunRecorder::RecordLatency.
     std::chrono::milliseconds latency_interval{0};
     // Where the figures come from; null means the HTTP statistics.
-    std::function<std::vector<net::EndpointLatency>()> latency_source;
+    std::function<std::vector<types::EndpointLatency>()> latency_source;
 };
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events

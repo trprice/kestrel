@@ -161,7 +161,7 @@ TEST_F(TradeStoreTest, TheTotalsViewSumsTheSymbols) {
 }
 
 TEST_F(TradeStoreTest, LatencyWindowsRoundTrip) {
-    net::EndpointLatency a;
+    types::EndpointLatency a;
     a.endpoint = "GET https://api.binance.us/api/v3/account";
     a.count = 60;
     a.errors = 3;
@@ -171,10 +171,10 @@ TEST_F(TradeStoreTest, LatencyWindowsRoundTrip) {
     a.p95_ms = 300;
     a.p99_ms = 450.75;
     a.max_ms = 900;
-    net::EndpointLatency b = a;
+    types::EndpointLatency b = a;
     b.endpoint = "GET https://api.binance.us/api/v3/openOrders";
     b.count = 120;
-    const std::vector<net::EndpointLatency> rows = {b, a};
+    const std::vector<types::EndpointLatency> rows = {b, a};
     const auto start = types::FromEpochSeconds(1'700'000'000);
     const auto end = types::FromEpochSeconds(1'700'000'060);
     ASSERT_OK(mStore->WriteLatency(start, end, rows));

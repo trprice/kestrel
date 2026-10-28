@@ -36,7 +36,7 @@ LatencyStats::LatencyStats(std::size_t max_samples)
 void LatencyStats::Add(SeriesMap& map, const std::string& endpoint, double ms,
                        bool ok, int http_status) const {
     Series& series = map[endpoint];
-    EndpointLatency& totals = series.totals;
+    types::EndpointLatency& totals = series.totals;
     if (totals.count == 0) {
         totals.min_ms = ms;
         totals.max_ms = ms;
@@ -69,13 +69,13 @@ void LatencyStats::Record(const std::string& endpoint,
     Add(mWindow, endpoint, ms, ok, http_status);
 }
 
-std::vector<EndpointLatency> LatencyStats::Report(const SeriesMap& map) {
-    std::vector<EndpointLatency> out;
+std::vector<types::EndpointLatency> LatencyStats::Report(const SeriesMap& map) {
+    std::vector<types::EndpointLatency> out;
     for (const auto& [endpoint, series] : map) {
         if (series.totals.count == 0) {
             continue;
         }
-        EndpointLatency row = series.totals;
+        types::EndpointLatency row = series.totals;
         row.endpoint = endpoint;
         std::vector<double> sorted = series.samples;
         std::ranges::sort(sorted);
@@ -87,7 +87,7 @@ std::vector<EndpointLatency> LatencyStats::Report(const SeriesMap& map) {
     return out;
 }
 
-std::vector<EndpointLatency> LatencyStats::Summarize(bool reset) {
+std::vector<types::EndpointLatency> LatencyStats::Summarize(bool reset) {
     std::lock_guard lock(mMutex);
     auto out = Report(mSeries);
     if (reset) {
@@ -96,14 +96,14 @@ std::vector<EndpointLatency> LatencyStats::Summarize(bool reset) {
     return out;
 }
 
-std::vector<EndpointLatency> LatencyStats::TakeWindow() {
+std::vector<types::EndpointLatency> LatencyStats::TakeWindow() {
     std::lock_guard lock(mMutex);
     auto out = Report(mWindow);
     mWindow.clear();
     return out;
 }
 
-void LogLatency(const std::vector<EndpointLatency>& summary) {
+void LogLatency(const std::vector<types::EndpointLatency>& summary) {
     for (const auto& row : summary) {
         spdlog::info(
             "latency {}: {} calls, {} errors ({} rate limited), ms min {:.0f} "

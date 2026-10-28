@@ -10,23 +10,9 @@
 #include <vector>
 
 #include "kestrel/net/http_client.hpp"
+#include "kestrel/types/latency.hpp"
 
 namespace kestrel::net {
-
-// One endpoint's response times over a window, in milliseconds. The
-// percentiles come from the most recent samples kept for the endpoint (see
-// LatencyStats); count, errors, min and max cover every call in the window.
-struct EndpointLatency {
-    std::string endpoint;  // "GET https://host/path", without the query string
-    std::uint64_t count = 0;
-    std::uint64_t errors = 0;        // calls that returned an error
-    std::uint64_t rate_limited = 0;  // of those, HTTP 429 or 418
-    double min_ms = 0;
-    double p50_ms = 0;
-    double p95_ms = 0;
-    double p99_ms = 0;
-    double max_ms = 0;
-};
 
 // Thread-safe response-time statistics per endpoint. Record() adds one call.
 // Two views are kept independently: Summarize() reports everything since the
@@ -39,28 +25,29 @@ class LatencyStats {
     // are worked out from; the rest of a longer window is still counted.
     explicit LatencyStats(std::size_t max_samples = 4096);
 
+    // A failed call with HTTP status 429 or 418 also counts as rate limited.
     void Record(const std::string& endpoint, std::chrono::microseconds elapsed,
                 bool ok, int http_status);
 
     // Endpoints with at least one call, sorted by name.
-    std::vector<EndpointLatency> Summarize(bool reset);
+    std::vector<types::EndpointLatency> Summarize(bool reset);
 
     // The calls since the previous TakeWindow() (or since the start), then
     // starts the next window. Leaves Summarize()'s totals alone.
-    std::vector<EndpointLatency> TakeWindow();
+    std::vector<types::EndpointLatency> TakeWindow();
 
    private:
     struct Series {
         std::vector<double> samples;  // ring buffer once full
         std::size_t next = 0;
-        EndpointLatency totals;
+        types::EndpointLatency totals;
     };
 
     using SeriesMap = std::map<std::string, Series>;
 
     void Add(SeriesMap& map, const std::string& endpoint, double ms, bool ok,
              int http_status) const;
-    static std::vector<EndpointLatency> Report(const SeriesMap& map);
+    static std::vector<types::EndpointLatency> Report(const SeriesMap& map);
 
     const std::size_t mMaxSamples;
     std::mutex mMutex;
@@ -72,7 +59,7 @@ class LatencyStats {
 inline constexpr std::chrono::milliseconds kDefaultSlowRequest{2000};
 
 // Logs one info line per endpoint (and nothing if there were no calls).
-void LogLatency(const std::vector<EndpointLatency>& summary);
+void LogLatency(const std::vector<types::EndpointLatency>& summary);
 
 // Times every call of the client it wraps, and warns when one is slow. The
 // time is the whole Send(): connect, request and response, for one attempt, so

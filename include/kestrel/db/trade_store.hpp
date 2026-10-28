@@ -51,13 +51,13 @@ class TradeStore : public trading::TradeLog {
         types::Timestamp time, std::span<const trading::PnlRow> rows) override;
     types::Result<void> WriteLatency(
         types::Timestamp start, types::Timestamp end,
-        std::span<const net::EndpointLatency> rows) override;
+        std::span<const types::EndpointLatency> rows) override;
     types::Result<void> Finish(types::Timestamp time) override;
 
     struct StoredLatency {
         types::Timestamp start;
         types::Timestamp end;
-        net::EndpointLatency row;
+        types::EndpointLatency row;
     };
 
     // This run's rows, oldest first.

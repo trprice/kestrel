@@ -3,9 +3,9 @@
 #include <optional>
 #include <span>
 
-#include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/error.hpp"
+#include "kestrel/types/latency.hpp"
 #include "kestrel/types/orders.hpp"
 #include "kestrel/types/symbol.hpp"
 #include "kestrel/types/time.hpp"
@@ -41,7 +41,7 @@ class TradeLog {
     // the call.
     virtual types::Result<void> WriteLatency(
         types::Timestamp start, types::Timestamp end,
-        std::span<const net::EndpointLatency> rows) {
+        std::span<const types::EndpointLatency> rows) {
         (void)start;
         (void)end;
         (void)rows;

@@ -37,7 +37,7 @@ class RunRecorder {
    public:
     static constexpr std::size_t kMaxQueued = 100'000;
 
-    using LatencySource = std::function<std::vector<net::EndpointLatency>()>;
+    using LatencySource = std::function<std::vector<types::EndpointLatency>()>;
 
     RunRecorder(std::shared_ptr<trading::TradeLog> log,
                 std::chrono::milliseconds interval);

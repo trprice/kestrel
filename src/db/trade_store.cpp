@@ -131,7 +131,7 @@ Result<void> TradeStore::WritePnl(types::Timestamp time,
 
 Result<void> TradeStore::WriteLatency(
     types::Timestamp start, types::Timestamp end,
-    std::span<const net::EndpointLatency> rows) {
+    std::span<const types::EndpointLatency> rows) {
     for (std::size_t done = 0; done < rows.size();) {
         const auto batch =
             rows.subspan(done, std::min(kRowsPerInsert, rows.size() - done));

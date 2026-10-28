@@ -160,8 +160,8 @@ TEST(RunRecorderTest, FinishFlushesSnapshotsAndMarksTheRunDone) {
     EXPECT_EQ(f.log->finished, At(5));
 }
 
-net::EndpointLatency Latency(const char* endpoint, std::uint64_t count) {
-    net::EndpointLatency row;
+types::EndpointLatency Latency(const char* endpoint, std::uint64_t count) {
+    types::EndpointLatency row;
     row.endpoint = endpoint;
     row.count = count;
     return row;
@@ -169,20 +169,20 @@ net::EndpointLatency Latency(const char* endpoint, std::uint64_t count) {
 
 // A recorder whose latency source hands out `windows` in turn, then nothing.
 struct LatencyFixture {
-    explicit LatencyFixture(std::vector<std::vector<net::EndpointLatency>> w)
+    explicit LatencyFixture(std::vector<std::vector<types::EndpointLatency>> w)
         : windows(std::move(w)),
           log(std::make_shared<FakeTradeLog>()),
           recorder(log, std::chrono::seconds(0)) {
         recorder.RecordLatency(std::chrono::seconds(60), [this] {
             ++calls;
             if (next >= windows.size()) {
-                return std::vector<net::EndpointLatency>{};
+                return std::vector<types::EndpointLatency>{};
             }
             return windows[next++];
         });
         recorder.Start({}, At(0));
     }
-    std::vector<std::vector<net::EndpointLatency>> windows;
+    std::vector<std::vector<types::EndpointLatency>> windows;
     std::size_t next = 0;
     int calls = 0;
     std::shared_ptr<FakeTradeLog> log;
@@ -242,7 +242,7 @@ TEST(RunRecorderLatency, IsOffUnlessAskedFor) {
     auto log = std::make_shared<FakeTradeLog>();
     RunRecorder zero(log, std::chrono::seconds(0));
     zero.RecordLatency(std::chrono::milliseconds(0), [] {
-        return std::vector<net::EndpointLatency>{Latency("GET a", 1)};
+        return std::vector<types::EndpointLatency>{Latency("GET a", 1)};
     });
     zero.Start({}, At(0));
     zero.Tick(At(600));

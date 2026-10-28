@@ -4,6 +4,8 @@
 
 #include <set>
 
+#include "kestrel/net/timed_http_client.hpp"
+
 namespace kestrel::strategy {
 
 using types::Decimal;
