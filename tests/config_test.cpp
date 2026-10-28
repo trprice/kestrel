@@ -210,10 +210,8 @@ TEST(Factory, LiveModeBuildsTheProviderVenue) {
     auto components = CreateComponents(*cfg);
     ASSERT_OK(components);
     EXPECT_EQ(components->venue->Name(), "binanceus");
-    // Stubbed provider: honest about it.
-    auto balances = components->venue->GetBalances();
-    ASSERT_FALSE(balances.has_value());
-    EXPECT_EQ(balances.error().category, types::ErrorCategory::kNotImplemented);
+    // No call on the venue: it would go to the real exchange. Its behaviour is
+    // tested against a fake HTTP client in binanceus_trading_venue_test.cpp.
 }
 
 std::string WithTables(const std::string& tables, const char* mode = "paper") {

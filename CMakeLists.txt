@@ -65,11 +65,13 @@ add_library(kestrel
   src/util/rate_limiter.cpp
   src/util/retry.cpp
   src/net/cpr_http_client.cpp
+  src/net/timed_http_client.cpp
   src/data/symbols.cpp
   src/data/kraken_data_source.cpp
   src/data/kraken_quote_stream.cpp
   src/data/schwab_data_source.cpp
   src/data/binanceus_data_source.cpp
+  src/data/binanceus_errors.cpp
   src/data/binanceus_quote_stream.cpp
   src/data/binanceus_bar_stream.cpp
   src/db/database.cpp
@@ -83,6 +85,7 @@ add_library(kestrel
   src/trading/paper_trading_venue.cpp
   src/trading/kraken_trading_venue.cpp
   src/trading/schwab_trading_venue.cpp
+  src/trading/binanceus_api.cpp
   src/trading/binanceus_trading_venue.cpp
   src/backtest/replay_data_source.cpp
   src/backtest/backtest.cpp
@@ -178,6 +181,9 @@ if(KESTREL_BUILD_TESTS)
     tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp
     tests/pnl_tracker_test.cpp
+    tests/timed_http_client_test.cpp
+    tests/binanceus_api_test.cpp
+    tests/binanceus_trading_venue_test.cpp
     tests/risk_gate_test.cpp
     tests/runner_test.cpp
     tests/run_recorder_test.cpp

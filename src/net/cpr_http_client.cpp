@@ -15,8 +15,11 @@ types::Error ErrorFromHttpStatus(const HttpResponse& response) {
     err.http_status = response.status;
     std::string snippet = response.body.substr(0, 200);
     err.message = "HTTP " + std::to_string(response.status) + ": " + snippet;
-    if (response.status == 429) {
-        err.category = ErrorCategory::kRateLimit;
+    if (response.status == 429 || response.status == 418) {
+        // 418 is Binance's IP ban: not a rate-limit retry, but its Retry-After
+        // says how long to stay away.
+        err.category = response.status == 429 ? ErrorCategory::kRateLimit
+                                              : ErrorCategory::kRejected;
         for (const auto& [k, v] : response.headers) {
             std::string lower = k;
             std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
@@ -52,8 +55,12 @@ types::Result<HttpResponse> CprHttpClient::Send(const HttpRequest& request) {
     for (const auto& [k, v] : request.headers) headers[k] = v;
 
     cpr::Session session;
-    session.SetUrl(cpr::Url{request.url});
-    session.SetParameters(params);
+    if (request.raw_query.empty()) {
+        session.SetUrl(cpr::Url{request.url});
+        session.SetParameters(params);
+    } else {
+        session.SetUrl(cpr::Url{request.url + "?" + request.raw_query});
+    }
     session.SetHeader(headers);
     session.SetTimeout(
         cpr::Timeout{static_cast<std::int32_t>(mTimeout.count())});

@@ -15,6 +15,11 @@ struct HttpRequest {
     HttpMethod method = HttpMethod::kGet;
     std::string url;                           // without query string
     std::map<std::string, std::string> query;  // URL-encoded by the client
+    // A query string the caller has already encoded, sent verbatim in the
+    // order given (a signed request needs its parameters in the order it
+    // signed them). Use it instead of `query`, not alongside it. It is part of
+    // the request, not of `url`, so timing and logging never show it.
+    std::string raw_query;
     std::map<std::string, std::string> headers;
     std::string body;  // sent verbatim for POST
 };

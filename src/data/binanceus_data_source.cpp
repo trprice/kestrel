@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include "kestrel/data/binanceus_bar_stream.hpp"
+#include "kestrel/data/binanceus_errors.hpp"
 #include "kestrel/data/binanceus_quote_stream.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
@@ -17,30 +18,6 @@ using types::Result;
 namespace {
 
 constexpr std::size_t kMaxBarsPerRequest = 1000;
-
-// Binance error bodies look like {"code":-1121,"msg":"Invalid symbol."}.
-// Refines the generic HTTP-status error using that body when present.
-types::Error RefineError(types::Error err) {
-    const auto brace = err.message.find('{');
-    if (brace == std::string::npos) {
-        return err;
-    }
-    auto body = util::ParseJson(std::string_view(err.message).substr(brace));
-    if (!body || !body->is_object() || !body->contains("code") ||
-        !(*body)["code"].is_number_integer()) {
-        return err;
-    }
-    const auto code = (*body)["code"].get<std::int64_t>();
-    err.provider_code = std::to_string(code);
-    if (code == -1121) {
-        err.category = ErrorCategory::kNotFound;
-    } else if (code == -1003) {
-        err.category = ErrorCategory::kRateLimit;
-    } else if (code == -2014 || code == -2015 || code == -1022) {
-        err.category = ErrorCategory::kAuth;
-    }
-    return err;
-}
 
 }  // namespace
 
@@ -108,7 +85,7 @@ Result<json> BinanceUSDataSource::Call(
             mLimiter.Acquire();
             auto response = mHttp->Send(request);
             if (!response) {
-                auto err = RefineError(response.error());
+                auto err = RefineBinanceUSError(response.error());
                 if (err.category == ErrorCategory::kRateLimit) {
                     mLimiter.Penalize();
                 }

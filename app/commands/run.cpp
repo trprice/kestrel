@@ -9,6 +9,7 @@
 #include "command.hpp"
 #include "common.hpp"
 #include "kestrel/factory.hpp"
+#include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/strategy/runner.hpp"
 
 namespace kestrel::app {
@@ -86,6 +87,7 @@ class RunCommand : public Command {
             return 1;
         }
         spdlog::info("stopped");
+        net::LogLatency(net::HttpLatency().Summarize(false));
         return 0;
     }
 
@@ -98,7 +100,8 @@ class RunCommand : public Command {
 void AddRunCommand(CLI::App& app, CommandSlot& slot) {
     auto* sub = AddSubcommand(
         app, "run",
-        "Run the named strategy (sma_crossover or market_maker) on live data with the "
+        "Run the named strategy (sma_crossover or market_maker) on live data "
+        "with the "
         "[strategy] parameters, trading through the paper or live venue and "
         "the [risk] limits until Ctrl-C or SIGTERM. Live mode requires [risk]");
     auto name = std::make_shared<std::string>();

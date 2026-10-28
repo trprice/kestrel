@@ -12,6 +12,7 @@
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
 #include "kestrel/db/trade_store.hpp"
+#include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
@@ -53,7 +54,7 @@ Result<Components> BuildKraken(const config::KrakenConfiguration& cfg) {
     options.rest_base_url = cfg.RestUrl();
     options.ws_url = cfg.WsUrl();
     auto ds = std::make_shared<data::KrakenDataSource>(
-        std::make_shared<net::CprHttpClient>(), options);
+        net::MakeTimedHttpClient(), options);
     if (cfg.GetMode() == config::Mode::kPaper) {
         auto venue = MakePaper(cfg, ds);
         if (!venue) {
@@ -70,7 +71,8 @@ Result<Components> BuildKraken(const config::KrakenConfiguration& cfg) {
 }
 
 Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
-    auto ds = std::make_shared<data::BinanceUSDataSource>();
+    auto ds =
+        std::make_shared<data::BinanceUSDataSource>(net::MakeTimedHttpClient());
     if (cfg.GetMode() == config::Mode::kPaper) {
         auto venue = MakePaper(cfg, ds);
         if (!venue) {
@@ -84,7 +86,7 @@ Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
             "KESTREL_BINANCEUS_API_KEY and KESTREL_BINANCEUS_API_SECRET"));
     }
     return Components{ds, std::make_unique<trading::BinanceUSTradingVenue>(
-                              *cfg.Credentials(), ds)};
+                              *cfg.Credentials(), ds, cfg.GetSymbols())};
 }
 
 Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
@@ -415,10 +417,11 @@ Result<std::shared_ptr<data::DataSource>> CreateDataSource(
             options.rest_base_url = cfg.RestUrl();
             options.ws_url = cfg.WsUrl();
             return std::make_shared<data::KrakenDataSource>(
-                std::make_shared<net::CprHttpClient>(), options);
+                net::MakeTimedHttpClient(), options);
         }
         case config::Provider::kBinanceUS:
-            return std::make_shared<data::BinanceUSDataSource>();
+            return std::make_shared<data::BinanceUSDataSource>(
+                net::MakeTimedHttpClient());
         case config::Provider::kSchwab:
             return std::make_shared<data::SchwabDataSource>();
     }
