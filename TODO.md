@@ -284,11 +284,14 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       for equities.
 - [ ] **Binance.US trading venue.** The data source is done. The venue is
       read-only so far (signed client, balances, open orders, order lookup,
-      fills); `PlaceOrder`, `CancelOrder` and `CancelAll` are still stubs.
+      fills), checked against the live API on 2026-10-28 with `kestrel_app
+      account` (signing, clock offset, 30 days of fills in 24 h windows,
+      partial fills, BNB and USDT fees, a market order's lookup);
+      `PlaceOrder`, `CancelOrder` and `CancelAll` are still stubs.
       Remaining: orders (never retry a POST; look the order up by client id),
       the order-rate limit, startup reconciliation of leftover orders, and
-      flipping `HasLiveVenue`. The response shapes come from memory, not
-      recorded responses, so check them against the live API with a real key.
+      flipping `HasLiveVenue`. The order-placement response shapes still
+      come from memory; check them with `POST /api/v3/order/test` first.
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
       client, a summary when `run` stops, and one-minute rollups in
       `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the

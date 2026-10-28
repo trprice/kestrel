@@ -118,6 +118,7 @@ if(KESTREL_BUILD_APP)
     app/main.cpp
     app/common.cpp
     app/commands/init_db.cpp
+    app/commands/account.cpp
     app/commands/bars.cpp
     app/commands/stream_quotes.cpp
     app/commands/stream_bars.cpp
@@ -140,6 +141,7 @@ if(KESTREL_BUILD_APP)
       "unknown_timeframe|${_good}|105|unknown timeframe|bars,7x,3"
       "calendar_timeframe|${_good}|105|has no fixed length|bars,1M,3"
       "zero_count|${_good}|105|not in range|bars,1h,0"
+      "account_zero_days|${_good}|105|not in range|account,--days,0"
       "negative_seconds|${_good}|105|not in range|stream,-1"
       "backtest_needs_range|${_good}|106|--from is required|backtest,sma_crossover"
       "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"

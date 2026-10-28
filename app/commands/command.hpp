@@ -27,6 +27,7 @@ using CommandSlot = std::unique_ptr<Command>;
 // `app`. When the subcommand is chosen, parsing leaves its Command in `slot`.
 void AddInitDbCommand(CLI::App& app, CommandSlot& slot);
 void AddBarsCommand(CLI::App& app, CommandSlot& slot);
+void AddAccountCommand(CLI::App& app, CommandSlot& slot);
 void AddStreamCommand(CLI::App& app, CommandSlot& slot);
 void AddStreamBarsCommand(CLI::App& app, CommandSlot& slot);
 void AddRunCommand(CLI::App& app, CommandSlot& slot);

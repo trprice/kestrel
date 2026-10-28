@@ -74,6 +74,7 @@ REQUIRED` error, with the authorize URL, once it has expired.
 | Subcommand | Does |
 |---|---|
 | `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances |
+| `account [--days N] [--order ID]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID. Read-only: places and cancels nothing, so it is the way to check live credentials |
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
