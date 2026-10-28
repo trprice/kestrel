@@ -97,6 +97,33 @@ TEST(LatencyStats, ResetStartsANewWindow) {
     EXPECT_DOUBLE_EQ(rows[0].min_ms, 9);
 }
 
+TEST(LatencyStats, WindowsAndTotalsAreIndependent) {
+    LatencyStats stats;
+    stats.Record("GET a", milliseconds(5), true, 200);
+    stats.Record("GET a", milliseconds(7), true, 200);
+    auto first = stats.TakeWindow();
+    ASSERT_EQ(first.size(), 1u);
+    EXPECT_EQ(first[0].count, 2u);
+    EXPECT_TRUE(stats.TakeWindow().empty());  // taken: the window starts anew
+
+    stats.Record("GET a", milliseconds(9), false, 500);
+    auto second = stats.TakeWindow();
+    ASSERT_EQ(second.size(), 1u);
+    EXPECT_EQ(second[0].count, 1u);
+    EXPECT_EQ(second[0].errors, 1u);
+    EXPECT_DOUBLE_EQ(second[0].min_ms, 9);
+
+    // The run's totals were not disturbed by taking windows...
+    auto totals = stats.Summarize(true);
+    ASSERT_EQ(totals.size(), 1u);
+    EXPECT_EQ(totals[0].count, 3u);
+    // ...and resetting them does not disturb the window.
+    stats.Record("GET a", milliseconds(2), true, 200);
+    EXPECT_EQ(stats.Summarize(false)[0].count, 1u);
+    stats.Summarize(true);
+    EXPECT_EQ(stats.TakeWindow()[0].count, 1u);
+}
+
 TEST(LatencyStats, KeepsExactTotalsWhenOnlyTheRecentSamplesFit) {
     LatencyStats stats(10);
     stats.Record("GET a", milliseconds(1000), true, 200);  // will fall out

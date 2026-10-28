@@ -48,6 +48,12 @@ struct RecordingOptions {
     std::chrono::milliseconds pnl_interval{60'000};
 };
 
+// The [http] table: how the HTTP calls to the venue are watched.
+struct HttpOptions {
+    // A call taking this long or longer is logged as a warning.
+    std::chrono::milliseconds slow_request{2000};
+};
+
 // Settings shared by every provider.
 struct CommonSettings {
     Mode mode = Mode::kPaper;
@@ -59,6 +65,7 @@ struct CommonSettings {
     std::map<std::string, trading::RiskLimits> strategy_risk;
     StrategyParams strategy;  // empty: no [strategy]
     RecordingOptions recording;
+    HttpOptions http;
 };
 
 // Base class for per-provider configuration, loaded from a TOML file:
@@ -107,6 +114,9 @@ struct CommonSettings {
 //   enabled = true               # in the [database] (default false)
 //   pnl_interval_ms = 60000      # snapshot period; 0: only the last one
 //
+//   [http]                       # optional
+//   slow_request_ms = 2000       # warn about calls at least this slow
+//
 //   [strategy]                   # optional; parameters, meaning depends on
 //   symbol = "BTC/USD"           # the strategy named on the command line
 //   ...
@@ -140,6 +150,7 @@ class Configuration {
     }
     const StrategyParams& GetStrategyParams() const { return mCommon.strategy; }
     const RecordingOptions& GetRecording() const { return mCommon.recording; }
+    const HttpOptions& GetHttp() const { return mCommon.http; }
 
    protected:
     explicit Configuration(CommonSettings common)

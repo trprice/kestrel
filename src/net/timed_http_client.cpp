@@ -33,13 +33,9 @@ std::string MethodName(HttpMethod method) {
 LatencyStats::LatencyStats(std::size_t max_samples)
     : mMaxSamples(std::max<std::size_t>(max_samples, 1)) {}
 
-void LatencyStats::Record(const std::string& endpoint,
-                          std::chrono::microseconds elapsed, bool ok,
-                          int http_status) {
-    const double ms =
-        std::chrono::duration<double, std::milli>(elapsed).count();
-    std::lock_guard lock(mMutex);
-    Series& series = mSeries[endpoint];
+void LatencyStats::Add(SeriesMap& map, const std::string& endpoint, double ms,
+                       bool ok, int http_status) const {
+    Series& series = map[endpoint];
     EndpointLatency& totals = series.totals;
     if (totals.count == 0) {
         totals.min_ms = ms;
@@ -63,10 +59,19 @@ void LatencyStats::Record(const std::string& endpoint,
     }
 }
 
-std::vector<EndpointLatency> LatencyStats::Summarize(bool reset) {
+void LatencyStats::Record(const std::string& endpoint,
+                          std::chrono::microseconds elapsed, bool ok,
+                          int http_status) {
+    const double ms =
+        std::chrono::duration<double, std::milli>(elapsed).count();
     std::lock_guard lock(mMutex);
+    Add(mSeries, endpoint, ms, ok, http_status);
+    Add(mWindow, endpoint, ms, ok, http_status);
+}
+
+std::vector<EndpointLatency> LatencyStats::Report(const SeriesMap& map) {
     std::vector<EndpointLatency> out;
-    for (auto& [endpoint, series] : mSeries) {
+    for (const auto& [endpoint, series] : map) {
         if (series.totals.count == 0) {
             continue;
         }
@@ -79,9 +84,22 @@ std::vector<EndpointLatency> LatencyStats::Summarize(bool reset) {
         row.p99_ms = Percentile(sorted, 0.99);
         out.push_back(std::move(row));
     }
+    return out;
+}
+
+std::vector<EndpointLatency> LatencyStats::Summarize(bool reset) {
+    std::lock_guard lock(mMutex);
+    auto out = Report(mSeries);
     if (reset) {
         mSeries.clear();
     }
+    return out;
+}
+
+std::vector<EndpointLatency> LatencyStats::TakeWindow() {
+    std::lock_guard lock(mMutex);
+    auto out = Report(mWindow);
+    mWindow.clear();
     return out;
 }
 
@@ -131,11 +149,13 @@ LatencyStats& HttpLatency() {
     return stats;
 }
 
-std::shared_ptr<HttpClient> MakeTimedHttpClient() {
+std::shared_ptr<HttpClient> MakeTimedHttpClient(
+    std::chrono::milliseconds slow_threshold) {
     // A non-owning shared_ptr: the statistics live for the whole process.
     return std::make_shared<TimedHttpClient>(
         std::make_shared<CprHttpClient>(),
-        std::shared_ptr<LatencyStats>(&HttpLatency(), [](LatencyStats*) {}));
+        std::shared_ptr<LatencyStats>(&HttpLatency(), [](LatencyStats*) {}),
+        slow_threshold);
 }
 
 }  // namespace kestrel::net

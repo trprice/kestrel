@@ -28,8 +28,11 @@ struct EndpointLatency {
     double max_ms = 0;
 };
 
-// Thread-safe response-time statistics per endpoint. Record() adds one call;
-// Summarize() reports the window since the last reset and can start a new one.
+// Thread-safe response-time statistics per endpoint. Record() adds one call.
+// Two views are kept independently: Summarize() reports everything since the
+// last Summarize(true) (the whole run, for the summary at the end), and
+// TakeWindow() reports and clears what has come in since the last TakeWindow()
+// (the periodic rollups a run stores).
 class LatencyStats {
    public:
     // `max_samples` is how many recent samples per endpoint the percentiles
@@ -42,6 +45,10 @@ class LatencyStats {
     // Endpoints with at least one call, sorted by name.
     std::vector<EndpointLatency> Summarize(bool reset);
 
+    // The calls since the previous TakeWindow() (or since the start), then
+    // starts the next window. Leaves Summarize()'s totals alone.
+    std::vector<EndpointLatency> TakeWindow();
+
    private:
     struct Series {
         std::vector<double> samples;  // ring buffer once full
@@ -49,10 +56,20 @@ class LatencyStats {
         EndpointLatency totals;
     };
 
+    using SeriesMap = std::map<std::string, Series>;
+
+    void Add(SeriesMap& map, const std::string& endpoint, double ms, bool ok,
+             int http_status) const;
+    static std::vector<EndpointLatency> Report(const SeriesMap& map);
+
     const std::size_t mMaxSamples;
     std::mutex mMutex;
-    std::map<std::string, Series> mSeries;
+    SeriesMap mSeries;  // since the last Summarize(true)
+    SeriesMap mWindow;  // since the last TakeWindow()
 };
+
+// The default for the slow-request warning (`[http] slow_request_ms`).
+inline constexpr std::chrono::milliseconds kDefaultSlowRequest{2000};
 
 // Logs one info line per endpoint (and nothing if there were no calls).
 void LogLatency(const std::vector<EndpointLatency>& summary);
@@ -66,11 +83,10 @@ class TimedHttpClient : public HttpClient {
    public:
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-    TimedHttpClient(std::shared_ptr<HttpClient> inner,
-                    std::shared_ptr<LatencyStats> stats,
-                    std::chrono::milliseconds slow_threshold =
-                        std::chrono::milliseconds(2000),
-                    Clock clock = std::chrono::steady_clock::now);
+    TimedHttpClient(
+        std::shared_ptr<HttpClient> inner, std::shared_ptr<LatencyStats> stats,
+        std::chrono::milliseconds slow_threshold = kDefaultSlowRequest,
+        Clock clock = std::chrono::steady_clock::now);
 
     types::Result<HttpResponse> Send(const HttpRequest& request) override;
 
@@ -85,7 +101,9 @@ class TimedHttpClient : public HttpClient {
 // command can print them when it ends.
 LatencyStats& HttpLatency();
 
-// A CprHttpClient wrapped in a TimedHttpClient that reports to HttpLatency().
-std::shared_ptr<HttpClient> MakeTimedHttpClient();
+// A CprHttpClient wrapped in a TimedHttpClient that reports to HttpLatency()
+// and warns about calls that take `slow_threshold` or longer.
+std::shared_ptr<HttpClient> MakeTimedHttpClient(
+    std::chrono::milliseconds slow_threshold = kDefaultSlowRequest);
 
 }  // namespace kestrel::net

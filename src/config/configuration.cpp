@@ -221,6 +221,27 @@ class ConfigParser {
             }
         }
 
+        if (const auto* http = root["http"].as_table()) {
+            for (const auto& [key, node] : *http) {
+                if (key.str() == "slow_request_ms") {
+                    const auto v = node.is_integer()
+                                       ? node.value<std::int64_t>()
+                                       : std::nullopt;
+                    if (!v || *v < 1) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "[http] slow_request_ms must be a "
+                                         "whole number of milliseconds, at "
+                                         "least 1");
+                    }
+                    c.http.slow_request = std::chrono::milliseconds(*v);
+                } else {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[http] has an unknown key '" +
+                                         std::string(key.str()) + "'");
+                }
+            }
+        }
+
         if (const auto* paper = root["paper"].as_table()) {
             auto& p = c.paper;
             if (const auto* balances =

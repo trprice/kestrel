@@ -564,6 +564,26 @@ TEST(Config, RecordingSectionIsParsed) {
     }
 }
 
+TEST(Config, HttpSectionIsParsed) {
+    auto off = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
+    ASSERT_OK(off);
+    EXPECT_EQ(off->GetHttp().slow_request, std::chrono::seconds(2));
+
+    auto on = config::BinanceUSConfiguration::Parse(
+        WithTables("[http]\nslow_request_ms=750\n"), NoEnv());
+    ASSERT_OK(on);
+    EXPECT_EQ(on->GetHttp().slow_request, std::chrono::milliseconds(750));
+
+    for (const char* bad :
+         {"[http]\nslow_request_ms=0\n", "[http]\nslow_request_ms='2s'\n",
+          "[http]\nslow_request_ms=1.5\n", "[http]\nslow=1\n"}) {
+        EXPECT_FALSE(
+            config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv())
+                .has_value())
+            << bad;
+    }
+}
+
 TEST(Factory, CreateRunnerRecordsThroughTheLogWhenEnabled) {
     auto cfg = config::BinanceUSConfiguration::Parse(
         WithTables(std::string(kSmaParams) +
