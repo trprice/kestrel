@@ -213,6 +213,26 @@ class ConfigParser {
                                          "a whole number of milliseconds");
                     }
                     c.recording.pnl_interval = std::chrono::milliseconds(*v);
+                } else if (key.str() == "latency") {
+                    const auto v = node.value<bool>();
+                    if (!v || !node.is_boolean()) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "[recording] latency must be true or "
+                                         "false");
+                    }
+                    c.recording.latency = *v;
+                } else if (key.str() == "latency_interval_ms") {
+                    const auto v = node.is_integer()
+                                       ? node.value<std::int64_t>()
+                                       : std::nullopt;
+                    if (!v || *v < 1) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "[recording] latency_interval_ms must "
+                                         "be a whole number of milliseconds, "
+                                         "at least 1");
+                    }
+                    c.recording.latency_interval =
+                        std::chrono::milliseconds(*v);
                 } else {
                     return MakeError(ErrorCategory::kInvalidArgument,
                                      "[recording] has an unknown key '" +

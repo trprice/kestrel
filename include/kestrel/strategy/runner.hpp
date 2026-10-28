@@ -35,6 +35,11 @@ struct RunnerOptions {
     // Drain-driven runs (backtests) get the fills but no periodic snapshots.
     std::shared_ptr<trading::TradeLog> trade_log;
     std::chrono::milliseconds pnl_interval{60'000};
+    // With a trade_log, the venue's response times are stored in windows of
+    // this length (zero: not at all); see RunRecorder::RecordLatency.
+    std::chrono::milliseconds latency_interval{0};
+    // Where the figures come from; null means the HTTP statistics.
+    std::function<std::vector<net::EndpointLatency>()> latency_source;
 };
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events

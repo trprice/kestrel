@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <vector>
@@ -18,6 +19,13 @@ namespace kestrel::strategy {
 // the positions the venue reported at Start; the mark for the unrealized part
 // is the last price the runner saw (a quote's mid, or a bar's close).
 //
+// With a latency source it also stores the venue's response times: every
+// `latency_interval` (and at the end) the source is asked for the window's
+// per-endpoint figures, which go to TradeLog::WriteLatency. The source starts
+// a new window each time it is called; the default is the HTTP statistics
+// (net::HttpLatency().TakeWindow()). A window that cannot be written is lost
+// (logged once), since the next call reports only the next window.
+//
 // Writing must never hurt trading: a failed write is logged once and retried
 // at the next Flush (fills are kept, up to kMaxQueued, after which the oldest
 // are dropped); a failed snapshot is skipped, since the next one supersedes it.
@@ -29,8 +37,15 @@ class RunRecorder {
    public:
     static constexpr std::size_t kMaxQueued = 100'000;
 
+    using LatencySource = std::function<std::vector<net::EndpointLatency>()>;
+
     RunRecorder(std::shared_ptr<trading::TradeLog> log,
                 std::chrono::milliseconds interval);
+
+    // Turns on latency windows of `interval` (zero keeps them off). A null
+    // `source` means the process-wide HTTP statistics.
+    void RecordLatency(std::chrono::milliseconds interval,
+                       LatencySource source = nullptr);
 
     // Takes `positions` as the cost basis and zeroes the realized P&L.
     void Start(const std::vector<types::Position>& positions,
@@ -48,6 +63,7 @@ class RunRecorder {
 
    private:
     void Snapshot(types::Timestamp now);
+    void WriteLatencyWindow(types::Timestamp now);
 
     std::shared_ptr<trading::TradeLog> mLog;
     std::chrono::milliseconds mInterval;
@@ -57,6 +73,10 @@ class RunRecorder {
     types::Timestamp mLastSnapshot;
     bool mFillsFailing = false;
     bool mPnlFailing = false;
+    std::chrono::milliseconds mLatencyInterval{0};
+    LatencySource mLatencySource;
+    types::Timestamp mLatencyStart;
+    bool mLatencyFailing = false;
 };
 
 }  // namespace kestrel::strategy

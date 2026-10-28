@@ -46,6 +46,10 @@ struct RecordingOptions {
     bool enabled = false;
     // How often a P&L snapshot is written; zero writes only the last one.
     std::chrono::milliseconds pnl_interval{60'000};
+    // Whether the venue's response times are stored too (the venue_latency
+    // table), in windows of latency_interval.
+    bool latency = true;
+    std::chrono::milliseconds latency_interval{60'000};
 };
 
 // The [http] table: how the HTTP calls to the venue are watched.
@@ -113,6 +117,8 @@ struct CommonSettings {
 //   [recording]                  # optional; `run` stores its fills and P&L
 //   enabled = true               # in the [database] (default false)
 //   pnl_interval_ms = 60000      # snapshot period; 0: only the last one
+//   latency = true               # also store response times (default true)
+//   latency_interval_ms = 60000  # one row per endpoint per window
 //
 //   [http]                       # optional
 //   slow_request_ms = 2000       # warn about calls at least this slow

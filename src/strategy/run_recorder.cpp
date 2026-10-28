@@ -12,10 +12,22 @@ RunRecorder::RunRecorder(std::shared_ptr<trading::TradeLog> log,
                          std::chrono::milliseconds interval)
     : mLog(std::move(log)), mInterval(interval) {}
 
+void RunRecorder::RecordLatency(std::chrono::milliseconds interval,
+                                LatencySource source) {
+    mLatencyInterval = interval;
+    mLatencySource = source ? std::move(source)
+                            : [] { return net::HttpLatency().TakeWindow(); };
+}
+
 void RunRecorder::Start(const std::vector<types::Position>& positions,
                         types::Timestamp now) {
     mPnl.Reset(positions);
     mLastSnapshot = now;
+    mLatencyStart = now;
+    if (mLatencySource) {
+        // What came before the run started belongs to no window.
+        (void)mLatencySource();
+    }
 }
 
 void RunRecorder::NotePrice(const types::Symbol& symbol, const Decimal& price) {
@@ -57,6 +69,30 @@ void RunRecorder::Tick(types::Timestamp now) {
         now - mLastSnapshot >= mInterval) {
         Snapshot(now);
     }
+    if (mLatencySource &&
+        mLatencyInterval > std::chrono::milliseconds::zero() &&
+        now - mLatencyStart >= mLatencyInterval) {
+        WriteLatencyWindow(now);
+    }
+}
+
+void RunRecorder::WriteLatencyWindow(types::Timestamp now) {
+    const auto start = mLatencyStart;
+    mLatencyStart = now;
+    const auto rows = mLatencySource();
+    if (rows.empty()) {
+        return;
+    }
+    auto written = mLog->WriteLatency(start, now, rows);
+    if (!written) {
+        if (!mLatencyFailing) {
+            spdlog::error("run recorder: cannot write latency figures: {}",
+                          written.error().ToString());
+        }
+        mLatencyFailing = true;
+        return;
+    }
+    mLatencyFailing = false;
 }
 
 void RunRecorder::Snapshot(types::Timestamp now) {
@@ -105,6 +141,10 @@ void RunRecorder::Snapshot(types::Timestamp now) {
 void RunRecorder::Finish(types::Timestamp now) {
     Flush();
     Snapshot(now);
+    if (mLatencySource &&
+        mLatencyInterval > std::chrono::milliseconds::zero()) {
+        WriteLatencyWindow(now);
+    }
     if (auto done = mLog->Finish(now); !done) {
         spdlog::error("run recorder: cannot mark the run finished: {}",
                       done.error().ToString());

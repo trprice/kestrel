@@ -10,6 +10,7 @@ namespace {
 
 constexpr std::size_t kFillColumns = 12;
 constexpr std::size_t kPnlColumns = 8;
+constexpr std::size_t kLatencyColumns = 12;
 // PostgreSQL allows 65535 bind parameters per statement.
 constexpr std::size_t kRowsPerInsert = 1000;
 
@@ -128,6 +129,43 @@ Result<void> TradeStore::WritePnl(types::Timestamp time,
     return {};
 }
 
+Result<void> TradeStore::WriteLatency(
+    types::Timestamp start, types::Timestamp end,
+    std::span<const net::EndpointLatency> rows) {
+    for (std::size_t done = 0; done < rows.size();) {
+        const auto batch =
+            rows.subspan(done, std::min(kRowsPerInsert, rows.size() - done));
+        std::vector<std::optional<std::string>> params;
+        params.reserve(batch.size() * kLatencyColumns);
+        for (const auto& r : batch) {
+            params.emplace_back(std::to_string(mRunId));
+            params.emplace_back(types::FormatIso8601(start));
+            params.emplace_back(types::FormatIso8601(end));
+            params.emplace_back(r.endpoint);
+            params.emplace_back(std::to_string(r.count));
+            params.emplace_back(std::to_string(r.errors));
+            params.emplace_back(std::to_string(r.rate_limited));
+            params.emplace_back(std::to_string(r.min_ms));
+            params.emplace_back(std::to_string(r.p50_ms));
+            params.emplace_back(std::to_string(r.p95_ms));
+            params.emplace_back(std::to_string(r.p99_ms));
+            params.emplace_back(std::to_string(r.max_ms));
+        }
+        auto result = mDatabase->Query(
+            "INSERT INTO venue_latency (run_id, window_start, window_end, "
+            "endpoint, calls, errors, rate_limited, min_ms, p50_ms, p95_ms, "
+            "p99_ms, max_ms) VALUES " +
+                Values(batch.size(), kLatencyColumns) +
+                " ON CONFLICT (run_id, window_start, endpoint) DO NOTHING",
+            params);
+        if (!result) {
+            return std::unexpected(result.error());
+        }
+        done += batch.size();
+    }
+    return {};
+}
+
 Result<void> TradeStore::Finish(types::Timestamp time) {
     auto result =
         mDatabase->Query("UPDATE runs SET ended_at = $2 WHERE run_id = $1",
@@ -189,6 +227,37 @@ Result<std::vector<TradeStore::StoredPnl>> TradeStore::LoadPnl() const {
         s.row.mark_price = ParseOptional(row[4]);
         s.row.realized = ParseDecimal(row[5]);
         s.row.unrealized = ParseOptional(row[6]);
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+Result<std::vector<TradeStore::StoredLatency>> TradeStore::LoadLatency() const {
+    auto rows = mDatabase->Query(
+        std::string("SELECT ") + kMillis + "window_start) * 1000)::bigint, " +
+            kMillis +
+            "window_end) * 1000)::bigint, endpoint, calls, errors, "
+            "rate_limited, min_ms, p50_ms, p95_ms, p99_ms, max_ms "
+            "FROM venue_latency WHERE run_id = $1 "
+            "ORDER BY window_start, endpoint",
+        {std::to_string(mRunId)});
+    if (!rows) {
+        return std::unexpected(rows.error());
+    }
+    std::vector<StoredLatency> out;
+    for (const auto& row : *rows) {
+        StoredLatency s;
+        s.start = types::FromEpochMillis(std::stoll(*row[0]));
+        s.end = types::FromEpochMillis(std::stoll(*row[1]));
+        s.row.endpoint = *row[2];
+        s.row.count = std::stoull(*row[3]);
+        s.row.errors = std::stoull(*row[4]);
+        s.row.rate_limited = std::stoull(*row[5]);
+        s.row.min_ms = std::stod(*row[6]);
+        s.row.p50_ms = std::stod(*row[7]);
+        s.row.p95_ms = std::stod(*row[8]);
+        s.row.p99_ms = std::stod(*row[9]);
+        s.row.max_ms = std::stod(*row[10]);
         out.push_back(std::move(s));
     }
     return out;

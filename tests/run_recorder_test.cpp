@@ -160,4 +160,94 @@ TEST(RunRecorderTest, FinishFlushesSnapshotsAndMarksTheRunDone) {
     EXPECT_EQ(f.log->finished, At(5));
 }
 
+net::EndpointLatency Latency(const char* endpoint, std::uint64_t count) {
+    net::EndpointLatency row;
+    row.endpoint = endpoint;
+    row.count = count;
+    return row;
+}
+
+// A recorder whose latency source hands out `windows` in turn, then nothing.
+struct LatencyFixture {
+    explicit LatencyFixture(std::vector<std::vector<net::EndpointLatency>> w)
+        : windows(std::move(w)),
+          log(std::make_shared<FakeTradeLog>()),
+          recorder(log, std::chrono::seconds(0)) {
+        recorder.RecordLatency(std::chrono::seconds(60), [this] {
+            ++calls;
+            if (next >= windows.size()) {
+                return std::vector<net::EndpointLatency>{};
+            }
+            return windows[next++];
+        });
+        recorder.Start({}, At(0));
+    }
+    std::vector<std::vector<net::EndpointLatency>> windows;
+    std::size_t next = 0;
+    int calls = 0;
+    std::shared_ptr<FakeTradeLog> log;
+    RunRecorder recorder;
+};
+
+TEST(RunRecorderLatency, WritesAWindowEveryInterval) {
+    LatencyFixture f({{}, {Latency("GET a", 3)}, {Latency("GET a", 5)}});
+    EXPECT_EQ(f.calls, 1);  // Start discards what came before the run
+    f.recorder.Tick(At(59));
+    EXPECT_TRUE(f.log->latency.empty());
+    f.recorder.Tick(At(60));
+    ASSERT_EQ(f.log->latency.size(), 1u);
+    EXPECT_EQ(f.log->latency[0].start, At(0));
+    EXPECT_EQ(f.log->latency[0].end, At(60));
+    EXPECT_EQ(f.log->latency[0].rows[0].count, 3u);
+    f.recorder.Tick(At(90));
+    EXPECT_EQ(f.log->latency.size(), 1u);
+    f.recorder.Tick(At(125));
+    ASSERT_EQ(f.log->latency.size(), 2u);
+    EXPECT_EQ(f.log->latency[1].start, At(60));  // windows do not overlap
+    EXPECT_EQ(f.log->latency[1].end, At(125));
+}
+
+TEST(RunRecorderLatency, AnEmptyWindowWritesNothing) {
+    LatencyFixture f({{}});
+    f.recorder.Tick(At(60));
+    EXPECT_EQ(f.calls, 2);
+    EXPECT_TRUE(f.log->latency.empty());
+}
+
+TEST(RunRecorderLatency, FinishWritesTheLastPartialWindow) {
+    LatencyFixture f({{}, {Latency("GET a", 2)}});
+    f.recorder.Finish(At(20));
+    ASSERT_EQ(f.log->latency.size(), 1u);
+    EXPECT_EQ(f.log->latency[0].end, At(20));
+    EXPECT_EQ(f.log->finished, At(20));
+}
+
+TEST(RunRecorderLatency, ALostWindowDoesNotStopTheNext) {
+    LatencyFixture f({{}, {Latency("GET a", 1)}, {Latency("GET a", 2)}});
+    f.log->fail_latency = true;
+    f.recorder.Tick(At(60));
+    f.log->fail_latency = false;
+    f.recorder.Tick(At(120));
+    ASSERT_EQ(f.log->latency.size(), 1u);
+    EXPECT_EQ(f.log->latency[0].rows[0].count, 2u);
+    EXPECT_EQ(f.log->latency[0].start, At(60));
+}
+
+TEST(RunRecorderLatency, IsOffUnlessAskedFor) {
+    Fixture f;
+    f.recorder.Tick(At(600));
+    f.recorder.Finish(At(601));
+    EXPECT_TRUE(f.log->latency.empty());
+
+    auto log = std::make_shared<FakeTradeLog>();
+    RunRecorder zero(log, std::chrono::seconds(0));
+    zero.RecordLatency(std::chrono::milliseconds(0), [] {
+        return std::vector<net::EndpointLatency>{Latency("GET a", 1)};
+    });
+    zero.Start({}, At(0));
+    zero.Tick(At(600));
+    zero.Finish(At(601));
+    EXPECT_TRUE(log->latency.empty());
+}
+
 }  // namespace

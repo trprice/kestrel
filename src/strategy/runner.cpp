@@ -132,6 +132,8 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     if (mOptions.trade_log) {
         mRecorder = std::make_unique<RunRecorder>(mOptions.trade_log,
                                                   mOptions.pnl_interval);
+        mRecorder->RecordLatency(mOptions.latency_interval,
+                                 mOptions.latency_source);
     }
 }
 

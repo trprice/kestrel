@@ -546,6 +546,8 @@ TEST(Config, RecordingSectionIsParsed) {
     ASSERT_OK(off);
     EXPECT_FALSE(off->GetRecording().enabled);
     EXPECT_EQ(off->GetRecording().pnl_interval, std::chrono::seconds(60));
+    EXPECT_TRUE(off->GetRecording().latency);
+    EXPECT_EQ(off->GetRecording().latency_interval, std::chrono::seconds(60));
 
     auto on = config::BinanceUSConfiguration::Parse(
         WithTables("[recording]\nenabled=true\npnl_interval_ms=5000\n"),
@@ -554,9 +556,20 @@ TEST(Config, RecordingSectionIsParsed) {
     EXPECT_TRUE(on->GetRecording().enabled);
     EXPECT_EQ(on->GetRecording().pnl_interval, std::chrono::seconds(5));
 
+    auto latency = config::BinanceUSConfiguration::Parse(
+        WithTables("[recording]\nlatency=false\nlatency_interval_ms=15000\n"),
+        NoEnv());
+    ASSERT_OK(latency);
+    EXPECT_FALSE(latency->GetRecording().latency);
+    EXPECT_EQ(latency->GetRecording().latency_interval,
+              std::chrono::seconds(15));
+
     for (const char* bad :
          {"[recording]\nenabled='yes'\n", "[recording]\npnl_interval_ms=-1\n",
-          "[recording]\npnl_interval_ms=1.5\n", "[recording]\nenable=true\n"}) {
+          "[recording]\npnl_interval_ms=1.5\n", "[recording]\nenable=true\n",
+          "[recording]\nlatency='yes'\n",
+          "[recording]\nlatency_interval_ms=0\n",
+          "[recording]\nlatency_interval_ms=2.5\n"}) {
         EXPECT_FALSE(
             config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv())
                 .has_value())

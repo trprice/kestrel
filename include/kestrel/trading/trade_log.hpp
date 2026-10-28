@@ -3,6 +3,7 @@
 #include <optional>
 #include <span>
 
+#include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/orders.hpp"
@@ -35,6 +36,17 @@ class TradeLog {
     // The P&L of every symbol the run has a position or a price for, at `time`.
     virtual types::Result<void> WritePnl(types::Timestamp time,
                                          std::span<const PnlRow> rows) = 0;
+    // The venue's response times for the window [start, end): one row per
+    // endpoint called in it. Optional: a log that does not keep them ignores
+    // the call.
+    virtual types::Result<void> WriteLatency(
+        types::Timestamp start, types::Timestamp end,
+        std::span<const net::EndpointLatency> rows) {
+        (void)start;
+        (void)end;
+        (void)rows;
+        return {};
+    }
     // The run ended cleanly at `time`.
     virtual types::Result<void> Finish(types::Timestamp time) = 0;
 };

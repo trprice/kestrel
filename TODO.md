@@ -181,8 +181,12 @@ the header of the code concerned.
 - `backtest` records nothing.
 
 ### Venues and data
-- Kraken, Schwab and Binance.US trading venues are stubs that return
-  `kNotImplemented`.
+- Kraken and Schwab trading venues are stubs that return `kNotImplemented`.
+  The Binance.US venue reads (balances, open orders, order lookup, fills) but
+  does not trade yet. Its `GetPositions` returns nothing, so the risk gate's
+  `max_position_notional` does not see holdings the account already had.
+- The latency rollups cover HTTP round trips only, and a window that fails to
+  write is dropped, not retried.
 - The Schwab data source is a stub.
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
 - `run` refuses live mode on a provider whose venue is a stub
@@ -263,10 +267,25 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] **Schwab data source and trading venue.** OAuth with the token store
       that already exists, bars, quotes and orders. Needs market-hours handling
       for equities.
-- [ ] **Binance.US trading venue.** The data source is done; the venue is a
-      stub.
+- [ ] **Binance.US trading venue.** The data source is done. The venue is
+      read-only so far (signed client, balances, open orders, order lookup,
+      fills); `PlaceOrder`, `CancelOrder` and `CancelAll` are still stubs.
+      Remaining: orders (never retry a POST; look the order up by client id),
+      the order-rate limit, startup reconciliation of leftover orders, and
+      flipping `HasLiveVenue`. The response shapes come from memory, not
+      recorded responses, so check them against the live API with a real key.
+- [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
+      client, a summary when `run` stops, and one-minute rollups in
+      `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the
+      slow-call warning.
+- [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
+      until a fill shows in `GetFills`, and the venue's clock against ours.
+      Needs order placement first; store it beside `venue_latency`.
 - [ ] A user-data stream (WebSocket) for order and fill updates on venues that
-      offer one, replacing fill polling.
+      offer one, replacing fill polling. On Binance.US this also matters for the
+      rate limit: polling `GetFills` (weight 10) and `GetOpenOrders` (weight 3)
+      every second uses about 780 of the 1200 weight per minute for one symbol,
+      so until the stream exists a live run needs a longer `fill_poll_interval`.
 - [ ] Re-verify the timeframe lists for Schwab, Kraken and Binance.US against
       each provider's docs before completing the stubs. The lists in the code
       and README came from memory.
@@ -304,6 +323,25 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       reports that use them
 
 ### Operations
+- [ ] **Data retention for the database** (from the 10 minute paper run,
+      2026-10-28; nothing is configured yet, no compression or retention
+      policy exists on either hypertable). `quotes` is the only table that
+      grows fast: about 6,400 to 12,000 rows an hour for one symbol, roughly
+      520 bytes a row with its indexes, so 80 to 150 MB a day (29 to 55 GB a
+      year) per symbol. The disk had 23 GB free, so one symbol fills it in
+      about 5 to 9 months and each extra symbol shortens that. Proposed policy,
+      as a migration:
+      - `quotes`: compress chunks older than 7 days (segment by venue and
+        symbol, order by `received_time`) and drop chunks older than 90 days.
+        The expected 10x compression is a typical figure, not measured here;
+        try it on the existing chunks first. Backtests mostly need recent
+        quotes. Decide whether 90 days is enough before dropping anything, and
+        make the ages configurable or at least documented.
+      - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever. They are small
+        (1-minute bars for 15 symbols grow about 1.7 GB a year; a day of P&L
+        snapshots is about 360 kB).
+      - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
+      - Add a check that warns at startup when the disk is nearly full.
 - [ ] Persist orders and strategy decisions to the database (fills and P&L
       snapshots are recorded with `[recording]`; see `RunRecorder`)
 - [ ] Alerts (email, webhook or push) when the kill switch trips or a stream

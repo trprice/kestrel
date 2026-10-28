@@ -96,6 +96,23 @@ SELECT run_id, snapshot_time,
 FROM pnl_snapshots
 GROUP BY run_id, snapshot_time;
 )sql"},
+        {5, "create venue latency table", R"sql(
+CREATE TABLE venue_latency (
+    run_id       BIGINT           NOT NULL REFERENCES runs (run_id),
+    window_start TIMESTAMPTZ      NOT NULL,
+    window_end   TIMESTAMPTZ      NOT NULL,
+    endpoint     TEXT             NOT NULL,
+    calls        BIGINT           NOT NULL,
+    errors       BIGINT           NOT NULL,
+    rate_limited BIGINT           NOT NULL,
+    min_ms       DOUBLE PRECISION NOT NULL,
+    p50_ms       DOUBLE PRECISION NOT NULL,
+    p95_ms       DOUBLE PRECISION NOT NULL,
+    p99_ms       DOUBLE PRECISION NOT NULL,
+    max_ms       DOUBLE PRECISION NOT NULL,
+    PRIMARY KEY (run_id, window_start, endpoint)
+);
+)sql"},
     };
     return kMigrations;
 }

@@ -545,6 +545,9 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
         }
         options.trade_log = *log;
         options.pnl_interval = cfg.GetRecording().pnl_interval;
+        if (cfg.GetRecording().latency) {
+            options.latency_interval = cfg.GetRecording().latency_interval;
+        }
     }
     auto runner = std::make_unique<strategy::Runner>(
         components->data_source,

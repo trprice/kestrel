@@ -40,7 +40,7 @@ class TradeStoreTest : public ::testing::Test {
 
     // Everything these tests wrote, children first.
     void Clean() {
-        for (const char* table : {"fills", "pnl_snapshots"}) {
+        for (const char* table : {"fills", "pnl_snapshots", "venue_latency"}) {
             (void)mDatabase->Query(
                 std::string("DELETE FROM ") + table +
                     " WHERE run_id IN (SELECT run_id FROM runs WHERE "
@@ -158,6 +158,47 @@ TEST_F(TradeStoreTest, TheTotalsViewSumsTheSymbols) {
     EXPECT_EQ(D((*rows)[0][0]->c_str()), D("0.5"));
     EXPECT_EQ(D((*rows)[0][1]->c_str()), D("0.5"));
     EXPECT_EQ(D((*rows)[0][2]->c_str()), D("1"));
+}
+
+TEST_F(TradeStoreTest, LatencyWindowsRoundTrip) {
+    net::EndpointLatency a;
+    a.endpoint = "GET https://api.binance.us/api/v3/account";
+    a.count = 60;
+    a.errors = 3;
+    a.rate_limited = 1;
+    a.min_ms = 80.5;
+    a.p50_ms = 120.25;
+    a.p95_ms = 300;
+    a.p99_ms = 450.75;
+    a.max_ms = 900;
+    net::EndpointLatency b = a;
+    b.endpoint = "GET https://api.binance.us/api/v3/openOrders";
+    b.count = 120;
+    const std::vector<net::EndpointLatency> rows = {b, a};
+    const auto start = types::FromEpochSeconds(1'700'000'000);
+    const auto end = types::FromEpochSeconds(1'700'000'060);
+    ASSERT_OK(mStore->WriteLatency(start, end, rows));
+    ASSERT_OK(mStore->WriteLatency(end, end + std::chrono::seconds(60),
+                                   std::span(rows).first(1)));
+    // The same window twice stores it once.
+    ASSERT_OK(mStore->WriteLatency(start, end, rows));
+
+    auto loaded = mStore->LoadLatency();
+    ASSERT_OK(loaded);
+    ASSERT_EQ(loaded->size(), 3u);
+    EXPECT_EQ((*loaded)[0].row.endpoint, a.endpoint);  // by window, endpoint
+    EXPECT_EQ((*loaded)[0].start, start);
+    EXPECT_EQ((*loaded)[0].end, end);
+    EXPECT_EQ((*loaded)[0].row.count, 60u);
+    EXPECT_EQ((*loaded)[0].row.errors, 3u);
+    EXPECT_EQ((*loaded)[0].row.rate_limited, 1u);
+    EXPECT_DOUBLE_EQ((*loaded)[0].row.min_ms, 80.5);
+    EXPECT_DOUBLE_EQ((*loaded)[0].row.p50_ms, 120.25);
+    EXPECT_DOUBLE_EQ((*loaded)[0].row.p99_ms, 450.75);
+    EXPECT_DOUBLE_EQ((*loaded)[0].row.max_ms, 900);
+    EXPECT_EQ((*loaded)[1].row.endpoint, b.endpoint);
+    EXPECT_EQ((*loaded)[1].row.count, 120u);
+    EXPECT_EQ((*loaded)[2].start, end);
 }
 
 TEST_F(TradeStoreTest, FinishSetsTheEndTime) {

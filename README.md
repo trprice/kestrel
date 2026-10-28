@@ -131,11 +131,32 @@ studied afterwards:
 | `fills` | every fill of the run, with fee, fee asset and maker/taker |
 | `pnl_snapshots` | every `pnl_interval_ms` (default 60 s) and at the end: per symbol, the position, average price, mark price, realized and unrealized P&L |
 | `pnl_totals` | view summing the snapshots over symbols (only meaningful when they share a quote asset) |
+| `venue_latency` | every `latency_interval_ms` (default 60 s) and at the end: per endpoint, the calls, errors, rate-limited calls (HTTP 429/418) and min / p50 / p95 / p99 / max response time in ms |
 
 ```sql
 SELECT * FROM pnl_totals WHERE run_id = (SELECT max(run_id) FROM runs)
 ORDER BY snapshot_time DESC LIMIT 10;
 ```
+
+Response times come from the timing wrapper around every HTTP client the
+factory builds (`TimedHttpClient`). Each call is timed for one attempt (a
+retry is another sample) and filed under "METHOD url" without the query, so
+signatures and parameters never reach the log or the table. `run` also logs the
+whole-run figures per endpoint when it stops, and warns about any call at least
+`[http] slow_request_ms` (default 2000) slow. `[recording] latency = false`
+leaves the table empty; `latency_interval_ms` sets the window. Percentiles are
+worked out from the last 4096 calls of each endpoint in the window (the counts,
+min and max cover all of them), and a window that cannot be written is lost
+rather than retried.
+
+```sql
+SELECT window_start, calls, errors, p50_ms, p99_ms, max_ms FROM venue_latency
+WHERE run_id = 4 AND endpoint = 'GET https://api.binance.us/api/v3/exchangeInfo'
+ORDER BY window_start;
+```
+
+This times the HTTP round trip only. The order-side figures (acknowledgement,
+cancel, time until a fill is visible) arrive with order placement.
 
 P&L is the same average-cost figure the risk gate uses, realized net of fees,
 starting from the positions the venue reported at startup; the mark is the
@@ -363,7 +384,7 @@ live feed, a recorded one (backtest), or a paper or live venue.
                   |                                      |
                   v                                      |
               TradeLog = TradeStore ---------------------+
-              (runs, fills, pnl_snapshots)
+              (runs, fills, pnl_snapshots, venue_latency)
 ```
 
 In words:
@@ -397,8 +418,9 @@ order, on one thread and a simulated clock.
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
 | `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info and its bar history. `SmaCrossover` and `MarketMaker` are the two included. |
 | `Runner` | Owns one strategy. Queues events (conflating quotes per symbol), runs the strategy on one thread, polls for fills and order updates, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
-| `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills and periodic snapshots to a `TradeLog`. Failures are logged and retried, never fatal. |
-| `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`). |
+| `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
+| `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
+| `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`, `venue_latency`). |
 | `Database`, `BarStore`, `QuoteStore`/`QuoteWriter` (`db/`) | The connection, schema migrations, and the bar and quote tables. `QuoteWriter` buffers on the WebSocket thread and inserts from a background thread. |
 | `app/commands/*` | One class per subcommand. Each parses its arguments, calls the factory and drives the result; `run` also owns the signal-watching thread that calls `Runner::Stop()`. |
 
