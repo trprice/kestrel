@@ -13,6 +13,33 @@ endif()
 option(KESTREL_BUILD_APP "Build the kestrel_app executable" ON)
 option(KESTREL_BUILD_TESTS "Build the kestrel_tests target" ON)
 
+# Sanitizers: -DKESTREL_SANITIZE=address | undefined | address,undefined |
+# thread. Applied to everything built here, dependencies fetched with
+# FetchContent included. Use a separate build directory for each setting;
+# AddressSanitizer and ThreadSanitizer cannot be combined.
+set(KESTREL_SANITIZE "" CACHE STRING
+  "Sanitizers to build with: address, undefined, address,undefined or thread")
+if(KESTREL_SANITIZE)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "KESTREL_SANITIZE needs GCC or Clang.")
+  endif()
+  string(REPLACE ";" "," _kestrel_sanitize "${KESTREL_SANITIZE}")
+  if(_kestrel_sanitize MATCHES "thread" AND _kestrel_sanitize MATCHES "address")
+    message(FATAL_ERROR "thread cannot be combined with address.")
+  endif()
+  if(NOT _kestrel_sanitize MATCHES "^(address|undefined|address,undefined|undefined,address|thread)$")
+    message(FATAL_ERROR
+      "KESTREL_SANITIZE='${KESTREL_SANITIZE}': use address, undefined, address,undefined or thread.")
+  endif()
+  message(STATUS "Sanitizers: ${_kestrel_sanitize}")
+  add_compile_options(-fsanitize=${_kestrel_sanitize} -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=${_kestrel_sanitize})
+  if(_kestrel_sanitize MATCHES "undefined")
+    # Report a finding as a failure instead of printing and carrying on.
+    add_compile_options(-fno-sanitize-recover=undefined)
+  endif()
+endif()
+
 # std::expected is mandatory (GCC 12+, Clang 16+, MSVC 17.3+).
 include(CheckCXXSourceCompiles)
 check_cxx_source_compiles("

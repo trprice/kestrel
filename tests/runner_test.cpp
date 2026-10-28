@@ -545,7 +545,7 @@ TEST_F(RunnerTest, SnapshotsPnlWhileRunning) {
     thread = std::thread([this] { result = runner->Run(); });
     started.wait();
     data->Close(5);
-    for (int i = 0; i < 1000 && log->snapshots.size() < 2; ++i) {
+    for (int i = 0; i < 1000 && log->SnapshotCount() < 2; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     Finish();

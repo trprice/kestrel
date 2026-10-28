@@ -323,8 +323,14 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.
-- [ ] CI: build and run tests on every push, with a clang-tidy and sanitizer
-      (ASan/TSan) job. TSan is worth having, since the runner and venues are
-      multithreaded.
+- [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
+      the whole suite passes under both
+- [ ] CI: build and run tests on every push, with a clang-tidy job and the
+      ASan/UBSan and TSan builds above. TSan is worth having, since the runner
+      and venues are multithreaded.
+- [ ] The database tests share fixture rows, so they cannot run in parallel
+      (`ctest -j` fails them); give each test its own venue name or schema
+- [ ] Sanitize the Docker image's build as well, and run TSan against a long
+      paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
 - [ ] Shorting and margin in the paper venue and the P&L tracker

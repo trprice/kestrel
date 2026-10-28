@@ -254,6 +254,32 @@ suite built on them. To refresh the data, store a new pull into a scratch
 database (`kestrel_app bars 1h 168 --store`, `kestrel_app stream 90 --store`)
 and run `scripts/export_test_data.sh` with the `PG*` variables pointing at it.
 
+### Sanitizers
+
+`-DKESTREL_SANITIZE=` builds everything, the fetched dependencies included,
+with AddressSanitizer, UndefinedBehaviorSanitizer or ThreadSanitizer. Use a
+separate build directory for each; `build-*/` is git-ignored.
+
+```sh
+cmake -S . -B build-asan -DKESTREL_SANITIZE=address,undefined
+cmake --build build-asan -j
+ctest --test-dir build-asan --output-on-failure
+
+cmake -S . -B build-tsan -DKESTREL_SANITIZE=thread
+cmake --build build-tsan -j
+ctest --test-dir build-tsan --output-on-failure
+```
+
+Allowed values are `address`, `undefined`, `address,undefined` and `thread`
+(thread cannot be combined with address). An undefined-behavior finding aborts
+the test instead of printing and carrying on. A sanitized build is several
+times slower to compile and run, and the first configure fetches any
+dependency that is not installed. TSan is the one to run after touching the
+runner, a venue, a stream or `QuoteWriter`, since they are multithreaded.
+
+Run the database tests serially (plain `ctest`, not `-j`): they share the
+fixture venues' rows, so parallel runs collide.
+
 ### Running the tests in Docker
 
 The `Dockerfile` (Ubuntu 26.04) installs the build dependencies, PostgreSQL 18

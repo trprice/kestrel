@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <vector>
 
 #include "kestrel/trading/trade_log.hpp"
@@ -87,11 +88,14 @@ class RecordingVenue : public trading::TradingVenue {
     std::vector<types::OrderRequest> orders;
 };
 
-// Remembers what a run writes.
+// Remembers what a run writes. The writes lock, so SnapshotCount can be polled
+// from another thread while a Run() is going; read the vectors directly only
+// once the run has ended.
 class FakeTradeLog : public trading::TradeLog {
    public:
     types::Result<void> WriteFills(
         std::span<const types::Fill> batch) override {
+        std::lock_guard lock(mMutex);
         ++fill_writes;
         if (fail_fills) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
@@ -101,6 +105,7 @@ class FakeTradeLog : public trading::TradeLog {
     }
     types::Result<void> WritePnl(
         types::Timestamp time, std::span<const trading::PnlRow> rows) override {
+        std::lock_guard lock(mMutex);
         if (fail_pnl) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         }
@@ -109,8 +114,13 @@ class FakeTradeLog : public trading::TradeLog {
         return {};
     }
     types::Result<void> Finish(types::Timestamp time) override {
+        std::lock_guard lock(mMutex);
         finished = time;
         return {};
+    }
+    std::size_t SnapshotCount() const {
+        std::lock_guard lock(mMutex);
+        return snapshots.size();
     }
 
     bool fail_fills = false;
@@ -120,6 +130,9 @@ class FakeTradeLog : public trading::TradeLog {
     std::vector<std::pair<types::Timestamp, std::vector<trading::PnlRow>>>
         snapshots;
     std::optional<types::Timestamp> finished;
+
+   private:
+    mutable std::mutex mMutex;
 };
 
 }  // namespace kestrel::testing
