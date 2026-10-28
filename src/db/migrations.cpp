@@ -113,6 +113,26 @@ CREATE TABLE venue_latency (
     PRIMARY KEY (run_id, window_start, endpoint)
 );
 )sql"},
+        {6, "create account fill table", R"sql(
+CREATE TABLE account_fills (
+    venue           TEXT        NOT NULL,
+    fill_id         TEXT        NOT NULL,
+    order_id        TEXT        NOT NULL,
+    client_order_id TEXT        NOT NULL,
+    symbol          TEXT        NOT NULL,
+    side            TEXT        NOT NULL,
+    quantity        NUMERIC     NOT NULL,
+    price           NUMERIC     NOT NULL,
+    fee             NUMERIC     NOT NULL,
+    fee_asset       TEXT        NOT NULL,
+    liquidity       TEXT        NOT NULL,
+    fill_time       TIMESTAMPTZ NOT NULL,
+    synced_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (venue, fill_id)
+);
+CREATE INDEX account_fills_venue_symbol_time
+    ON account_fills (venue, symbol, fill_time);
+)sql"},
     };
     return kMigrations;
 }

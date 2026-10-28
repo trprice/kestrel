@@ -381,8 +381,25 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
         snapshots is about 360 kB).
       - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
       - Add a check that warns at startup when the disk is nearly full.
+- [x] Store the account's own trade history: `account_fills`, synced
+      incrementally by `kestrel_app account --store` (live mode).
+- [ ] Use `account_fills` for the cost basis of what the account holds at the
+      start of a run, so selling a starting holding realizes a real profit or
+      loss instead of the whole sale price (the 8 hour run's phantom
+      position). Needs a rule for holdings older than the stored history
+      (transfers in, buys before the first sync).
+- [ ] Sync `account_fills` at the start of a live run, and now and then during
+      it, instead of only from the `account` command, and compare a run's
+      `fills` against it afterwards to catch fills the runner missed.
+- [ ] Give every order Kestrel places a recognisable client order ID
+      (`kst-<run_id>-...`), so `account_fills` and the startup check of open
+      orders can tell Kestrel's orders from manual or other programs' ones.
+      Needs order placement first.
 - [ ] Persist orders and strategy decisions to the database (fills and P&L
-      snapshots are recorded with `[recording]`; see `RunRecorder`)
+      snapshots are recorded with `[recording]`; see `RunRecorder`). Store
+      Kestrel's own orders with their final state, not the venue's whole order
+      history: a market maker cancels most of what it places (about 125k
+      orders a day at the paper run's pace), which would outgrow `quotes`.
 - [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
       stays down
 - [ ] Health checks: stale-data detection, stream reconnect counts, clock-skew

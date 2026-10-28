@@ -78,6 +78,7 @@ add_library(kestrel
   src/db/migrations.cpp
   src/db/bar_store.cpp
   src/db/quote_store.cpp
+  src/db/account_fill_store.cpp
   src/db/trade_store.cpp
   src/trading/order_rules.cpp
   src/trading/pnl_tracker.cpp
@@ -142,6 +143,7 @@ if(KESTREL_BUILD_APP)
       "calendar_timeframe|${_good}|105|has no fixed length|bars,1M,3"
       "zero_count|${_good}|105|not in range|bars,1h,0"
       "account_zero_days|${_good}|105|not in range|account,--days,0"
+      "account_store_paper|${_good}|2|a paper venue has no history|account,--store"
       "negative_seconds|${_good}|105|not in range|stream,-1"
       "backtest_needs_range|${_good}|106|--from is required|backtest,sma_crossover"
       "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"
@@ -179,6 +181,7 @@ if(KESTREL_BUILD_TESTS)
     tests/binanceus_bar_stream_test.cpp
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
+    tests/account_fill_store_test.cpp
     tests/trade_store_test.cpp
     tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp

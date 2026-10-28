@@ -2,48 +2,24 @@
 
 #include <algorithm>
 
+#include "sql_rows.hpp"
+
 namespace kestrel::db {
 
 using types::Result;
 
 namespace {
 
-constexpr std::size_t kFillColumns = 12;
+using sql::kMillis;
+using sql::kRowsPerInsert;
+using sql::ParseDecimal;
+using sql::ParseOptional;
+using sql::Text;
+using sql::Values;
+
+constexpr std::size_t kFillColumns = 1 + sql::kFillColumns;  // run_id first
 constexpr std::size_t kPnlColumns = 8;
 constexpr std::size_t kLatencyColumns = 12;
-// PostgreSQL allows 65535 bind parameters per statement.
-constexpr std::size_t kRowsPerInsert = 1000;
-
-std::string Values(std::size_t rows, std::size_t columns) {
-    std::string sql;
-    for (std::size_t r = 0; r < rows; ++r) {
-        sql += r ? ", (" : "(";
-        for (std::size_t c = 0; c < columns; ++c) {
-            sql += (c ? ", $" : "$") + std::to_string(r * columns + c + 1);
-        }
-        sql += ")";
-    }
-    return sql;
-}
-
-std::optional<std::string> Text(const std::optional<types::Decimal>& d) {
-    return d ? std::optional<std::string>(d->ToString()) : std::nullopt;
-}
-
-std::optional<types::Decimal> ParseOptional(
-    const std::optional<std::string>& text) {
-    if (!text) {
-        return std::nullopt;
-    }
-    auto d = types::Decimal::Parse(*text);
-    return d ? std::optional<types::Decimal>(*d) : std::nullopt;
-}
-
-types::Decimal ParseDecimal(const std::optional<std::string>& text) {
-    return ParseOptional(text).value_or(types::Decimal());
-}
-
-constexpr const char* kMillis = "(extract(epoch FROM ";
 
 }  // namespace
 
@@ -69,24 +45,11 @@ Result<void> TradeStore::WriteFills(std::span<const types::Fill> fills) {
         params.reserve(batch.size() * kFillColumns);
         for (const auto& f : batch) {
             params.emplace_back(std::to_string(mRunId));
-            params.emplace_back(f.fill_id);
-            params.emplace_back(f.order_id);
-            params.emplace_back(f.client_order_id);
-            params.emplace_back(f.symbol);
-            params.emplace_back(std::string(types::ToString(f.side)));
-            params.emplace_back(f.quantity.ToString());
-            params.emplace_back(f.price.ToString());
-            params.emplace_back(f.fee.ToString());
-            params.emplace_back(f.fee_asset);
-            params.emplace_back(
-                f.liquidity == types::Liquidity::kMaker ? "maker" : "taker");
-            params.emplace_back(types::FormatIso8601(f.time));
+            sql::AppendFill(params, f);
         }
         auto result = mDatabase->Query(
-            "INSERT INTO fills (run_id, fill_id, order_id, client_order_id, "
-            "symbol, side, quantity, price, fee, fee_asset, liquidity, "
-            "fill_time) VALUES " +
-                Values(batch.size(), kFillColumns) +
+            std::string("INSERT INTO fills (run_id, ") + sql::kFillColumnNames +
+                ") VALUES " + Values(batch.size(), kFillColumns) +
                 " ON CONFLICT (run_id, fill_id) DO NOTHING",
             params);
         if (!result) {
@@ -178,31 +141,19 @@ Result<void> TradeStore::Finish(types::Timestamp time) {
 
 Result<std::vector<types::Fill>> TradeStore::LoadFills() const {
     auto rows = mDatabase->Query(
-        std::string("SELECT fill_id, order_id, client_order_id, symbol, side, "
-                    "quantity, price, fee, fee_asset, liquidity, ") +
-            kMillis +
-            "fill_time) * 1000)::bigint FROM fills WHERE run_id = $1 "
-            "ORDER BY fill_time, fill_id",
+        "SELECT " + sql::FillSelect() +
+            " FROM fills WHERE run_id = $1 ORDER BY fill_time, fill_id",
         {std::to_string(mRunId)});
     if (!rows) {
         return std::unexpected(rows.error());
     }
     std::vector<types::Fill> fills;
     for (const auto& row : *rows) {
-        types::Fill f;
-        f.fill_id = *row[0];
-        f.order_id = *row[1];
-        f.client_order_id = *row[2];
-        f.symbol = *row[3];
-        f.side = *row[4] == "buy" ? types::Side::kBuy : types::Side::kSell;
-        f.quantity = ParseDecimal(row[5]);
-        f.price = ParseDecimal(row[6]);
-        f.fee = ParseDecimal(row[7]);
-        f.fee_asset = *row[8];
-        f.liquidity = *row[9] == "maker" ? types::Liquidity::kMaker
-                                         : types::Liquidity::kTaker;
-        f.time = types::FromEpochMillis(std::stoll(*row[10]));
-        fills.push_back(std::move(f));
+        auto fill = sql::ParseFill(row);
+        if (!fill) {
+            return std::unexpected(fill.error());
+        }
+        fills.push_back(std::move(*fill));
     }
     return fills;
 }

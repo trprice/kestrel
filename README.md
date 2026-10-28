@@ -74,7 +74,7 @@ REQUIRED` error, with the authorize URL, once it has expired.
 | Subcommand | Does |
 |---|---|
 | `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances |
-| `account [--days N] [--order ID]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID. Read-only: places and cancels nothing, so it is the way to check live credentials |
+| `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID. Read-only on the venue: places and cancels nothing, so it is the way to check live credentials. `--store` also syncs the account's fills into `account_fills` (live mode only; see Database) |
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
@@ -214,6 +214,28 @@ Before upgrading a database that holds data you care about:
    locks.
 4. Run `init-db`, then confirm with
    `SELECT * FROM schema_migrations ORDER BY version;`.
+
+### The account's trade history
+
+`kestrel_app account --store` (live mode) copies the account's fills into
+`account_fills`, keyed by venue and fill ID: every fill on the account,
+whatever placed the order, where `fills` holds only what a run saw. The first
+sync of a symbol reaches back `--days` (default 7, at most 90); later ones
+carry on from its newest stored fill, so running it again only tops up, and a
+fill stored twice is kept once. The listing and the sync share one fetch. On
+Binance.US the fills are fetched per configured symbol, in 24 hour windows of
+weight 10 each, so a first sync costs 10 × days × symbols: 900 for 90 days of
+one symbol, 2700 for three. Kestrel keeps itself under 960 weight a minute by
+waiting, so that is about a minute per 900 weight (less the first 100, which
+go at once); another process using the same IP shares Binance's 1200 a
+minute and can push it into rate-limit errors. A sync with stored history
+only fetches from the newest stored fill, or from `--days` back for the
+listing if that is earlier.
+
+```sql
+SELECT symbol, side, sum(quantity), round(sum(quantity * price) / sum(quantity), 2)
+FROM account_fills WHERE venue = 'binanceus' GROUP BY 1, 2;
+```
 
 If a migration fails, the error names its version. Fix the cause and re-run; if
 you are unsure whether it applied partway, compare the schema against the
