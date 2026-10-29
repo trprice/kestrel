@@ -56,9 +56,9 @@ namespace kestrel::trading {
 //
 // Request weight matters: the runner polls GetFills (weight 10 per symbol)
 // and GetOpenOrders (3 per symbol) every fill_poll_interval, 13 per second per
-// symbol at the default 1 s, against a budget of 1200 per minute shared with
-// every order. Raise fill_poll_interval for a live run, or add the user-data
-// stream (see TODO.md).
+// symbol at the default 1 s: 780 of the 2400 per minute BinanceUSApi keeps
+// to, shared with every order, cancel and order lookup. With several symbols
+// raise fill_poll_interval, or add the user-data stream (see TODO.md).
 //
 // Positions: spot has none, and the venue cannot tell what the account held
 // before it started, so GetPositions returns an empty list, as the paper venue

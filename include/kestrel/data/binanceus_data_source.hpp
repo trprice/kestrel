@@ -18,7 +18,7 @@ namespace kestrel::data {
 types::Result<std::string_view> BinanceUSInterval(types::Timeframe timeframe);
 
 // Binance.US market data over public REST and the combined WebSocket stream.
-// No API key is needed. The request-weight budget is 1200/minute per IP;
+// No API key is needed. The request-weight budget is 6000/minute per IP;
 // calls are throttled below that and transient failures (HTTP 429, 5xx) are
 // retried with exponential backoff. HTTP 418 (IP ban) is not retried.
 class BinanceUSDataSource : public DataSource {

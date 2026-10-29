@@ -118,9 +118,10 @@ fill stored twice is kept once. The listing and the sync share one fetch.
 
 On Binance.US the fills are fetched per configured symbol, in 24 hour windows
 of weight 10 each, so a first sync costs 10 × days × symbols: 900 for 90 days
-of one symbol, 2700 for three. Kestrel keeps itself under 960 weight a minute
-by waiting (Binance.US now allows 6000), so that is about a minute per 900
-weight, less the first 100, which go at once. Binance's trade history carries
+of one symbol, 2700 for three. Kestrel keeps itself under 2400 weight a minute
+by waiting (Binance.US allows 6000), so that is about a minute per 2400
+weight, less the first 100, which go at once: a 90 day sync of one symbol
+goes through in well under a minute. Binance's trade history carries
 no client order ID, so `client_order_id` is empty in this table.
 
 ```sql

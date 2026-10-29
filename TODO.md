@@ -308,8 +308,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       Leftover orders: `Runner::Begin` now cancels every order open on the
       configured symbols before `OnStart`, and refuses to start if it cannot
       (Kestrel assumes it alone controls the account's orders while it runs).
-      Remaining: flipping `HasLiveVenue`. Exchange info now advertises 6000 request weight a
-      minute, not 1200: the 960 a minute the client keeps to could be raised.
+      Remaining: flipping `HasLiveVenue`. Exchange info advertises 6000
+      request weight a minute, not 1200; the client now keeps to 2400 (it
+      was 960).
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
       client, a summary when `run` stops, and one-minute rollups in
       `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the
@@ -328,9 +329,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       latency. Check the current Binance.US docs first: Binance.com has been
       moving from listen keys to a WebSocket API subscription. Until it lands
       the venue is polled, and polling `GetFills` (weight 10) and
-      `GetOpenOrders` (weight 3) every second uses about 780 of the 1200
-      weight per minute for one symbol, so a live run needs a longer
-      `fill_poll_interval`.
+      `GetOpenOrders` (weight 3) every second uses about 780 of the 2400
+      weight per minute the client keeps to, per symbol, so a live run on
+      several symbols needs a longer `fill_poll_interval`.
 - [ ] An optional delay on the paper venue's pushes (and fills), so paper
       runs can model live latency instead of seeing fills instantly.
 - [ ] Re-verify the timeframe lists for Schwab, Kraken and Binance.US against

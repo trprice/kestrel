@@ -31,8 +31,9 @@ namespace kestrel::trading {
 // server answers -1021 (timestamp outside recvWindow); that request is then
 // sent once more, which is safe because the server rejected it unexecuted.
 //
-// Calls draw their request weight from a token bucket kept below Binance's
-// 1200 per minute, blocking when it is empty. HTTP 418 means the IP is banned:
+// Calls draw their request weight from a token bucket kept well below
+// Binance.US's 6000 per minute (per IP, shared with the market-data client),
+// blocking when it is empty. HTTP 418 means the IP is banned:
 // calls then fail at once, without touching the network, until the
 // Retry-After the server gave has passed.
 //
@@ -45,7 +46,7 @@ class BinanceUSApi {
         std::string rest_base_url = "https://api.binance.us";
         std::chrono::milliseconds recv_window{5000};
         util::RetryPolicy retry;
-        double weight_per_second = 16.0;  // 960 per minute of the 1200
+        double weight_per_second = 40.0;  // 2400 per minute of the 6000
         double weight_burst = 100.0;
         // New orders, which Binance.US also counts on their own: 100 per 10
         // seconds and 200,000 a day. Used by BinanceUSTradingVenue.
