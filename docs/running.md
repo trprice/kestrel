@@ -86,9 +86,22 @@ symbols not listed in `[general] symbols` are not cancelled, but they still
 share the account's balances. The read-only `account` command is safe to use
 at any time.
 
+Also mind what was on the account before `run` started. Binance.US spot has no
+positions, so `GetPositions` returns nothing and the risk gate's
+`max_position_notional` and the inventory only know about what the strategy
+built up this run. Holdings the account already had are invisible to the gate:
+start from an empty account or sub-account.
+
 If `run` dies without stopping cleanly (a crash, `kill -9`, or a second
 Ctrl-C), its strategy's orders stay open until the next `run` cancels them;
 `cancel --all --confirm` clears them by hand.
+
+A cancel clears the order book, not history. An order that filled moments
+before the cancel has already moved its fill into history, and the next `run`
+starts from its position and balance without an `OnFill`: the risk gate and
+the recorded P&L are blind to it. Catching such a fill needs the
+`account_fills` sync at run start, still to come (see [TODO.md](../TODO.md));
+meanwhile `account --store` writes fetched fills into `account_fills` by hand.
 
 **Check the account** (read-only: nothing is placed or cancelled). This is the
 way to check that live credentials work:
