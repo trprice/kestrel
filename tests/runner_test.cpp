@@ -728,6 +728,27 @@ TEST_F(RunnerTest, FailsWhenTheGateCannotReadPositions) {
     EXPECT_EQ(data->stops.load(), 1);  // streams closed again
 }
 
+TEST_F(RunnerTest, CancelsOrdersAlreadyOpenBeforeOnStart) {
+    venue->cancel_all_result = {"left-1", "left-2"};
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(venue->cancel_all_calls, 1);
+    EXPECT_FALSE(strategy->start_window.empty());  // OnStart ran
+    runner->End();
+}
+
+TEST_F(RunnerTest, DoesNotStartWhenOpenOrdersCannotBeCancelled) {
+    venue->fail_cancel_all = true;
+    Build();
+    auto r = runner->Begin();
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().category, ErrorCategory::kNetwork);
+    EXPECT_NE(r.error().message.find("left open"), std::string::npos);
+    EXPECT_EQ(data->stops.load(), 0);  // nothing was subscribed
+    EXPECT_FALSE(strategy->stopped);
+    runner->End();  // does nothing: Begin failed
+}
+
 TEST_F(RunnerTest, FailsWithoutSymbols) {
     strategy->requirements.symbols.clear();
     Build();

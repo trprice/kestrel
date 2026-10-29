@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <utility>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -33,7 +34,10 @@ class RecordingVenue : public trading::TradingVenue {
     }
     types::Result<std::vector<std::string>> CancelAll() override {
         ++cancel_all_calls;
-        return std::vector<std::string>{};
+        if (fail_cancel_all) {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
+        return std::exchange(cancel_all_result, {});
     }
     types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override {
         if (fail_reads) {
@@ -88,6 +92,8 @@ class RecordingVenue : public trading::TradingVenue {
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
+    bool fail_cancel_all = false;
+    std::vector<std::string> cancel_all_result;  // returned once
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
     std::vector<types::OrderStatus> open_orders;

@@ -305,8 +305,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       the open order and 1.40 USDT locked, a cancel from a fresh process
       (symbol found by lookup), the balance released with no fill, and a
       second cancel answered -2011 and reported as already closed.
-      Remaining: startup reconciliation of leftover orders, then flipping
-      `HasLiveVenue`. Exchange info now advertises 6000 request weight a
+      Leftover orders: `Runner::Begin` now cancels every order open on the
+      configured symbols before `OnStart`, and refuses to start if it cannot
+      (Kestrel assumes it alone controls the account's orders while it runs).
+      Remaining: flipping `HasLiveVenue`. Exchange info now advertises 6000 request weight a
       minute, not 1200: the 960 a minute the client keeps to could be raised.
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
       client, a summary when `run` stops, and one-minute rollups in

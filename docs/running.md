@@ -49,6 +49,10 @@ for the config file.
   for live runs (currently all of them: Binance.US can place and cancel
   orders, but `run` stays off for it until the startup checks are done; see
   [TODO.md](../TODO.md)).
+- **`run` cancels every open order first.** Before the strategy starts,
+  `run` cancels every order open on the `[general] symbols`, whoever placed
+  it, and logs the IDs it cancelled. If the cancel fails, `run` exits without
+  trading. See [One trader per account](#one-trader-per-account).
 - With `[recording] enabled = true`, `run` stores its fills, P&L snapshots and
   response times as it goes; see [database.md](database.md#recording-a-run).
 
@@ -61,6 +65,31 @@ strategy, see [writing-strategies.md](writing-strategies.md).
 These commands talk to the live account (`mode = "live"`, with the Binance.US
 credentials set; see [configuration.md](configuration.md#credentials)). None
 of them is needed for paper trading.
+
+### One trader per account
+
+**Kestrel presumes it is in control of the account's orders while `run` is
+running.** It cancels whatever is open on its symbols when it starts, and the
+strategy, the order tracking and the risk gate only know about the orders the
+strategy placed. Any other order on the account can interrupt the strategy:
+
+- it holds funds the strategy expects to use, so the strategy's own orders can
+  be refused for an insufficient balance;
+- its fills change the balance without the strategy or the risk gate counting
+  them, so position limits, inventory and the recorded P&L are wrong;
+- a second process placing orders (another Kestrel, another bot, the website,
+  `kestrel_app order`) is cancelled the next time `run` starts, and can trade
+  against the strategy's own quotes while it runs.
+
+So while `run` is trading live, do not place orders on its symbols by any other
+means, and use a separate account (or sub-account) for anything else. Orders on
+symbols not listed in `[general] symbols` are not cancelled, but they still
+share the account's balances. The read-only `account` command is safe to use
+at any time.
+
+If `run` dies without stopping cleanly (a crash, `kill -9`, or a second
+Ctrl-C), its strategy's orders stay open until the next `run` cancels them;
+`cancel --all --confirm` clears them by hand.
 
 **Check the account** (read-only: nothing is placed or cancelled). This is the
 way to check that live credentials work:

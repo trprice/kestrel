@@ -27,7 +27,7 @@ All hooks are optional except `Name()` and `Needs()`.
 
 | Hook | Called |
 |---|---|
-| `OnStart` | once, after the warmup bars are loaded and before the first event |
+| `OnStart` | once, after the warmup bars are loaded and before the first event; every order that was open on the venue's symbols has been cancelled by then, so start from your balances, not from resting orders |
 | `OnBar` | for each closed bar, in order; bars missed in a disconnect are backfilled |
 | `OnQuote` | for each quote, if `quotes` is set; quotes are conflated, so you may skip intermediate ones |
 | `OnFill` | once per fill of an order you placed, partial fills included |

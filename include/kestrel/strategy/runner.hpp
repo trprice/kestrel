@@ -117,8 +117,12 @@ class Runner : private Context {
     // Run() in pieces, for a driver that supplies events itself on one thread
     // and wants deterministic processing (see backtest::RunBacktest).
     //
-    // Begin() subscribes, loads the warmup bars and calls OnStart; it fails
-    // like Run() does. Drain() processes everything queued, then polls for
+    // Begin() cancels every order open on the venue's symbols, subscribes,
+    // loads the warmup bars and calls OnStart; it fails like Run() does, and
+    // fails without starting if the cancel fails. The runner assumes it is in
+    // sole control of the account's orders while it runs: an order it did not
+    // place holds funds and can fill without the strategy or the risk gate
+    // counting it. Drain() processes everything queued, then polls for
     // fills (always, whatever fill_poll_interval says) and repeats while that
     // finds new ones; it returns false if Stop() was called. End() closes the
     // streams and calls OnStop; it does nothing unless Begin() succeeded.

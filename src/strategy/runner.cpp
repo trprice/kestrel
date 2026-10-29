@@ -239,6 +239,25 @@ types::Result<void> Runner::Begin() {
     }
     mWindowSize = std::max<std::size_t>(requirements.warmup_bars, 1);
 
+    // Orders left by an earlier run, or placed by hand, would hold funds and
+    // could fill without the strategy or the risk gate knowing: the runner
+    // starts from an account with nothing open.
+    auto cancelled = mVenue->CancelAll();
+    if (!cancelled) {
+        types::Error error = cancelled.error();
+        error.message = "cannot start with orders possibly left open: " +
+                        error.message;
+        return std::unexpected(std::move(error));
+    }
+    if (!cancelled->empty()) {
+        std::string ids;
+        for (const auto& id : *cancelled) {
+            ids += ' ' + id;
+        }
+        spdlog::warn("strategy {}: cancelled {} order(s) already open:{}",
+                     mStrategy->Name(), cancelled->size(), ids);
+    }
+
     // Subscribe before the warmup fetch so a bar that closes in between is
     // queued rather than lost; DeliverBar drops the overlap.
     for (types::Timeframe timeframe : requirements.bar_timeframes) {
