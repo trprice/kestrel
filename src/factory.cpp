@@ -403,7 +403,9 @@ constexpr StrategyEntry kStrategies[] = {
 
 // Whether the provider's TradingVenue is a real implementation. Update this
 // as each stub is completed.
-bool HasLiveVenue(config::Provider) { return false; }
+bool HasLiveVenue(config::Provider provider) {
+    return provider == config::Provider::kBinanceUS;
+}
 
 }  // namespace
 

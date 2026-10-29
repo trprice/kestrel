@@ -45,10 +45,9 @@ for the config file.
   endpoint's response times when it stops. If `[risk]` sets any limit, orders
   go through the risk gate, and the daily-loss count starts at startup.
   Without `[risk]` it warns and trades unchecked in paper mode. Live mode is
-  refused without `[risk]`, and on any provider whose venue is not yet cleared
-  for live runs (currently all of them: Binance.US can place and cancel
-  orders, but `run` stays off for it until the startup checks are done; see
-  [TODO.md](../TODO.md)).
+  refused without `[risk]`, and on a provider whose venue is still a stub
+  (Kraken and Schwab); Binance.US runs live. Read
+  [One trader per account](#one-trader-per-account) before a live run.
 - **`run` cancels every open order first.** Before the strategy starts,
   `run` cancels every order open on the `[general] symbols`, whoever placed
   it, and logs the IDs it cancelled. If the cancel fails, `run` exits without

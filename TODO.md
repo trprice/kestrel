@@ -197,14 +197,13 @@ the header of the code concerned.
 
 ### Venues and data
 - Kraken and Schwab trading venues are stubs that return `kNotImplemented`.
-- The Binance.US venue places and cancels orders, but `run` does not use it
-  live yet (`HasLiveVenue`). Its `GetPositions` returns nothing, so the risk
-  gate's `max_position_notional` does not see holdings the account already
-  had.
+- The Binance.US venue runs live under `run`, polled for fills (no user-data
+  stream yet). Its `GetPositions` returns nothing, so the risk gate's
+  `max_position_notional` does not see holdings the account already had.
 - A Binance.US placement that times out and cannot be found afterwards is
   reported as an error, but the order may still appear later; it would then
-  rest on the account untracked by the runner until the startup check (not
-  built yet) or a manual `cancel`.
+  rest on the account untracked by the runner until the next `run` cancels
+  it at startup, or a manual `cancel`.
 - Binance.US's test endpoint does not check the balance (a test sell of ZEC
   the account does not hold is accepted), so `order --test` proves the
   request, not that it can be paid for.
@@ -308,7 +307,8 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       Leftover orders: `Runner::Begin` now cancels every order open on the
       configured symbols before `OnStart`, and refuses to start if it cannot
       (Kestrel assumes it alone controls the account's orders while it runs).
-      Remaining: flipping `HasLiveVenue`. Exchange info advertises 6000
+      `HasLiveVenue` is now true for Binance.US, so `run` trades live on it.
+      Exchange info advertises 6000
       request weight a minute, not 1200; the client now keeps to 2400 (it
       was 960).
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
@@ -410,10 +410,17 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Sync `account_fills` at the start of a live run, and now and then during
       it, instead of only from the `account` command, and compare a run's
       `fills` against it afterwards to catch fills the runner missed.
-- [ ] Give every order Kestrel places a recognisable client order ID
-      (`kst-<run_id>-...`), so `account_fills` and the startup check of open
-      orders can tell Kestrel's orders from manual or other programs' ones.
-      Needs order placement first.
+- [ ] Tell Kestrel's fills in `account_fills` from manual or other programs'
+      ones. Binance.US orders already get a `kst-<tag>-<n>` client order ID
+      (the tag is random per process), but `myTrades` does not return client
+      order IDs, so `account_fills.client_order_id` is always empty. Record
+      the exchange order ID of every order Kestrel places, with its run (and
+      make the tag the run ID), so `account_fills` can be joined on
+      `order_id`. Older history can be backfilled once by looking each order
+      up (weight 4 each, about 800 for the 197 orders stored so far). The
+      startup cancel does not need this: it clears every open order on the
+      configured symbols by design (see docs/running.md, "One trader per
+      account").
 - [ ] Persist orders and strategy decisions to the database (fills and P&L
       snapshots are recorded with `[recording]`; see `RunRecorder`). Store
       Kestrel's own orders with their final state, not the venue's whole order

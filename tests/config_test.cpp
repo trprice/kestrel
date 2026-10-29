@@ -458,10 +458,11 @@ TEST(Factory, CreateRunnerRefusesWhatCannotRun) {
     ASSERT_OK(live);
     EXPECT_EQ(RunnerFailure(*live).category,
               types::ErrorCategory::kInvalidArgument);
-    auto limited = config::BinanceUSConfiguration::Parse(
+    auto limited = config::KrakenConfiguration::Parse(
         WithTables(std::string(strategy) + "[risk]\nmax_open_orders=1\n",
                    "live"),
-        env);
+        NoEnv({{"KESTREL_KRAKEN_API_KEY", "key"},
+               {"KESTREL_KRAKEN_API_SECRET", "c2VjcmV0"}}));
     ASSERT_OK(limited);
     EXPECT_EQ(RunnerFailure(*limited).category,
               types::ErrorCategory::kNotImplemented);
@@ -733,8 +734,16 @@ TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error().category, types::ErrorCategory::kInvalidArgument);
 
-    auto stub = config::BinanceUSConfiguration::Parse(
+    auto live = config::BinanceUSConfiguration::Parse(
         WithTables("[risk]\nmax_open_orders=1\n", "live"), env);
+    ASSERT_OK(live);
+    EXPECT_TRUE(ValidateForRun(*live, live->GetRiskLimits()).has_value());
+
+    // Kraken's venue is still a stub.
+    auto stub = config::KrakenConfiguration::Parse(
+        WithTables("[risk]\nmax_open_orders=1\n", "live"),
+        NoEnv({{"KESTREL_KRAKEN_API_KEY", "key"},
+               {"KESTREL_KRAKEN_API_SECRET", "c2VjcmV0"}}));
     ASSERT_OK(stub);
     auto stubbed = ValidateForRun(*stub, stub->GetRiskLimits());
     ASSERT_FALSE(stubbed.has_value());
