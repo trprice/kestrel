@@ -315,16 +315,33 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                          const Decimal& size, const Decimal& room,
                          const Decimal& threshold) {
     const bool wanted = price && size.Sign() > 0;
+    // What the new quote replaces, and why, for the log.
+    std::string replaced;
     if (!quote.order_id.empty()) {
         const bool fresh =
             mParams.max_quote_age == std::chrono::milliseconds::zero() ||
             context.Now() - quote.placed < mParams.max_quote_age;
+        const bool moved = wanted && (*price - quote.price).Abs() >= threshold;
         const bool keep = wanted && !quote.cancel_raced && fresh &&
-                          quote.Remaining() <= room &&
-                          (*price - quote.price).Abs() < threshold;
-        if (keep || !Pull(context, quote)) {
+                          quote.Remaining() <= room && !moved;
+        if (keep) {
             return;
         }
+        const char* why = !wanted                     ? "not wanted"
+                          : moved                     ? "price moved"
+                          : !fresh                    ? "too old"
+                                                      : "over the room left";
+        const std::string old_id = quote.order_id;
+        const std::string old_price = quote.price.ToString();
+        if (!Pull(context, quote)) {
+            return;
+        }
+        if (!wanted) {
+            spdlog::info("market_maker: pulled {} quote {} @ {} ({})",
+                         types::ToString(side), old_id, old_price, why);
+            return;
+        }
+        replaced = ", replaces " + old_id + " @ " + old_price + ", " + why;
     }
     if (!wanted) {
         return;
@@ -346,6 +363,9 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
     if (!types::IsActive(ack->state)) {
         // Filled or refused at once. A fill is on its way to OnFill; until it
         // arrives the inventory does not show it.
+        spdlog::info("market_maker: {} {} @ {} (order {}{}) was {} at once",
+                     types::ToString(side), size.ToString(), price->ToString(),
+                     ack->order_id, replaced, types::ToString(ack->state));
         if (ack->state == types::OrderState::kFilled) {
             ExpectFills(ack->order_id, side, size, Decimal(), context.Now());
         }
@@ -353,8 +373,9 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
     }
     quote =
         Resting{ack->order_id, *price, size, Decimal(), context.Now(), false};
-    spdlog::debug("market_maker: {} {} @ {} (order {})", types::ToString(side),
-                  size.ToString(), price->ToString(), ack->order_id);
+    spdlog::info("market_maker: quote {} {} @ {} (order {}{})",
+                 types::ToString(side), size.ToString(), price->ToString(),
+                 ack->order_id, replaced);
 }
 
 void MarketMaker::OnFill(Context&, const types::Fill& fill) {
@@ -458,7 +479,18 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
 void MarketMaker::OnStop(Context& context) {
     for (Resting* quote : {&mBid, &mAsk}) {
         if (!quote->order_id.empty() && !quote->cancel_raced) {
-            (void)context.Venue().CancelOrder(quote->order_id);
+            auto outcome = context.Venue().CancelOrder(quote->order_id);
+            if (outcome) {
+                spdlog::info(
+                    "market_maker: stopping, {} {} @ {}",
+                    *outcome == trading::CancelOutcome::kCancelled
+                        ? "cancelled"
+                        : "already closed:",
+                    quote->order_id, quote->price.ToString());
+            } else {
+                spdlog::warn("market_maker: stopping, cancel of {} failed: {}",
+                             quote->order_id, outcome.error().ToString());
+            }
         }
     }
 }

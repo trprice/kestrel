@@ -37,7 +37,8 @@ for the config file.
   bars (plus its warmup) from the database, falling back to the provider for
   missing bars, replays them and any stored quotes through the same `Runner`
   and a paper venue using `[paper]`, and prints the fills, positions and
-  balances. `--to` is exclusive; dates are `YYYY-MM-DD` or ISO 8601 UTC.
+  balances. `--to` is exclusive; dates are `YYYY-MM-DD` or ISO 8601 UTC
+  with the `Z` (`2026-10-19T17:00:00Z`).
   `backtest` records no run, fills or P&L. With a `[database]`, it does save
   the bars it had to fetch from the provider, so the next backtest finds them.
 - `run <strategy>` trades on live data through the paper or live venue until

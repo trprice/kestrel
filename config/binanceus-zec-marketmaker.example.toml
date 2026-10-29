@@ -1,7 +1,7 @@
 # Market-making backtest of ZEC/USDT on Binance.US, with stored quotes and the
 # fee schedule of a Binance.US account paying 0% maker and 0.02% taker.
 # Run: ./build/kestrel_app --config config/binanceus-zec-marketmaker.example.toml \
-#          backtest market_maker --from 2026-10-19T17:00:00 --to 2026-10-20T01:10:00
+#          backtest market_maker --from 2026-10-19T17:00:00Z --to 2026-10-20T01:10:00Z
 # The quotes come from the database ([database]); symbol info from the venue.
 
 [general]
