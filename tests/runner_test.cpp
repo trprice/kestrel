@@ -1,6 +1,7 @@
 #include "kestrel/strategy/runner.hpp"
 
 #include <atomic>
+#include <functional>
 #include <future>
 #include <thread>
 #include <tuple>
@@ -126,6 +127,9 @@ class RecordingStrategy : public strategy::Strategy {
     void OnQuote(strategy::Context&, const types::Quote& quote) override {
         quotes.push_back(quote.symbol);
         full_quotes.push_back(quote);
+        if (on_quote) {
+            on_quote();
+        }
     }
     void OnFill(strategy::Context&, const types::Fill& fill) override {
         fills.push_back(fill.fill_id);
@@ -144,6 +148,7 @@ class RecordingStrategy : public strategy::Strategy {
     bool throw_on_bar = false;
     bool throw_on_fill = false;
     int orders_on_start = 0;
+    std::function<void()> on_quote;  // after a quote is recorded
     std::vector<std::tuple<std::string, types::OrderState, types::Decimal>>
         updates;
     std::vector<std::string> fills;
@@ -566,6 +571,37 @@ TEST_F(RunnerTest, PushedOrderChangesReachOnOrderUpdate) {
     runner->End();
 }
 
+TEST_F(RunnerTest, IgnoresAnOrderStateBehindTheOneAlreadySeen) {
+    venue->pushes = true;
+    strategy->orders_on_start = 1;  // "order-1", acknowledged as kNew
+    Build();
+    ASSERT_OK(runner->Begin());
+    // Pushed: 2 filled. The poll then reads an older snapshot, 1 filled, as a
+    // poll queued before the push would deliver it.
+    venue->Push(trading::ExecutionUpdate{
+        std::nullopt, StatusOf("order-1", types::OrderState::kPartiallyFilled, 2)});
+    venue->open_orders = {
+        StatusOf("order-1", types::OrderState::kPartiallyFilled, 1),
+    };
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 1u);  // the push only
+    EXPECT_EQ(std::get<2>(strategy->updates[0]), types::Decimal::FromInt(2));
+
+    // A state that is ahead still gets through, and so does closing.
+    venue->open_orders = {
+        StatusOf("order-1", types::OrderState::kPartiallyFilled, 3),
+    };
+    EXPECT_TRUE(runner->Drain());
+    venue->open_orders.clear();
+    venue->order_states["order-1"] =
+        StatusOf("order-1", types::OrderState::kCancelled, 3);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 3u);
+    EXPECT_EQ(std::get<2>(strategy->updates[1]), types::Decimal::FromInt(3));
+    EXPECT_EQ(std::get<1>(strategy->updates[2]), types::OrderState::kCancelled);
+    runner->End();
+}
+
 TEST_F(RunnerTest, PollsAsBeforeWhenTheVenueDoesNotPush) {
     venue->fills = {FillAtMinute("f1", 1)};
     options.fill_poll_interval = std::chrono::milliseconds(1);
@@ -577,6 +613,61 @@ TEST_F(RunnerTest, PollsAsBeforeWhenTheVenueDoesNotPush) {
     Finish();
     EXPECT_GE(venue->get_fills_calls, 2);
     EXPECT_EQ(strategy->fills, std::vector<std::string>{"f1"});
+}
+
+TEST_F(RunnerTest, HandlesQuotesWhileAPollIsInFlight) {
+    strategy->requirements.quotes = true;
+    std::promise<void> poll_started;
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> first{true};
+    venue->before_get_fills = [&] {
+        if (first.exchange(false)) {
+            poll_started.set_value();
+            released.wait();  // a slow venue: the poll hangs here
+        }
+    };
+    std::promise<void> quote_seen;
+    strategy->on_quote = [&] { quote_seen.set_value(); };
+    options.fill_poll_interval = std::chrono::milliseconds(1);
+    Start();
+    poll_started.get_future().wait();
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.bid = types::Decimal::FromInt(100);
+    data->quote_callback(quote);
+    const auto seen = quote_seen.get_future().wait_for(std::chrono::seconds(5));
+    release.set_value();
+    Finish();
+    EXPECT_EQ(seen, std::future_status::ready);  // not held behind the poll
+    EXPECT_EQ(strategy->quotes.size(), 1u);
+}
+
+TEST_F(RunnerTest, StopWaitsForAPollInFlight) {
+    std::promise<void> poll_started;
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> first{true};
+    venue->before_get_fills = [&] {
+        if (first.exchange(false)) {
+            poll_started.set_value();
+            released.wait();
+        }
+    };
+    options.fill_poll_interval = std::chrono::milliseconds(1);
+    Build();
+    auto started = strategy->started.get_future();
+    auto done = std::async(std::launch::async, [this] { return runner->Run(); });
+    started.wait();
+    poll_started.get_future().wait();
+    runner->Stop();
+    // End() joins the poller before OnStop, so Run() cannot return yet.
+    EXPECT_EQ(done.wait_for(std::chrono::milliseconds(50)),
+              std::future_status::timeout);
+    release.set_value();
+    ASSERT_OK(done.get());
+    EXPECT_TRUE(strategy->stopped);
 }
 
 TEST_F(RunnerTest, DrainProcessesEventsAndFillsOnTheCallingThread) {

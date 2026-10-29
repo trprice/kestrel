@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <utility>
 #include <map>
 #include <mutex>
@@ -56,6 +57,9 @@ class RecordingVenue : public trading::TradingVenue {
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override {
         ++get_fills_calls;
+        if (before_get_fills) {
+            before_get_fills();
+        }
         if (fail_fills) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         }
@@ -93,6 +97,7 @@ class RecordingVenue : public trading::TradingVenue {
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
     bool fail_cancel_all = false;
+    std::function<void()> before_get_fills;  // e.g. to hold a poll
     std::vector<std::string> cancel_all_result;  // returned once
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;

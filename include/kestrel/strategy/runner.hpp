@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -8,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -57,6 +60,14 @@ struct RunnerOptions {
 // block (it would stall the stream) and where Subscription::Stop() cannot be
 // called. The callbacks therefore only enqueue; the strategy runs on the
 // Run() thread, which is also free to call the venue over HTTP.
+//
+// Run() polls the venue on a poller thread of its own, so the strategy never
+// waits for a poll's HTTP round trips (about 0.8 s on Binance.US): the poller
+// queues what it finds as an event, and the fills and order changes are
+// delivered on the Run() thread like everything else. A poll can therefore
+// land between any two hooks, and a fill can be queued while the strategy is
+// cancelling the order it belongs to. Drain() polls on the calling thread
+// instead, so a backtest stays deterministic.
 //
 // Orders placed through the strategy's venue are remembered while they are
 // active. The same poll checks them (GetOpenOrders, plus GetOrder for one that
@@ -145,8 +156,14 @@ class Runner : private Context {
     struct ExecutionEvent {
         trading::ExecutionUpdate update;
     };
+    // What one poll found: fills (oldest first) and changed order states.
+    struct PolledEvent {
+        std::vector<types::Fill> fills;
+        std::vector<types::OrderStatus> orders;
+    };
     struct StopEvent {};
-    using Event = std::variant<BarEvent, QuoteEvent, ExecutionEvent, StopEvent>;
+    using Event = std::variant<BarEvent, QuoteEvent, ExecutionEvent,
+                               PolledEvent, StopEvent>;
     using Series = std::pair<types::Symbol, types::Timeframe>;
     using SteadyTime = std::chrono::steady_clock::time_point;
 
@@ -166,7 +183,15 @@ class Runner : private Context {
     // bars at or before the newest one already seen (reconnect duplicates).
     void DeliverBar(const types::Symbol& symbol, types::Timeframe timeframe,
                     const types::Bar& bar);
-    // Hands the strategy the fills it has not seen; returns how many.
+    // The poll's venue calls. Thread-safe, so the poller thread can make
+    // them: they read the published fill cursor and the order tracker, and
+    // touch nothing else of the runner's.
+    std::vector<types::Fill> FetchFills();
+    std::vector<types::OrderStatus> FetchOrders();
+    // Hands the strategy what a poll found that it has not seen; returns how
+    // much. Run() thread only.
+    std::size_t DeliverPolled(const PolledEvent& polled);
+    // Fetches and delivers the fills on the calling thread; returns how many.
     std::size_t PollFills();
     // Hands one fill to the strategy (and the recorder) unless it was seen
     // before; returns whether it did.
@@ -175,10 +200,14 @@ class Runner : private Context {
     void HandleExecution(const trading::ExecutionUpdate& update);
     // Subscribes to the venue's executions, if it pushes them.
     void SubscribeExecutions();
-    // Hands the strategy the order changes it has not seen; returns how many.
-    std::size_t PollOrders();
-    // PollFills, then PollOrders; returns how much they delivered.
+    // PollFills, then the order changes, on the calling thread; returns how
+    // much they delivered.
     std::size_t Poll();
+    // The poller thread: every `interval`, fetches and queues a PolledEvent
+    // if it found anything. StopPoller() ends and joins it; it is safe to call
+    // when no poller runs.
+    void StartPoller(std::chrono::milliseconds interval);
+    void StopPoller();
     // Runs a strategy hook, logging instead of propagating an exception.
     void Guarded(const char* hook, const std::function<void()>& call);
 
@@ -202,6 +231,8 @@ class Runner : private Context {
     std::unique_ptr<Strategy> mStrategy;
     const RunnerOptions mOptions;
     std::function<types::Timestamp()> mClock;
+    // For the poller's log lines, which must not call into the strategy.
+    const std::string mName;
 
     mutable std::mutex mMutex;  // guards the members below
     std::condition_variable mWake;
@@ -211,7 +242,17 @@ class Runner : private Context {
     std::map<types::Symbol, types::Quote> mPendingQuotes;
     std::size_t mConflated = 0;
 
-    // Touched only on the thread driving the strategy.
+    // The poller thread, and what stops it.
+    std::thread mPoller;
+    std::mutex mPollerMutex;
+    std::condition_variable mPollerWake;
+    bool mPollerStop = false;  // guarded by mPollerMutex
+    // mFillCursor in milliseconds since the epoch, for FetchFills to read on
+    // the poller thread.
+    std::atomic<std::int64_t> mPublishedCursor{0};
+
+    // Touched only on the thread driving the strategy (mPushed and mRunStart
+    // are set in Begin(), before the poller starts, and only read after).
     bool mBegun = false;
     bool mPushed = false;  // the venue pushes executions
     std::map<Series, std::vector<types::Bar>> mBars;

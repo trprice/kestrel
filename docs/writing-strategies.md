@@ -88,7 +88,8 @@ class MyStrategy : public strategy::Strategy {
   the venue or the context.
 - **Be quick:** events queue up behind a slow hook. Quotes are conflated, but
   bars never are. On a live venue every `PlaceOrder` and `CancelOrder` is an
-  HTTP round trip (about 0.4 s on Binance.US) on this thread.
+  HTTP round trip (about 0.4 s on Binance.US) on this thread. Polling for
+  fills does not use this thread.
 - **Exceptions:** a hook that throws is logged and the runner moves on to the
   next event. Do not rely on that; handle errors where they happen.
 - **Check every result:** `PlaceOrder` returns a `Result`. It can fail (a risk
@@ -104,7 +105,7 @@ class MyStrategy : public strategy::Strategy {
   acknowledgement in `kFilled`, a closing `OnOrderUpdate`) against your limits
   until its `OnFill` arrives, as `MarketMaker` does.
 - **Cancels race with fills:** an order can fill while your cancel is in
-  flight. `CancelOrder` reports `kAlreadyFilled` or `kAlreadyClosed` for that,
+  flight, and a polled fill can be queued for an order you are replacing. `CancelOrder` reports `kAlreadyFilled` or `kAlreadyClosed` for that,
   and it is a normal outcome, not an error. `MarketMaker` tracks the race as
   `cancel_raced`.
 - **Round to the symbol's rules:** prices to the tick, quantities to the lot

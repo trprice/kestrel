@@ -84,27 +84,34 @@ class OrderTracker : public trading::TradingVenue {
         return mVenue->StreamExecutions(std::move(callback));
     }
 
+    // Whether `status` is ahead of what was last seen for a tracked order;
+    // changes nothing.
+    bool Changed(const types::OrderStatus& status) const {
+        std::lock_guard lock(mMutex);
+        auto it = mActive.find(status.order_id);
+        return it != mActive.end() && Ahead(it->second, status);
+    }
     // The orders last seen active, by venue order ID.
     std::map<std::string, Seen> Active() const {
         std::lock_guard lock(mMutex);
         return mActive;
     }
-    // Records `status` for a tracked order and returns whether it differs from
-    // what was last seen; a closed order is forgotten.
+    // Records `status` for a tracked order and returns whether it is ahead of
+    // what was last seen; a closed order is forgotten. A status behind the
+    // last one seen (a poll's snapshot overtaken by a pushed update while it
+    // was queued) is ignored, so the strategy never sees an order go back.
     bool Note(const types::OrderStatus& status) {
         std::lock_guard lock(mMutex);
         auto it = mActive.find(status.order_id);
-        if (it == mActive.end()) {
+        if (it == mActive.end() || !Ahead(it->second, status)) {
             return false;
         }
-        const bool changed = it->second.state != status.state ||
-                             it->second.filled != status.filled_quantity;
         if (types::IsActive(status.state)) {
             it->second = Seen{status.state, status.filled_quantity};
         } else {
             mActive.erase(it);
         }
-        return changed;
+        return true;
     }
     void Forget(const std::string& order_id) {
         std::lock_guard lock(mMutex);
@@ -112,6 +119,20 @@ class OrderTracker : public trading::TradingVenue {
     }
 
    private:
+    // An order only moves forward: more filled, or from new to partially
+    // filled, or closed. A closed status is always ahead (it is final, and a
+    // closed order is no longer tracked).
+    static bool Ahead(const Seen& seen, const types::OrderStatus& status) {
+        if (!types::IsActive(status.state)) {
+            return true;
+        }
+        if (status.filled_quantity != seen.filled) {
+            return status.filled_quantity > seen.filled;
+        }
+        return status.state == types::OrderState::kPartiallyFilled &&
+               seen.state == types::OrderState::kNew;
+    }
+
     const std::shared_ptr<trading::TradingVenue> mVenue;
     mutable std::mutex mMutex;
     std::map<std::string, Seen> mActive;
@@ -125,7 +146,8 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
       mVenue(std::move(venue)),
       mStrategy(std::move(strategy)),
       mOptions(std::move(options)),
-      mClock(std::move(clock)) {
+      mClock(std::move(clock)),
+      mName(mStrategy->Name()) {
     if (mOptions.risk) {
         mGate = std::make_shared<trading::RiskGatedVenue>(
             mVenue, *mOptions.risk, mClock);
@@ -141,7 +163,7 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     }
 }
 
-Runner::~Runner() = default;
+Runner::~Runner() { StopPoller(); }
 
 void Runner::Push(Event event) {
     {
@@ -294,6 +316,7 @@ types::Result<void> Runner::Begin() {
     }
 
     mRunStart = mFillCursor = mClock();
+    mPublishedCursor = mFillCursor.time_since_epoch().count();
     mSeenFills.clear();
     SubscribeExecutions();
     if (mRecorder) {
@@ -318,6 +341,11 @@ void Runner::End() {
         return;
     }
     mBegun = false;
+    // Nothing is queued by the poller from here on. A poll it queued behind
+    // the StopEvent is never handled: its fills are found again by the poll
+    // below (only with a recorder), its order changes are dropped, since the
+    // strategy is stopping.
+    StopPoller();
     if (mRecorder) {
         PollFills();  // fills that landed since the last poll
     }
@@ -340,15 +368,16 @@ types::Result<void> Runner::Run() {
     const auto interval =
         mPushed ? mOptions.fill_backstop_interval : mOptions.fill_poll_interval;
     const bool polling = interval > std::chrono::milliseconds::zero();
-    auto next_poll = std::chrono::steady_clock::now() + interval;
+    if (polling) {
+        StartPoller(interval);
+    }
     for (bool running = true; running;) {
-        auto event = Pop(polling ? std::optional(next_poll) : std::nullopt);
+        // The deadline only paces the recorder's ticks when nothing arrives.
+        auto event = Pop(polling ? std::optional(
+                                       std::chrono::steady_clock::now() + interval)
+                                 : std::nullopt);
         if (event) {
             running = Handle(*event);
-        }
-        if (polling && std::chrono::steady_clock::now() >= next_poll) {
-            Poll();
-            next_poll = std::chrono::steady_clock::now() + interval;
         }
         if (mRecorder) {
             mRecorder->Tick(mClock());
@@ -405,6 +434,8 @@ bool Runner::Handle(const Event& event) {
         HandleBar(*bar);
     } else if (const auto* execution = std::get_if<ExecutionEvent>(&event)) {
         HandleExecution(execution->update);
+    } else if (const auto* polled = std::get_if<PolledEvent>(&event)) {
+        DeliverPolled(*polled);
     } else if (const auto* quote = std::get_if<QuoteEvent>(&event)) {
         if (mGate || mRecorder) {
             if (auto price = QuotePrice(quote->quote)) {
@@ -502,26 +533,70 @@ void Runner::DeliverBar(const types::Symbol& symbol, types::Timeframe timeframe,
 
 std::size_t Runner::Poll() {
     const std::size_t fills = PollFills();
-    return fills + PollOrders();
+    return fills + DeliverPolled(PolledEvent{{}, FetchOrders()});
 }
 
-std::size_t Runner::PollOrders() {
+std::size_t Runner::PollFills() {
+    return DeliverPolled(PolledEvent{FetchFills(), {}});
+}
+
+void Runner::StartPoller(std::chrono::milliseconds interval) {
+    {
+        std::lock_guard lock(mPollerMutex);
+        mPollerStop = false;
+    }
+    mPoller = std::thread([this, interval] {
+        std::unique_lock lock(mPollerMutex);
+        while (!mPollerWake.wait_for(lock, interval,
+                                     [this] { return mPollerStop; })) {
+            lock.unlock();
+            // Venues return errors rather than throw, but an exception here
+            // would end the process: log it and poll again next time.
+            try {
+                PolledEvent polled{FetchFills(), FetchOrders()};
+                if (!polled.fills.empty() || !polled.orders.empty()) {
+                    Push(std::move(polled));
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("strategy {}: poll threw: {}", mName, e.what());
+            } catch (...) {
+                spdlog::error("strategy {}: poll threw a non-standard exception",
+                              mName);
+            }
+            lock.lock();
+        }
+    });
+}
+
+void Runner::StopPoller() {
+    if (!mPoller.joinable()) {
+        return;
+    }
+    {
+        std::lock_guard lock(mPollerMutex);
+        mPollerStop = true;
+    }
+    mPollerWake.notify_one();
+    mPoller.join();  // waits out a poll in flight
+}
+
+std::vector<types::OrderStatus> Runner::FetchOrders() {
     const auto tracked = mTracker->Active();
     if (tracked.empty()) {
-        return 0;
+        return {};
     }
     auto open = mVenue->GetOpenOrders();
     if (!open) {
-        spdlog::warn("strategy {}: could not read open orders: {}",
-                     mStrategy->Name(), open.error().ToString());
-        return 0;
+        spdlog::warn("strategy {}: could not read open orders: {}", mName,
+                     open.error().ToString());
+        return {};
     }
     std::map<std::string, const types::OrderStatus*> open_by_id;
     for (const types::OrderStatus& status : *open) {
         open_by_id[status.order_id] = &status;
     }
 
-    std::size_t delivered = 0;
+    std::vector<types::OrderStatus> changed;
     for (const auto& entry : tracked) {
         const std::string& order_id = entry.first;
         types::OrderStatus status;
@@ -532,8 +607,7 @@ std::size_t Runner::PollOrders() {
             auto closed = mVenue->GetOrder(order_id);
             if (!closed) {
                 spdlog::warn("strategy {}: could not look up order {}: {}",
-                             mStrategy->Name(), order_id,
-                             closed.error().ToString());
+                             mName, order_id, closed.error().ToString());
                 if (closed.error().category == ErrorCategory::kNotFound) {
                     mTracker->Forget(order_id);  // it will never be found
                 }
@@ -541,27 +615,27 @@ std::size_t Runner::PollOrders() {
             }
             status = std::move(*closed);
         }
-        if (mTracker->Note(status)) {
-            ++delivered;
-            Guarded("OnOrderUpdate",
-                    [&] { mStrategy->OnOrderUpdate(*this, status); });
+        // Checked again on delivery, where the tracker is updated.
+        if (mTracker->Changed(status)) {
+            changed.push_back(std::move(status));
         }
     }
-    return delivered;
+    return changed;
 }
 
-std::size_t Runner::PollFills() {
+std::vector<types::Fill> Runner::FetchFills() {
     // A pushed fill moves the cursor on, so a fill the push missed can be
     // older than it: with pushes, look back as far as the duplicate check
     // reaches.
+    const types::Timestamp cursor{
+        std::chrono::milliseconds(mPublishedCursor.load())};
     const types::Timestamp since =
-        mPushed ? std::max(mRunStart, mFillCursor - kSeenFillHorizon)
-                : mFillCursor;
+        mPushed ? std::max(mRunStart, cursor - kSeenFillHorizon) : cursor;
     auto fills = mVenue->GetFills(since);
     if (!fills) {
-        spdlog::warn("strategy {}: could not read fills: {}", mStrategy->Name(),
+        spdlog::warn("strategy {}: could not read fills: {}", mName,
                      fills.error().ToString());
-        return 0;
+        return {};
     }
     const auto by_time = [](const types::Fill& a, const types::Fill& b) {
         return a.time < b.time;
@@ -571,9 +645,12 @@ std::size_t Runner::PollFills() {
     if (!std::ranges::is_sorted(*fills, by_time)) {
         std::stable_sort(fills->begin(), fills->end(), by_time);
     }
+    return std::move(*fills);
+}
 
+std::size_t Runner::DeliverPolled(const PolledEvent& polled) {
     std::size_t delivered = 0;
-    for (const types::Fill& fill : *fills) {
+    for (const types::Fill& fill : polled.fills) {
         // GetFills includes fills at exactly the cursor, so the last poll's
         // newest fills come back every time; pushed ones come back too.
         if (DeliverFill(fill)) {
@@ -582,6 +659,13 @@ std::size_t Runner::PollFills() {
     }
     if (mRecorder) {
         mRecorder->Flush();
+    }
+    for (const types::OrderStatus& status : polled.orders) {
+        if (mTracker->Note(status)) {
+            ++delivered;
+            Guarded("OnOrderUpdate",
+                    [&] { mStrategy->OnOrderUpdate(*this, status); });
+        }
     }
     return delivered;
 }
@@ -600,6 +684,7 @@ bool Runner::DeliverFill(const types::Fill& fill) {
     }
     if (fill.time > mFillCursor) {
         mFillCursor = fill.time;
+        mPublishedCursor = mFillCursor.time_since_epoch().count();
         const types::Timestamp keep = mFillCursor - kSeenFillHorizon;
         std::erase_if(mSeenFills,
                       [keep](const auto& seen) { return seen.second < keep; });

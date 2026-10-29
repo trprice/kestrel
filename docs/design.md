@@ -60,7 +60,9 @@ In words:
    (`TradingVenue::StreamExecutions`; today the paper venue) has them queued
    as events the moment they happen, and the runner **polls** only as a
    backstop every `fill_backstop_interval` (30 s). Other venues are polled
-   every `fill_poll_interval` (1 s).
+   every `fill_poll_interval` (1 s). Polling runs on a thread of its own and
+   queues what it finds as an event, so the strategy never waits for a
+   poll's HTTP calls.
 5. If recording is on, the runner also gives each fill and the latest prices to
    the **recorder**, which keeps P&L and writes it to the database.
 
@@ -82,7 +84,7 @@ order, on one thread and a simulated clock.
 | `ApplySymbolRules` | Rounds an order to the symbol's tick and lot and refuses one under its minimum size or value; used by every venue. |
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
 | `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info and its bar history. `SmaCrossover` and `MarketMaker` are the two included. |
-| `Runner` | Owns one strategy. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders). Queues events (conflating quotes per symbol), runs the strategy on one thread, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
+| `Runner` | Owns one strategy, run on one thread, with venue polling on a second. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders). Queues events (conflating quotes per symbol), runs the strategy on one thread, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
 | `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`, `venue_latency`). |
@@ -103,6 +105,14 @@ provider; the providers know nothing about strategies.
   `CancelOrder`; the runner's execution callback also only enqueues.
 - **Run() thread**: the only thread that calls the strategy. It is free to call
   the venue over HTTP, take fills, and write to the database.
+- **Poller thread** (`Run()` only, when polling is on): every poll interval it
+  asks the venue for fills and for the state of the strategy's orders, and
+  queues what is new as one event. It reads the order tracker and a published
+  fill cursor, nothing else of the runner's; the duplicate check and every
+  hook stay on the Run() thread. `End()` joins it before the final poll and
+  `OnStop`. `Drain()` (backtests) polls on the calling thread instead, so a
+  backtest stays deterministic. A venue the poller calls must be safe to call
+  from two threads at once, as the paper and Binance.US venues are.
 - **Watch thread** (`run` only): collects SIGINT and SIGTERM and calls
   `Runner::Stop()`, which is not async-signal-safe.
 - **Quote writer thread** (`--store` only): inserts buffered quotes in batches.
