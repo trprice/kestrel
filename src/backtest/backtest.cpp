@@ -8,6 +8,7 @@
 
 namespace kestrel::backtest {
 
+using types::Decimal;
 using types::ErrorCategory;
 using types::MakeError;
 
@@ -95,7 +96,30 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
             }
             replay->AddBars(symbol, timeframe, std::move(*bars));
         }
-        if (needs.quotes) {
+        if (needs.quotes && stored.quotes_from_trades) {
+            if (!stored.trades) {
+                return MakeError(ErrorCategory::kNotFound,
+                                 "quotes from trades need the database's "
+                                 "market_trades");
+            }
+            auto trades = stored.trades->Load(std::string(source.Name()),
+                                              symbol, from, to);
+            if (!trades) {
+                return std::unexpected(trades.error());
+            }
+            if (trades->empty()) {
+                return MakeError(ErrorCategory::kNotFound,
+                                 "no stored trades for " + symbol + " from " +
+                                     std::string(source.Name()) +
+                                     " in the range; fetch them with "
+                                     "`trades --store`");
+            }
+            auto quotes = QuotesFromTrades(symbol, std::string(source.Name()),
+                                           *trades, info->tick_size);
+            spdlog::info("{}: {} quotes built from {} stored trades", symbol,
+                         quotes.size(), trades->size());
+            replay->AddQuotes(symbol, std::move(quotes));
+        } else if (needs.quotes) {
             if (!stored.quotes) {
                 return MakeError(ErrorCategory::kNotFound,
                                  "the strategy needs quotes, which are only "
@@ -118,6 +142,40 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
         }
     }
     return replay;
+}
+
+std::vector<types::Quote> QuotesFromTrades(
+    const types::Symbol& symbol, const std::string& venue,
+    std::span<const types::MarketTrade> trades, const types::Decimal& tick) {
+    std::vector<types::Quote> quotes;
+    quotes.reserve(trades.size());
+    std::optional<Decimal> bid;
+    std::optional<Decimal> ask;
+    for (const types::MarketTrade& trade : trades) {
+        if (trade.taker_side == types::Side::kSell) {
+            bid = trade.price;  // the seller hit the bid
+            if (ask && *ask <= *bid) {
+                ask = *bid + tick;
+            }
+        } else {
+            ask = trade.price;  // the buyer took the ask
+            if (bid && *bid >= *ask) {
+                bid = *ask - tick;
+            }
+        }
+        types::Quote q;
+        q.symbol = symbol;
+        q.venue = venue;
+        q.seq = static_cast<std::int64_t>(quotes.size()) + 1;
+        q.exchange_time = trade.time;
+        q.received_time = trade.time;
+        q.bid = bid;
+        q.ask = ask;
+        q.last = trade.price;
+        q.last_size = trade.quantity;
+        quotes.push_back(std::move(q));
+    }
+    return quotes;
 }
 
 types::Result<BacktestResult> RunBacktest(

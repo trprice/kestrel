@@ -18,6 +18,9 @@ using types::Result;
 namespace {
 
 constexpr std::size_t kMaxBarsPerRequest = 1000;
+constexpr std::size_t kMaxTradesPerRequest = 1000;
+// aggTrades refuses a startTime..endTime range longer than an hour.
+constexpr std::chrono::hours kTradeWindow{1};
 
 }  // namespace
 
@@ -180,6 +183,90 @@ Result<std::vector<types::Bar>> BinanceUSDataSource::GetBars(
         since = next;
     }
     return bars;
+}
+
+Result<std::vector<types::MarketTrade>> BinanceUSDataSource::GetTrades(
+    const types::Symbol& symbol, types::Timestamp start,
+    types::Timestamp end) {
+    auto native = ToBinanceUSSymbol(symbol);
+    if (!native) {
+        return std::unexpected(native.error());
+    }
+    if (end < start) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "GetTrades: end precedes start");
+    }
+
+    // An hour at a time by time; an hour with more than a page of trades is
+    // read on by trade ID (fromId cannot be combined with a time range).
+    std::vector<types::MarketTrade> trades;
+    types::Timestamp window = start;
+    std::optional<std::int64_t> from_id;
+    while (window < end) {
+        std::map<std::string, std::string> query = {
+            {"symbol", *native},
+            {"limit", std::to_string(kMaxTradesPerRequest)}};
+        const types::Timestamp window_end = std::min(window + kTradeWindow, end);
+        if (from_id) {
+            query["fromId"] = std::to_string(*from_id);
+        } else {
+            // endTime is inclusive, while the window's end is exclusive.
+            query["startTime"] = std::to_string(types::ToEpochMillis(window));
+            query["endTime"] =
+                std::to_string(types::ToEpochMillis(window_end) - 1);
+        }
+        auto result = Call("aggTrades", std::move(query));
+        if (!result) {
+            return std::unexpected(result.error());
+        }
+        if (!result->is_array()) {
+            return MakeError(ErrorCategory::kParse,
+                             "binanceus aggTrades: response is not an array");
+        }
+
+        bool past_window = false;
+        for (const auto& row : *result) {
+            // {"a": id, "p": price, "q": quantity, "T": time, "m": buyer is
+            //  maker, ...}
+            if (!row.is_object() || !row.contains("a") || !row.contains("T") ||
+                !row.contains("m") || !row["a"].is_number_integer() ||
+                !row["T"].is_number_integer() || !row["m"].is_boolean() ||
+                !row.contains("p") || !row.contains("q")) {
+                return MakeError(ErrorCategory::kParse,
+                                 "binanceus aggTrades: malformed trade");
+            }
+            auto price = util::JsonDecimal(row["p"]);
+            auto quantity = util::JsonDecimal(row["q"]);
+            if (!price || !quantity) {
+                return std::unexpected(!price ? price.error()
+                                              : quantity.error());
+            }
+            types::MarketTrade trade;
+            trade.trade_id = row["a"].get<std::int64_t>();
+            trade.time = types::FromEpochMillis(row["T"].get<std::int64_t>());
+            trade.price = *price;
+            trade.quantity = *quantity;
+            // The buyer was the maker, so the seller took liquidity.
+            trade.taker_side =
+                row["m"].get<bool>() ? types::Side::kSell : types::Side::kBuy;
+            if (trade.time >= window_end) {
+                past_window = true;  // read on by ID into the next window
+                break;
+            }
+            if (trade.time >= start &&
+                (trades.empty() || trade.trade_id > trades.back().trade_id)) {
+                trades.push_back(trade);
+            }
+        }
+
+        if (!past_window && result->size() == kMaxTradesPerRequest) {
+            from_id = result->back()["a"].get<std::int64_t>() + 1;
+            continue;  // more in this window
+        }
+        from_id.reset();
+        window = window_end;
+    }
+    return trades;
 }
 
 Result<std::unique_ptr<Subscription>> BinanceUSDataSource::StreamQuotes(

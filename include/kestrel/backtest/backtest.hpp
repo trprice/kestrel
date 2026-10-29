@@ -2,11 +2,14 @@
 
 #include <memory>
 #include <optional>
+#include <span>
+#include <string>
 #include <vector>
 
 #include "kestrel/backtest/replay_data_source.hpp"
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/db/bar_store.hpp"
+#include "kestrel/db/market_trade_store.hpp"
 #include "kestrel/db/quote_store.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
@@ -31,11 +34,30 @@ struct BacktestResult {
     std::vector<types::Balance> balances;
 };
 
-// Where LoadReplayData looks before going to the venue. Either may be null.
+// Where LoadReplayData looks before going to the venue. Any may be null.
 struct StoredData {
     db::BarStore* bars = nullptr;
     db::QuoteStore* quotes = nullptr;
+    db::MarketTradeStore* trades = nullptr;
+    // Build the quotes from `trades` (QuotesFromTrades) instead of reading
+    // `quotes`, for ranges where no quotes were recorded.
+    bool quotes_from_trades = false;
 };
+
+// Approximate quotes rebuilt from public trades, one per trade, for replaying
+// a range where no quotes were recorded. A seller taking liquidity shows that
+// the best bid was at the trade's price, a buyer that the best ask was, so
+// each quote carries the trade as last/last_size (at the trade's time) and the
+// latest bid and ask seen that way. When a trade puts one side through the
+// other, that other side is moved to one tick away. What is lost: book
+// changes without a trade (the quote stays stale until the next one, so a
+// strategy requotes less often than it would live), the size at the touch
+// (unknown, so under kConservative a resting order at the touch fills only
+// when a trade goes through its price, not at it), and a quote is
+// incomplete, without a bid or an ask, until each side has traded once.
+std::vector<types::Quote> QuotesFromTrades(
+    const types::Symbol& symbol, const std::string& venue,
+    std::span<const types::MarketTrade> trades, const types::Decimal& tick);
 
 // Fills a ReplayDataSource with what a backtest of `needs` over [from, to)
 // uses: symbol info for every symbol (always from `source`), each symbol's bars
@@ -50,7 +72,9 @@ struct StoredData {
 // from `source` instead, and the bars fetched are saved to `stored.bars` so the
 // next run finds them (a failed save is logged, not an error). Quotes can only
 // come from `stored.quotes`, as venues offer no history of them; kNotFound if
-// it is null or holds none for a symbol in the range.
+// it is null or holds none for a symbol in the range. With
+// `stored.quotes_from_trades` they are built from `stored.trades` instead,
+// kNotFound likewise.
 //
 // kInvalidArgument if `to` is not after `from`; kUnsupported for a calendar
 // timeframe (1M); otherwise the source's own error.

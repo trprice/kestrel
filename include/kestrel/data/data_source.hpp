@@ -65,6 +65,20 @@ class DataSource {
                                 std::string(Name()) + " does not stream bars");
     }
 
+    // Public trades with start <= time < end, oldest first. Pages through the
+    // provider's API. Providers without a trade history return
+    // kNotImplemented.
+    virtual types::Result<std::vector<types::MarketTrade>> GetTrades(
+        const types::Symbol& symbol, types::Timestamp start,
+        types::Timestamp end) {
+        (void)symbol;
+        (void)start;
+        (void)end;
+        return types::MakeError(
+            types::ErrorCategory::kNotImplemented,
+            std::string(Name()) + " has no trade history");
+    }
+
     // Tick size, lot size and minimum order size; fetched once, then cached.
     virtual types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) = 0;

@@ -56,6 +56,13 @@ class BinanceUSDataSource : public DataSource {
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) override;
 
+    // From /api/v3/aggTrades, which keeps every symbol's trades from its
+    // listing (ZEC/USDT: 2022-01-13). Each request covers at most an hour or
+    // 1000 trades, so a day of ZEC/USDT is about 20-40 requests.
+    types::Result<std::vector<types::MarketTrade>> GetTrades(
+        const types::Symbol& symbol, types::Timestamp start,
+        types::Timestamp end) override;
+
    private:
     // GET <base>/api/v3/<path>, returning the parsed body.
     types::Result<nlohmann::json> Call(

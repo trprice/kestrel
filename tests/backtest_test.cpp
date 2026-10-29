@@ -151,6 +151,63 @@ TEST(ReplayDataSourceTest, SortsQuotesAndEmitsToTheSubscription) {
     EXPECT_FALSE(data.EmitQuote(stored[1]));
 }
 
+types::MarketTrade TradeAt(std::int64_t id, int ms, const char* price,
+                           Side taker) {
+    types::MarketTrade t;
+    t.trade_id = id;
+    t.time = types::FromEpochMillis(1'700'000'000'000 + ms);
+    t.price = D(price);
+    t.quantity = D("0.004");
+    t.taker_side = taker;
+    return t;
+}
+
+TEST(QuotesFromTradesTest, EachTradeSetsTheSideItTookAndIsTheLastTrade) {
+    const std::vector<types::MarketTrade> trades = {
+        TradeAt(1, 0, "100.00", Side::kSell),   // bid 100, no ask yet
+        TradeAt(2, 10, "100.05", Side::kBuy),   // ask 100.05
+        TradeAt(3, 20, "100.01", Side::kSell),  // bid moves up
+    };
+    const auto quotes =
+        backtest::QuotesFromTrades("ZEC/USDT", "binanceus", trades, D("0.01"));
+    ASSERT_EQ(quotes.size(), 3u);
+    EXPECT_EQ(quotes[0].bid, D("100.00"));
+    EXPECT_FALSE(quotes[0].ask);
+    EXPECT_EQ(quotes[1].bid, D("100.00"));
+    EXPECT_EQ(quotes[1].ask, D("100.05"));
+    EXPECT_EQ(quotes[2].bid, D("100.01"));
+    EXPECT_EQ(quotes[2].ask, D("100.05"));
+    for (std::size_t i = 0; i < quotes.size(); ++i) {
+        EXPECT_EQ(quotes[i].symbol, "ZEC/USDT");
+        EXPECT_EQ(quotes[i].venue, "binanceus");
+        EXPECT_EQ(quotes[i].seq, static_cast<std::int64_t>(i) + 1);
+        EXPECT_EQ(quotes[i].last, trades[i].price);
+        EXPECT_EQ(quotes[i].last_size, trades[i].quantity);
+        EXPECT_EQ(quotes[i].exchange_time, trades[i].time);
+        EXPECT_EQ(quotes[i].received_time, trades[i].time);
+    }
+}
+
+TEST(QuotesFromTradesTest, ATradeThroughTheOtherSideMovesItATickAway) {
+    const std::vector<types::MarketTrade> trades = {
+        TradeAt(1, 0, "100.00", Side::kSell),
+        TradeAt(2, 10, "100.05", Side::kBuy),
+        TradeAt(3, 20, "100.10", Side::kSell),  // the bid is now above the ask
+        TradeAt(4, 30, "99.90", Side::kBuy),    // the ask is now below the bid
+    };
+    const auto quotes =
+        backtest::QuotesFromTrades("ZEC/USDT", "binanceus", trades, D("0.01"));
+    EXPECT_EQ(quotes[2].bid, D("100.10"));
+    EXPECT_EQ(quotes[2].ask, D("100.11"));
+    EXPECT_EQ(quotes[3].ask, D("99.90"));
+    EXPECT_EQ(quotes[3].bid, D("99.89"));
+    for (const auto& q : quotes) {
+        if (q.bid && q.ask) {
+            EXPECT_LT(*q.bid, *q.ask);
+        }
+    }
+}
+
 TEST(BacktestTest, RunsASmaCrossoverEndToEnd) {
     auto result = RunBacktest(Data(kCloses), Sma(), Options());
     ASSERT_OK(result);

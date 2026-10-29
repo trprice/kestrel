@@ -16,8 +16,11 @@ namespace {
 class BacktestCommand : public Command {
    public:
     BacktestCommand(std::string strategy_name, types::Timestamp from,
-                    types::Timestamp to)
-        : mName(std::move(strategy_name)), mFrom(from), mTo(to) {}
+                    types::Timestamp to, bool quotes_from_trades)
+        : mName(std::move(strategy_name)),
+          mFrom(from),
+          mTo(to),
+          mQuotesFromTrades(quotes_from_trades) {}
 
     int Run(const config::Configuration& config) override {
         auto limits = ResolveRiskLimits(mName, config);
@@ -39,13 +42,17 @@ class BacktestCommand : public Command {
         // cannot be reached, everything comes from the venue.
         std::unique_ptr<db::BarStore> bar_store;
         std::unique_ptr<db::QuoteStore> quote_store;
+        std::unique_ptr<db::MarketTradeStore> trade_store;
         backtest::StoredData stored;
+        stored.quotes_from_trades = mQuotesFromTrades;
         auto database = OpenDatabase(config);
         if (database) {
             bar_store = std::make_unique<db::BarStore>(*database);
             quote_store = std::make_unique<db::QuoteStore>(*database);
+            trade_store = std::make_unique<db::MarketTradeStore>(*database);
             stored.bars = bar_store.get();
             stored.quotes = quote_store.get();
+            stored.trades = trade_store.get();
         } else if (database.error().category !=
                    types::ErrorCategory::kNotFound) {
             spdlog::warn("database unavailable, using the venue: {}",
@@ -101,12 +108,14 @@ class BacktestCommand : public Command {
     std::string mName;
     types::Timestamp mFrom;
     types::Timestamp mTo;
+    bool mQuotesFromTrades;
 };
 
 struct Args {
     std::string strategy;
     std::string from;
     std::string to;
+    bool quotes_from_trades = false;
 };
 
 }  // namespace
@@ -128,10 +137,14 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
         ->required()
         ->check(DateValidator())
         ->type_name("DATE");
+    sub->add_flag("--quotes-from-trades", args->quotes_from_trades,
+                  "Replay quotes rebuilt from stored trades (`trades --store`) "
+                  "instead of recorded quotes; approximate, see "
+                  "docs/database.md");
     sub->callback([&slot, args] {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
-            *types::ParseTimestamp(args->to));
+            *types::ParseTimestamp(args->to), args->quotes_from_trades);
     });
 }
 

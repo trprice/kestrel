@@ -4,6 +4,7 @@
 #include <string>
 
 #include "kestrel/types/decimal.hpp"
+#include "kestrel/types/orders.hpp"
 #include "kestrel/types/symbol.hpp"
 #include "kestrel/types/time.hpp"
 #include "kestrel/types/timeframe.hpp"
@@ -40,6 +41,16 @@ struct Quote {
     // partial updates accumulate into the latest known state. received_time and
     // exchange_time always follow the update.
     void MergeFrom(const Quote& update);
+};
+
+// One public trade on the venue (anyone's, not the account's), with the side
+// that took liquidity: a buyer taking the ask, or a seller hitting the bid.
+struct MarketTrade {
+    std::int64_t trade_id = 0;  // the venue's, increasing with time
+    Timestamp time;
+    Decimal price;
+    Decimal quantity;
+    Side taker_side = Side::kBuy;
 };
 
 struct SymbolInfo {

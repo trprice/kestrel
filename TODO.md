@@ -169,7 +169,12 @@ the header of the code concerned.
 ### Backtesting (`backtest/backtest.hpp`)
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
   quotes replay stored quotes (`QuoteStore`); there are no stored quotes for
-  a range that was never recorded.
+  a range that was never recorded. `--quotes-from-trades` replays quotes
+  rebuilt from stored public trades (`trades --store`, Binance.US) instead:
+  stale between trades, no size at the touch (so the conservative model
+  never fills at our price, only through it), and a side missing until it
+  has traded. How far it moves results from a quote-based replay is still to
+  be measured on a range that has both.
 - Resting limit orders fill per `[paper] limit_fill_model`. `cross` (the
   default) is optimistic for quoting strategies. `conservative` models queue
   position from trades, so it needs stored quotes carrying `last`/`last_size`
@@ -373,7 +378,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Order and cancel latency in the paper venue, so a quote can fill an
       order that the strategy has already asked to cancel
 - [ ] Record the aggressor side of trades (Binance `m` flag) so trades can be
-      attributed to the right side of the book
+      attributed to the right side of the book. Done for the stored trade
+      history (`market_trades.taker_side`); the live quote stream still
+      merges a trade into the quote without its side.
 - [ ] Benchmark comparison against buy-and-hold
 
 ### Risk

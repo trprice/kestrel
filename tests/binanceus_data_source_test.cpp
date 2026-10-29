@@ -161,6 +161,97 @@ TEST(BinanceUSGetBars, MalformedResponseIsAParseError) {
     EXPECT_EQ(bars.error().category, types::ErrorCategory::kParse);
 }
 
+std::string AggTrade(std::int64_t id, std::int64_t t, bool buyer_is_maker,
+                     const char* price = "1240.50") {
+    return "{\"a\":" + std::to_string(id) + ",\"p\":\"" + price +
+           "\",\"q\":\"0.004\",\"f\":1,\"l\":1,\"T\":" + std::to_string(t) +
+           ",\"m\":" + (buyer_is_maker ? "true" : "false") + ",\"M\":true}";
+}
+
+std::string AggTrades(std::int64_t first_id, std::int64_t t, std::size_t n) {
+    std::string rows;
+    for (std::size_t i = 0; i < n; ++i) {
+        rows += (rows.empty() ? "" : ",") +
+                AggTrade(first_id + static_cast<std::int64_t>(i),
+                         t + static_cast<std::int64_t>(i), i % 2 == 0);
+    }
+    return "[" + rows + "]";
+}
+
+TEST(BinanceUSGetTrades, ReadsTradesAndTheSideThatTookLiquidity) {
+    Fixture f;
+    auto source = f.MakeSource();
+    f.http->Push("[" + AggTrade(7, kBase + 10, true) + "," +
+                 AggTrade(8, kBase + 20, false, "1241.00") + "]");
+    auto trades = source.GetTrades("ZEC/USDT", types::FromEpochMillis(kBase),
+                                   types::FromEpochMillis(kBase + kHourMs));
+    ASSERT_OK(trades);
+    ASSERT_EQ(trades->size(), 2u);
+    EXPECT_EQ((*trades)[0].trade_id, 7);
+    EXPECT_EQ((*trades)[0].time, types::FromEpochMillis(kBase + 10));
+    EXPECT_EQ((*trades)[0].price, D("1240.50"));
+    EXPECT_EQ((*trades)[0].quantity, D("0.004"));
+    EXPECT_EQ((*trades)[0].taker_side, types::Side::kSell);  // buyer was maker
+    EXPECT_EQ((*trades)[1].taker_side, types::Side::kBuy);
+
+    ASSERT_EQ(f.http->requests.size(), 1u);
+    const auto& q = f.http->requests[0].query;
+    EXPECT_EQ(f.http->requests[0].url, "https://api.binance.us/api/v3/aggTrades");
+    EXPECT_EQ(q.at("symbol"), "ZECUSDT");
+    EXPECT_EQ(q.at("startTime"), std::to_string(kBase));
+    EXPECT_EQ(q.at("endTime"), std::to_string(kBase + kHourMs - 1));
+    EXPECT_EQ(q.at("limit"), "1000");
+}
+
+TEST(BinanceUSGetTrades, AsksAnHourAtATimeAndReadsOnByIdInABusyHour) {
+    Fixture f;
+    auto source = f.MakeSource();
+    // Hour one: a full page, then by ID: 3 more, then one already in hour two.
+    f.http->Push(AggTrades(100, kBase, 1000));
+    f.http->Push("[" + AggTrade(1100, kBase + 5000, true) + "," +
+                 AggTrade(1101, kBase + 6000, true) + "," +
+                 AggTrade(1102, kBase + 7000, true) + "," +
+                 AggTrade(1103, kBase + kHourMs + 5, true) + "]");
+    // Hour two, by time again: the trade read early comes back once more.
+    f.http->Push("[" + AggTrade(1103, kBase + kHourMs + 5, true) + "]");
+    auto trades =
+        source.GetTrades("ZEC/USDT", types::FromEpochMillis(kBase),
+                         types::FromEpochMillis(kBase + 2 * kHourMs));
+    ASSERT_OK(trades);
+    ASSERT_EQ(trades->size(), 1004u);
+    EXPECT_EQ(trades->back().trade_id, 1103);  // once, not twice
+    for (std::size_t i = 1; i < trades->size(); ++i) {
+        ASSERT_GT((*trades)[i].trade_id, (*trades)[i - 1].trade_id);
+    }
+
+    ASSERT_EQ(f.http->requests.size(), 3u);
+    EXPECT_EQ(f.http->requests[1].query.at("fromId"), "1100");
+    EXPECT_FALSE(f.http->requests[1].query.contains("startTime"));
+    EXPECT_EQ(f.http->requests[2].query.at("startTime"),
+              std::to_string(kBase + kHourMs));
+    EXPECT_EQ(f.http->requests[2].query.at("endTime"),
+              std::to_string(kBase + 2 * kHourMs - 1));
+}
+
+TEST(BinanceUSGetTrades, AQuietHourCostsOneRequestAndAMalformedTradeFails) {
+    Fixture f;
+    auto source = f.MakeSource();
+    f.http->Push("[]");
+    f.http->Push("[]");
+    auto trades =
+        source.GetTrades("ZEC/USDT", types::FromEpochMillis(kBase),
+                         types::FromEpochMillis(kBase + 2 * kHourMs));
+    ASSERT_OK(trades);
+    EXPECT_TRUE(trades->empty());
+    EXPECT_EQ(f.http->requests.size(), 2u);
+
+    f.http->Push(R"([{"a":1,"p":"1","q":"1","T":"soon","m":true}])");
+    auto bad = source.GetTrades("ZEC/USDT", types::FromEpochMillis(kBase),
+                                types::FromEpochMillis(kBase + kHourMs));
+    ASSERT_FALSE(bad);
+    EXPECT_EQ(bad.error().category, types::ErrorCategory::kParse);
+}
+
 TEST(BinanceUSSymbolInfo, ParsedFromExchangeInfoAndCached) {
     Fixture f;
     f.http->Push(R"({"symbols":[{"symbol":"BTCUSD","filters":[

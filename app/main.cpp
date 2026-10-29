@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
     app::AddInitDbCommand(app, command);
     app::AddRunCommand(app, command);
     app::AddBacktestCommand(app, command);
+    app::AddTradesCommand(app, command);
 
     CLI11_PARSE(app, argc, argv);
 

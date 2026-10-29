@@ -17,7 +17,8 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date>` | replays a strategy over stored bars and quotes |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) |
+| `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
 | `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] (--test \| --confirm)` | one order on the live venue; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |

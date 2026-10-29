@@ -79,6 +79,7 @@ add_library(kestrel
   src/db/bar_store.cpp
   src/db/quote_store.cpp
   src/db/account_fill_store.cpp
+  src/db/market_trade_store.cpp
   src/db/trade_store.cpp
   src/trading/order_rules.cpp
   src/trading/pnl_tracker.cpp
@@ -126,6 +127,7 @@ if(KESTREL_BUILD_APP)
     app/commands/stream_bars.cpp
     app/commands/run.cpp
     app/commands/backtest.cpp
+    app/commands/trades.cpp
   )
   target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
@@ -189,6 +191,7 @@ if(KESTREL_BUILD_TESTS)
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
     tests/account_fill_store_test.cpp
+    tests/market_trade_store_test.cpp
     tests/trade_store_test.cpp
     tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp

@@ -133,6 +133,22 @@ CREATE TABLE account_fills (
 CREATE INDEX account_fills_venue_symbol_time
     ON account_fills (venue, symbol, fill_time);
 )sql"},
+        {7, "create market trade hypertable", R"sql(
+CREATE TABLE market_trades (
+    venue      TEXT        NOT NULL,
+    symbol     TEXT        NOT NULL,
+    trade_id   BIGINT      NOT NULL,
+    trade_time TIMESTAMPTZ NOT NULL,
+    price      NUMERIC     NOT NULL,
+    quantity   NUMERIC     NOT NULL,
+    taker_side TEXT        NOT NULL,
+    PRIMARY KEY (venue, symbol, trade_id, trade_time)
+);
+SELECT create_hypertable('market_trades', 'trade_time',
+                         chunk_time_interval => INTERVAL '7 days');
+CREATE INDEX market_trades_venue_symbol_time
+    ON market_trades (venue, symbol, trade_time);
+)sql"},
     };
     return kMigrations;
 }

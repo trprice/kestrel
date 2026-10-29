@@ -33,6 +33,7 @@ automatically on startup (`src/db/migrations.cpp`, append-only).
 | `quotes` | `stream --store` | hypertable chunked per day: one row per delivered quote |
 | `runs`, `fills`, `pnl_snapshots`, `pnl_totals`, `venue_latency` | `run` with `[recording]` | one run's record; see below |
 | `account_fills` | `account --store` | the account's whole trade history; see below |
+| `market_trades` | `trades --store` | hypertable chunked per week: every public trade on the venue, keyed by venue, symbol, trade ID; see below |
 | `schema_migrations` | every command that opens the database | which migrations have been applied |
 
 ## Market data
@@ -58,6 +59,40 @@ millisecond; reads are ordered by it. `bookTicker` updates are frequent:
 expect many rows per symbol per minute. Quotes are the one table that grows
 fast (tens of MB a day per symbol); see the retention item in
 [TODO.md](../TODO.md).
+
+### Trade history, for backtests without recorded quotes
+
+Venues keep no history of their quotes, but Binance.US keeps every public
+trade, back to each symbol's listing (ZEC/USDT: 2022-01-13), each with the
+side that took liquidity. `trades` fetches them for the `[general] symbols`
+a day at a time; no credentials are needed:
+
+```sh
+./build/kestrel_app -c config/kestrel.toml trades --from 2026-09-29 --to 2026-10-30 --store
+./build/kestrel_app -c config/kestrel.toml backtest market_maker \
+    --from 2026-10-01 --to 2026-10-08 --quotes-from-trades
+```
+
+Each request covers at most an hour or 1000 trades, so a day of ZEC/USDT is
+about 20-40 requests, held to the data source's 10 requests a second. With
+`--store`, each day starts from its newest stored trade and a trade already
+stored is skipped, so an interrupted backfill can simply be run again.
+
+`backtest --quotes-from-trades` replays quotes rebuilt from the stored trades
+(`backtest::QuotesFromTrades`) instead of recorded ones: one quote per trade,
+with the trade as the last trade, and a seller taking liquidity setting the
+bid (a buyer, the ask). It is an approximation:
+
+- the book changes between trades are not seen, so quotes are stale until
+  the next trade and a strategy requotes less often than it would live;
+- the size at the touch is unknown, so under `limit_fill_model =
+  "conservative"` a resting order at the touch fills only when a trade goes
+  through its price, never at it (pessimistic);
+- a side is missing until it has traded once, and a trade through the other
+  side moves that side to one tick away.
+
+Compare a trade-based backtest with a quote-based one over a range that has
+both before relying on it.
 
 ## Recording a run
 

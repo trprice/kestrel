@@ -88,7 +88,7 @@ order, on one thread and a simulated clock.
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
 | `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`, `venue_latency`). |
-| `Database`, `BarStore`, `QuoteStore`/`QuoteWriter`, `AccountFillStore` (`db/`) | The connection, schema migrations, and the bar, quote and account-fill tables. `QuoteWriter` buffers on the WebSocket thread and inserts from a background thread. |
+| `Database`, `BarStore`, `QuoteStore`/`QuoteWriter`, `AccountFillStore`, `MarketTradeStore` (`db/`) | The connection, schema migrations, and the bar, quote, account-fill and public-trade tables. `QuoteWriter` buffers on the WebSocket thread and inserts from a background thread. |
 | `app/commands/*` | One class per subcommand. Each parses its arguments, calls the factory and drives the result; `run` also owns the signal-watching thread that calls `Runner::Stop()`. |
 
 Dependencies point one way: `app` uses `factory`, which uses everything else;
@@ -168,7 +168,8 @@ include/kestrel/   public headers, one directory per area:
   net/               HTTP client and its timing wrapper
   config/            configuration, credentials, Schwab token store
   data/              DataSource and the provider data sources, streams
-  db/                database; bar, quote, trade and account-fill stores
+  db/                database; bar, quote, trade, account-fill and
+                     market-trade stores
   trading/           TradingVenue, paper and live venues, Binance.US API,
                      order rules, PnlTracker, RiskGatedVenue
   strategy/          Strategy, Runner, RunRecorder, SmaCrossover, MarketMaker
@@ -178,7 +179,7 @@ include/kestrel/   public headers, one directory per area:
 src/               implementation, same directories (plus factory.cpp)
 app/main.cpp       kestrel_app: parses the command line and runs one command
 app/commands/      one class per subcommand (bars, account, order, cancel,
-                   stream, stream-bars, init-db, run, backtest);
+                   stream, stream-bars, init-db, run, backtest, trades);
                    command.hpp is the interface
 app/common.*       helpers shared by the commands (argument validators, printing)
 tests/             kestrel_tests; tests/data and cli_check.cmake drive the cli_* tests
