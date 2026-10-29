@@ -277,8 +277,8 @@ from `kestrel_app run` and `backtest`.
       signal computed on a close at that same close is a look-ahead), keeping
       fill-on-close as an option; use bar high/low for limit and stop order
       triggering
-- [x] Document how to write a strategy in the README (hooks, threading rules,
-      `Context`, the risk gate)
+- [x] Document how to write a strategy (docs/writing-strategies.md: hooks,
+      threading rules, `Context`, the risk gate)
 
 ## Projects
 
@@ -333,10 +333,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       runs can model live latency instead of seeing fills instantly.
 - [ ] Re-verify the timeframe lists for Schwab, Kraken and Binance.US against
       each provider's docs before completing the stubs. The lists in the code
-      and README came from memory.
+      and docs/design.md came from memory.
 
 ### Strategies
-- [ ] Agent access (listed as out of scope in the README). What it should look
+- [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
 - [ ] Indicators library (SMA/EMA, RSI, ATR, Bollinger, MACD) as small
       reusable pieces so strategies do not each reimplement them

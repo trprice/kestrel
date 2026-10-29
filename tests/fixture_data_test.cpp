@@ -1,7 +1,8 @@
 // Database tests against the market data checked in under tests/data/market
 // (real Kraken and Binance.US bars and quotes), so they need no venue
 // credentials. Like the other store tests they run only when
-// KESTREL_TEST_DBNAME is set; see README "Database integration tests".
+// KESTREL_TEST_DBNAME is set; see "Database integration tests" in
+// docs/testing.md.
 
 #include <map>
 

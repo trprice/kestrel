@@ -16,7 +16,8 @@ user   = "kestrel"
 # password: KESTREL_DATABASE_PASSWORD
 
 # Uncomment to store the fills, a P&L snapshot and the venue's response times
-# every minute of `run` in the database above; see "Recording a run" in the README.
+# every minute of `run` in the database above; see "Recording a run" in
+# docs/database.md.
 # [recording]
 # enabled = true
 
