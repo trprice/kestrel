@@ -22,6 +22,7 @@ struct OrderArgs {
     std::string stop;
     std::string tif = "gtc";
     std::string client_id;
+    bool post_only = false;
     bool test = false;
     bool confirm = false;
 };
@@ -122,6 +123,7 @@ class OrderCommand : public Command {
                           : mArgs.tif == "fok" ? types::TimeInForce::kFok
                           : mArgs.tif == "day" ? types::TimeInForce::kDay
                                                : types::TimeInForce::kGtc;
+        r.post_only = mArgs.post_only;
         return r;
     }
 
@@ -208,6 +210,8 @@ void AddOrderCommand(CLI::App& app, CommandSlot& slot) {
     sub->add_option("--stop", args->stop, "Stop price (a stop-market order)");
     sub->add_option("--tif", args->tif, "gtc (default), ioc, fok or day")
         ->check(CLI::IsMember({"gtc", "ioc", "fok", "day"}));
+    sub->add_flag("--post-only", args->post_only,
+                  "With --limit: refused instead of taking liquidity");
     sub->add_option("--client-id", args->client_id,
                     "Client order ID (default: a generated kst-... ID)");
     sub->add_flag("--test", args->test,

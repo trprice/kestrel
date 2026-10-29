@@ -20,6 +20,13 @@ types::Result<types::OrderRequest> ApplySymbolRules(
                          "order quantity must be positive");
     }
 
+    if (request.post_only &&
+        (request.type != OrderType::kLimit ||
+         request.time_in_force != types::TimeInForce::kGtc)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "a post-only order must be a GTC limit order");
+    }
+
     types::OrderRequest out = request;
     if (request.type == OrderType::kLimit) {
         if (!request.limit_price || request.limit_price->Sign() <= 0) {

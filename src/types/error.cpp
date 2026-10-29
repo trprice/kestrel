@@ -16,6 +16,8 @@ std::string_view ToString(ErrorCategory category) {
             return "auth";
         case ErrorCategory::kRejected:
             return "rejected";
+        case ErrorCategory::kWouldTake:
+            return "would_take";
         case ErrorCategory::kInsufficientFunds:
             return "insufficient_funds";
         case ErrorCategory::kNotFound:

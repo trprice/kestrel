@@ -88,6 +88,10 @@ struct MarketMakerParams {
     // Replace a quote older than this even if its price is still right;
     // zero never does.
     std::chrono::milliseconds max_quote_age{0};
+    // Quote with post-only orders: a quote that would cross the book on
+    // arrival is refused by the venue instead of filling as a taker, and the
+    // next quote tries again.
+    bool post_only = false;
     MarketMakerProtection protection;
 };
 
@@ -213,6 +217,7 @@ class MarketMaker : public Strategy {
     types::Timestamp mCooldownUntil;  // stop-out cooldown ends
     std::optional<Exit> mExit;
     bool mHalted = false;
+    std::size_t mWouldTake = 0;  // post-only quotes refused, for the log
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
     std::map<std::string, Unconfirmed> mUnconfirmed;  // by order ID
 };

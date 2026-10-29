@@ -196,7 +196,7 @@ TEST(BinanceUSApi, ReportsBinanceErrorCodes) {
         "{\"code\":-2010,\"msg\":\"Account has insufficient balance\"}");
     f.http->PushStatus(
         "/api/v3/order", 400,
-        "{\"code\":-2010,\"msg\":\"Order would immediately match.\"}");
+        "{\"code\":-2010,\"msg\":\"Stop price would trigger immediately.\"}");
     auto api = f.Api();
 
     auto missing =

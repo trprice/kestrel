@@ -117,6 +117,7 @@ are errors, and the symbol must be listed in `[general] symbols`.
 | `skew_bps` | how far the reservation price leans when the position is `max_inventory` away (default 0) |
 | `requote_bps` | how far the target must move before a resting quote is replaced (default 1) |
 | `max_quote_age_ms` | replace a quote older than this even if its price is right (0, the default: never) |
+| `post_only` | quote with post-only orders, which the venue refuses instead of filling as a taker; recommended live (default `false`) |
 
 Drawdown protection is opt-in, one rule at a time, each with its own
 parameters: `stop_loss`, `loss_cap`, `drawdown_cap`, `spike_standdown`,

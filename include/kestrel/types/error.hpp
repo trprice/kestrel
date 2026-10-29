@@ -16,6 +16,7 @@ enum class ErrorCategory {
     kRateLimit,  // provider told us to slow down
     kAuth,       // bad/expired credentials or signature
     kRejected,   // provider refused the request
+    kWouldTake,  // a post-only order that would have taken liquidity
     kInsufficientFunds,
     kNotFound,        // unknown symbol / order
     kUnsupported,     // provider can't do this (e.g. unsupported timeframe)

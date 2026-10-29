@@ -137,8 +137,15 @@ the header of the code concerned.
 - Rules run only when a quote arrives, so a silent feed trips none of them.
 - No volatility scaling of the spread, and no pulling of quotes when the feed
   goes quiet: it only acts when a quote arrives.
-- Inventory is the base-asset balance at start and the fills since; a fee
-  charged in the base asset (Binance without BNB) is not deducted from it.
+- Inventory is the base-asset balance at start and the fills since, less any
+  fee charged in the base asset (Binance.US takes a taker buy's fee from the
+  ZEC bought). Before that was deducted, live run 10 (2026-10-29) had 99 sells
+  refused for the balance. The fee leaves dust under the lot size that is
+  never sold.
+- `post_only = true` stops a quote from filling as a taker when the book
+  moves through it while the order is in flight (41 of 106 fills in run 10).
+  A refused quote is retried on the next quote; a backtest never sees one,
+  since the paper venue matches against the same book the strategy saw.
 - Each requote goes to the back of the queue, so a tight `requote_bps` costs
   fills under `limit_fill_model = "conservative"`. The ZEC/USDT example
   replaces a quote on about every other update (29.5k placements for 51k

@@ -246,6 +246,34 @@ TEST(PaperLimit, MarketableOnArrivalTakesTheTouch) {
     EXPECT_EQ(Bal(*venue, "USD").total, D("4980"));
 }
 
+TEST(PaperLimit, APostOnlyOrderThatWouldTakeIsRefused) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto buy = Order(Side::kBuy, OrderType::kLimit, "0.1", "50000.0");
+    buy.post_only = true;
+    auto refused = venue->PlaceOrder(buy);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().category, types::ErrorCategory::kWouldTake);
+    auto sell = Order(Side::kSell, OrderType::kLimit, "0.1", "49990.0");
+    sell.post_only = true;
+    EXPECT_EQ(venue->PlaceOrder(sell).error().category,
+              types::ErrorCategory::kWouldTake);
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));  // nothing was booked
+
+    // One tick behind the touch rests, and fills later as a maker.
+    buy.limit_price = D("49999.9");
+    auto ack = venue->PlaceOrder(buy);
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kNew);
+    venue->OnQuote(Q("49980.0", "49990.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_EQ(fills->size(), 1u);
+    EXPECT_EQ(fills->at(0).liquidity, types::Liquidity::kMaker);
+}
+
 TEST(PaperLimit, SellLimitRestsUntilBidReachesIt) {
     Fixture f;
     f.options.initial_balances["BTC"] = D("1");

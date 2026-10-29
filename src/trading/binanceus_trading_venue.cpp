@@ -370,6 +370,12 @@ Result<BinanceUSApi::Params> BinanceUSTradingVenue::OrderParams(
             params.emplace_back("type", "MARKET");
             break;
         case types::OrderType::kLimit:
+            if (ruled->post_only) {
+                // Refused with -2010 if it would match at once; no time in
+                // force (it is always GTC).
+                params.emplace_back("type", "LIMIT_MAKER");
+                break;
+            }
             params.emplace_back("type", "LIMIT");
             params.emplace_back(
                 "timeInForce",

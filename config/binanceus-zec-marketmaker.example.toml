@@ -35,6 +35,7 @@ half_spread_bps  = 2           # the market's own half-spread is about 1.5
 max_inventory    = "0.5"       # ZEC either side of the starting 2
 skew_bps         = 4
 requote_bps      = 0.5
+# post_only      = true        # refuse instead of filling as a taker (live)
 
 # Drawdown protection. Every rule is off until its flag is set to true; the
 # numbers shown are the defaults (loss_cap_amount and drawdown_cap_amount have

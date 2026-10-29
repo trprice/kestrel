@@ -8,13 +8,14 @@ using types::ErrorCategory;
 
 namespace {
 
-bool MentionsBalance(std::string text) {
+// Whether `text` contains `words` (lower case), in any case.
+bool Mentions(std::string text, std::string_view words) {
     for (auto& c : text) {
         if (c >= 'A' && c <= 'Z') {
             c = static_cast<char>(c - 'A' + 'a');
         }
     }
-    return text.find("balance") != std::string::npos;
+    return text.find(words) != std::string::npos;
 }
 
 }  // namespace
@@ -37,7 +38,10 @@ types::Error RefineBinanceUSError(types::Error err) {
         err.category = ErrorCategory::kRateLimit;
     } else if (code == -2014 || code == -2015 || code == -1022) {
         err.category = ErrorCategory::kAuth;
-    } else if (code == -2010 && MentionsBalance(err.message)) {
+    } else if (code == -2010 && Mentions(err.message, "immediately match")) {
+        // "Order would immediately match and take.": a LIMIT_MAKER refused.
+        err.category = ErrorCategory::kWouldTake;
+    } else if (code == -2010 && Mentions(err.message, "balance")) {
         // -2010 is any refused new order (it would match a LIMIT_MAKER, the
         // stop would trigger at once, the market is closed...), so only one
         // that talks about the balance is a shortage of funds. Binance's

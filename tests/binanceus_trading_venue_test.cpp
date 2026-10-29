@@ -808,7 +808,32 @@ TEST(BinanceUSOrders, ABalanceRefusalInOtherWordsIsStillInsufficientFunds) {
     EXPECT_EQ(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"))
                   .error()
                   .category,
-              types::ErrorCategory::kRejected);
+              types::ErrorCategory::kWouldTake);
+}
+
+TEST(BinanceUSOrders, APostOnlyOrderIsALimitMakerWithNoTimeInForce) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order", Placed(43, "x", "NEW"));
+    auto request = Limit(types::Side::kSell, "0.004", "1300.004");
+    request.post_only = true;
+    ASSERT_OK(venue->PlaceOrder(request));
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 1u);
+    const auto& q = sent[0].raw_query;
+    EXPECT_EQ(QueryValue(q, "type"), "LIMIT_MAKER");
+    EXPECT_EQ(QueryValue(q, "timeInForce"), "");
+    EXPECT_EQ(QueryValue(q, "price"), "1300.01");  // a sell rounds up
+
+    // Only a GTC limit can be post-only; refused before anything is sent.
+    request.time_in_force = types::TimeInForce::kIoc;
+    EXPECT_EQ(venue->PlaceOrder(request).error().category,
+              types::ErrorCategory::kInvalidArgument);
+    request.time_in_force = types::TimeInForce::kGtc;
+    request.type = types::OrderType::kMarket;
+    EXPECT_EQ(venue->PlaceOrder(request).error().category,
+              types::ErrorCategory::kInvalidArgument);
+    EXPECT_EQ(f.http->To("/api/v3/order").size(), 1u);
 }
 
 TEST(BinanceUSOrders, NewOrdersAreHeldToTheOrderRate) {

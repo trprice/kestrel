@@ -24,6 +24,9 @@ class RecordingVenue : public trading::TradingVenue {
         if (reject_orders) {
             return types::MakeError(types::ErrorCategory::kRejected, "no");
         }
+        if (reject_category) {
+            return types::MakeError(*reject_category, "no");
+        }
         orders.push_back(request);
         return types::OrderAcknowledgement{
             "order-" + std::to_string(orders.size()), request.client_order_id,
@@ -93,6 +96,7 @@ class RecordingVenue : public trading::TradingVenue {
     // Set before the venue is shared with other threads.
     bool pushes = false;
     bool reject_orders = false;
+    std::optional<types::ErrorCategory> reject_category;  // refuse with this
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;

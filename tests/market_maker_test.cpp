@@ -331,6 +331,41 @@ TEST(MarketMakerTest, WaitsOutACancelThatLostToAFill) {
     EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
 }
 
+TEST(MarketMakerTest, AFeeInTheBaseAssetLeavesLessToSell) {
+    Maker m("0");
+    // A taker buy of 0.5 that paid its fee in ZEC: 0.4999 is held, and the
+    // lot is 0.001, so the ask can offer 0.499 and no more.
+    auto fill = FillOf(Side::kBuy, "0.5", "order-1");
+    fill.fee = D("0.0001");
+    fill.fee_asset = "ZEC";
+    m.strategy.OnFill(m.context, fill);
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kFilled));
+    m.Quote("99.99", "100.01");
+    std::optional<types::OrderRequest> ask;
+    for (const auto& order : m.Orders()) {
+        if (order.side == Side::kSell) {
+            ask = order;
+        }
+    }
+    ASSERT_TRUE(ask);
+    EXPECT_EQ(ask->quantity, D("0.499"));
+}
+
+TEST(MarketMakerTest, QuotesPostOnlyWhenAskedAndRetriesARefusal) {
+    MarketMakerParams p = Params();
+    p.post_only = true;
+    Maker m("1", p);
+    m.context.venue.reject_category = types::ErrorCategory::kWouldTake;
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 2);  // both refused
+    m.context.venue.reject_category.reset();
+    m.Quote("99.99", "100.01");  // the same book: tried again
+    ASSERT_EQ(m.Orders().size(), 2u);
+    EXPECT_TRUE(m.Orders()[0].post_only);
+    EXPECT_TRUE(m.Orders()[1].post_only);
+}
+
 TEST(MarketMakerTest, QuotesAgainAfterARestingQuoteIsRejectedOrExpires) {
     Maker m;
     m.Quote("99.99", "100.01");

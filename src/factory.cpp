@@ -363,6 +363,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     auto skew = p.Number("skew_bps", params.skew_bps);
     auto requote = p.Number("requote_bps", params.requote_bps);
     auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
+    auto post_only = p.Flag("post_only", params.post_only);
     auto protection = ReadProtection(p, params.protection);
     if (!symbol) return std::unexpected(symbol.error());
     if (!quantity) return std::unexpected(quantity.error());
@@ -371,6 +372,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!skew) return std::unexpected(skew.error());
     if (!requote) return std::unexpected(requote.error());
     if (!max_age) return std::unexpected(max_age.error());
+    if (!post_only) return std::unexpected(post_only.error());
     if (!protection) return std::unexpected(protection.error());
     if (auto ok = p.Finish(); !ok) {
         return std::unexpected(ok.error());
@@ -382,6 +384,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.skew_bps = *skew;
     params.requote_bps = *requote;
     params.max_quote_age = *max_age;
+    params.post_only = *post_only;
     try {
         return StrategyPtr(
             std::make_unique<strategy::MarketMaker>(std::move(params)));

@@ -40,6 +40,9 @@ struct OrderRequest {
     std::optional<Decimal> stop_price;   // required for kStop
     TimeInForce time_in_force = TimeInForce::kGtc;
     std::string client_order_id;  // caller-chosen, may be empty
+    // Limit GTC orders only: refused with kWouldTake instead of taking
+    // liquidity, so the order can only ever rest and fill as a maker.
+    bool post_only = false;
 };
 
 struct OrderAcknowledgement {

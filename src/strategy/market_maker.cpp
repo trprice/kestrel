@@ -353,7 +353,16 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
     request.type = types::OrderType::kLimit;
     request.quantity = size;
     request.limit_price = *price;
+    request.post_only = mParams.post_only;
     auto ack = context.Venue().PlaceOrder(request);
+    if (!ack && ack.error().category == types::ErrorCategory::kWouldTake) {
+        // The book moved through the price; the next quote tries again.
+        ++mWouldTake;
+        spdlog::debug("market_maker: post-only {} {} @ {} refused: {}",
+                      types::ToString(side), size.ToString(), price->ToString(),
+                      ack.error().ToString());
+        return;
+    }
     if (!ack) {
         spdlog::warn("market_maker: {} {} @ {} failed: {}",
                      types::ToString(side), size.ToString(), price->ToString(),
@@ -384,14 +393,19 @@ void MarketMaker::OnFill(Context&, const types::Fill& fill) {
     }
     const Decimal before = Position();
     mInventory += fill.side == Side::kBuy ? fill.quantity : -fill.quantity;
+    // A fee in the base asset (Binance.US charges a taker buy's fee in what
+    // was bought) leaves less held than was filled; selling the full amount
+    // would be refused for the balance.
+    if (fill.fee_asset == mBaseAsset) {
+        mInventory -= fill.fee;
+    }
 
-    // The cash, and the average entry price of the position.
+    // The cash, and the average entry price of the position. A base-asset fee
+    // is already counted as the units it took away.
     const Decimal notional = fill.quantity * fill.price;
     mCash += fill.side == Side::kBuy ? -notional : notional;
     if (fill.fee_asset == mQuoteAsset) {
         mCash -= fill.fee;
-    } else if (fill.fee_asset == mBaseAsset) {
-        mCash -= fill.fee * fill.price;
     }
     const Decimal after = Position();
     if (after.IsZero()) {
@@ -477,6 +491,12 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
 }
 
 void MarketMaker::OnStop(Context& context) {
+    if (mWouldTake > 0) {
+        spdlog::info(
+            "market_maker: {} post-only quote(s) refused as they would have "
+            "taken liquidity",
+            mWouldTake);
+    }
     for (Resting* quote : {&mBid, &mAsk}) {
         if (!quote->order_id.empty() && !quote->cancel_raced) {
             auto outcome = context.Venue().CancelOrder(quote->order_id);

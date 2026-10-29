@@ -523,6 +523,14 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                 : mOptions.taker_fee_rate;
         order.reserve_unit = ref_price * (one + fee_rate);
     }
+    if (request.post_only && quote &&
+        (request.side == Side::kBuy
+             ? quote->ask && *request.limit_price >= *quote->ask
+             : quote->bid && *request.limit_price <= *quote->bid)) {
+        return MakeError(ErrorCategory::kWouldTake,
+                         "post-only order would take liquidity at " +
+                             request.limit_price->ToString());
+    }
     if (request.type != OrderType::kLimit && request.type != OrderType::kStop &&
         !quote) {
         return MakeError(ErrorCategory::kNotFound,
