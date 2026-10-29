@@ -17,8 +17,33 @@ using namespace std::chrono_literals;
 
 constexpr std::int64_t kNowMs = 1'700'000'000'000;
 
+// Symbol rules only: ZEC/USDT and BTC/USDT with Binance.US's filters.
+class RulesSource : public data::DataSource {
+   public:
+    std::string_view Name() const override { return "binanceus"; }
+    types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&,
+                                                   types::Timeframe,
+                                                   types::Timestamp,
+                                                   types::Timestamp) override {
+        return types::MakeError(types::ErrorCategory::kNotImplemented, "n/a");
+    }
+    types::Result<std::unique_ptr<data::Subscription>> StreamQuotes(
+        const std::vector<std::string>&, data::QuoteCallback) override {
+        return types::MakeError(types::ErrorCategory::kNotImplemented, "n/a");
+    }
+    types::Result<types::SymbolInfo> GetSymbolInfo(
+        const types::Symbol& symbol) override {
+        if (symbol != "ZEC/USDT" && symbol != "BTC/USDT") {
+            return types::MakeError(types::ErrorCategory::kNotFound, symbol);
+        }
+        return types::SymbolInfo{symbol, D("0.01"), D("0.001"), D("0.001"),
+                                 D("1")};
+    }
+};
+
 struct Fixture {
     std::shared_ptr<RoutedHttp> http = std::make_shared<RoutedHttp>();
+    std::vector<std::chrono::milliseconds> sleeps;
     types::Timestamp now = types::FromEpochMillis(kNowMs);
 
     std::unique_ptr<BinanceUSTradingVenue> Venue(
@@ -27,12 +52,16 @@ struct Fixture {
                    "{\"serverTime\":" + std::to_string(kNowMs) + "}");
         BinanceUSApi::Options options;
         options.clock = [this] { return now; };
-        options.sleeper = [](std::chrono::milliseconds) {};
+        options.sleeper = [this](std::chrono::milliseconds d) {
+            sleeps.push_back(d);
+        };
         options.weight_per_second = 100000;
         options.weight_burst = 100000;
+        options.orders_per_second = 100000;
+        options.order_burst = 100000;
         return std::make_unique<BinanceUSTradingVenue>(
-            config::BinanceUSCredentials{"key", "secret"}, nullptr,
-            std::move(symbols), http, options);
+            config::BinanceUSCredentials{"key", "secret"},
+            std::make_shared<RulesSource>(), std::move(symbols), http, options);
     }
 };
 
@@ -383,20 +412,431 @@ TEST(BinanceUSTradingVenue, ReportsNoPositions) {
     EXPECT_TRUE(positions->empty());
 }
 
-TEST(BinanceUSTradingVenue, CannotTradeYet) {
+types::OrderRequest Limit(types::Side side, const char* qty,
+                          const char* price) {
+    types::OrderRequest r;
+    r.symbol = "ZEC/USDT";
+    r.side = side;
+    r.type = types::OrderType::kLimit;
+    r.quantity = D(qty);
+    r.limit_price = D(price);
+    return r;
+}
+
+// A newOrderRespType=RESULT answer.
+std::string Placed(std::int64_t id, const std::string& client_id,
+                   const std::string& status, const std::string& executed = "0",
+                   const std::string& quote = "0") {
+    return "{\"symbol\":\"ZECUSDT\",\"orderId\":" + std::to_string(id) +
+           ",\"clientOrderId\":\"" + client_id +
+           "\",\"transactTime\":1700000000123,\"price\":\"700.00\","
+           "\"origQty\":\"0.010\",\"executedQty\":\"" +
+           executed + "\",\"cummulativeQuoteQty\":\"" + quote +
+           "\",\"status\":\"" + status +
+           "\",\"timeInForce\":\"GTC\",\"type\":\"LIMIT\",\"side\":\"BUY\"}";
+}
+
+TEST(BinanceUSOrders, PlacesALimitOrderWithTheSymbolRulesApplied) {
     Fixture f;
     auto venue = f.Venue();
-    types::OrderRequest request;
-    request.symbol = "ZEC/USDT";
-    request.quantity = D("0.01");
-    auto placed = venue->PlaceOrder(request);
+    f.http->Push("/api/v3/order", Placed(42, "x", "NEW"));
+    auto ack = venue->PlaceOrder(Limit(types::Side::kBuy, "0.0105", "700.009"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->order_id, "42");
+    EXPECT_EQ(ack->state, types::OrderState::kNew);
+    EXPECT_EQ(ack->time, types::FromEpochMillis(1700000000123));
+
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+    const auto& q = sent[0].raw_query;
+    EXPECT_EQ(QueryValue(q, "symbol"), "ZECUSDT");
+    EXPECT_EQ(QueryValue(q, "side"), "BUY");
+    EXPECT_EQ(QueryValue(q, "type"), "LIMIT");
+    EXPECT_EQ(QueryValue(q, "timeInForce"), "GTC");
+    EXPECT_EQ(QueryValue(q, "quantity"), "0.010");  // down to the lot
+    EXPECT_EQ(QueryValue(q, "price"), "700.00");    // a buy rounds down
+    EXPECT_EQ(QueryValue(q, "newOrderRespType"), "RESULT");
+    EXPECT_EQ(QueryValue(q, "newClientOrderId").rfind("kst-", 0), 0u);
+    EXPECT_FALSE(QueryValue(q, "signature").empty());
+
+    // The order's symbol is remembered, so a lookup asks only for it.
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 42, "NEW", "LIMIT", "BUY",
+                                        "700.00", "0.010", "0", "0"));
+    ASSERT_OK(venue->GetOrder("42"));
+}
+
+TEST(BinanceUSOrders, GeneratedClientIdsDifferAndACallersIdIsKept) {
+    Fixture f;
+    auto venue = f.Venue();
+    for (int i = 0; i < 3; ++i) {
+        f.http->Push("/api/v3/order", Placed(i, "x", "NEW"));
+    }
+    ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    auto mine = Limit(types::Side::kBuy, "0.01", "700");
+    mine.client_order_id = "my-own_1";
+    ASSERT_OK(venue->PlaceOrder(mine));
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 3u);
+    const auto first = QueryValue(sent[0].raw_query, "newClientOrderId");
+    const auto second = QueryValue(sent[1].raw_query, "newClientOrderId");
+    EXPECT_NE(first, second);
+    EXPECT_LE(first.size(), 36u);
+    EXPECT_EQ(QueryValue(sent[2].raw_query, "newClientOrderId"), "my-own_1");
+
+    mine.client_order_id = "not allowed!";
+    auto bad = venue->PlaceOrder(mine);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().category, types::ErrorCategory::kInvalidArgument);
+    EXPECT_EQ(f.http->To("/api/v3/order").size(), 3u);  // not sent
+}
+
+TEST(BinanceUSOrders, MapsMarketStopAndTimeInForce) {
+    Fixture f;
+    auto venue = f.Venue();
+    for (int i = 0; i < 4; ++i) {
+        f.http->Push("/api/v3/order", Placed(i, "x", "NEW"));
+    }
+    types::OrderRequest market;
+    market.symbol = "ZEC/USDT";
+    market.side = types::Side::kSell;
+    market.type = types::OrderType::kMarket;
+    market.quantity = D("0.01");
+    ASSERT_OK(venue->PlaceOrder(market));
+
+    types::OrderRequest stop = market;
+    stop.type = types::OrderType::kStop;
+    stop.stop_price = D("1200.004");
+    ASSERT_OK(venue->PlaceOrder(stop));
+
+    auto ioc = Limit(types::Side::kSell, "0.01", "1300.001");
+    ioc.time_in_force = types::TimeInForce::kIoc;
+    ASSERT_OK(venue->PlaceOrder(ioc));
+    auto fok = ioc;
+    fok.time_in_force = types::TimeInForce::kFok;
+    ASSERT_OK(venue->PlaceOrder(fok));
+
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 4u);
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "type"), "MARKET");
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "side"), "SELL");
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "timeInForce"), "");
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "price"), "");
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "type"), "STOP_LOSS");
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "stopPrice"), "1200.00");
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "timeInForce"), "");
+    EXPECT_EQ(QueryValue(sent[2].raw_query, "timeInForce"), "IOC");
+    EXPECT_EQ(QueryValue(sent[2].raw_query, "price"), "1300.01");  // sell: up
+    EXPECT_EQ(QueryValue(sent[3].raw_query, "timeInForce"), "FOK");
+}
+
+TEST(BinanceUSOrders, RefusesWhatBinanceCannotTakeWithoutSendingIt) {
+    Fixture f;
+    auto venue = f.Venue();
+    auto day = Limit(types::Side::kBuy, "0.01", "700");
+    day.time_in_force = types::TimeInForce::kDay;
+    EXPECT_EQ(venue->PlaceOrder(day).error().category,
+              types::ErrorCategory::kUnsupported);
+
+    types::OrderRequest stop;
+    stop.symbol = "ZEC/USDT";
+    stop.type = types::OrderType::kStop;
+    stop.quantity = D("0.01");
+    stop.stop_price = D("1200");
+    stop.time_in_force = types::TimeInForce::kIoc;
+    EXPECT_EQ(venue->PlaceOrder(stop).error().category,
+              types::ErrorCategory::kUnsupported);
+
+    // 0.001 at 700 is 0.70 USDT, under the 1 USDT minimum.
+    auto small = venue->PlaceOrder(Limit(types::Side::kBuy, "0.001", "700"));
+    ASSERT_FALSE(small.has_value());
+    EXPECT_EQ(small.error().category, types::ErrorCategory::kRejected);
+    EXPECT_NE(small.error().message.find("minimum"), std::string::npos);
+
+    auto unknown = Limit(types::Side::kBuy, "1", "700");
+    unknown.symbol = "DOGE/USDT";
+    EXPECT_EQ(venue->PlaceOrder(unknown).error().category,
+              types::ErrorCategory::kNotFound);
+
+    EXPECT_TRUE(f.http->To("/api/v3/order").empty());
+}
+
+TEST(BinanceUSOrders, ARefusedOrderIsReportedAndNotLookedUp) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushStatus(
+        "/api/v3/order", 400,
+        "{\"code\":-2010,\"msg\":\"Account has insufficient balance for "
+        "requested action.\"}");
+    auto placed = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
     ASSERT_FALSE(placed.has_value());
-    EXPECT_EQ(placed.error().category, types::ErrorCategory::kNotImplemented);
-    EXPECT_EQ(venue->CancelOrder("1").error().category,
-              types::ErrorCategory::kNotImplemented);
-    EXPECT_EQ(venue->CancelAll().error().category,
-              types::ErrorCategory::kNotImplemented);
-    EXPECT_TRUE(f.http->To("/api/v3/order").empty());  // nothing was sent
+    EXPECT_EQ(placed.error().category,
+              types::ErrorCategory::kInsufficientFunds);
+    EXPECT_EQ(f.http->To("/api/v3/order").size(), 1u);  // no lookup
+}
+
+TEST(BinanceUSOrders, AnUnansweredOrderIsLookedUpNotSentAgain) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError(
+        "/api/v3/order",
+        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 77, "NEW", "LIMIT", "BUY",
+                                        "700.00", "0.010", "0", "0"));
+    auto ack = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->order_id, "77");
+    EXPECT_EQ(ack->state, types::OrderState::kNew);
+
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 2u);
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+    EXPECT_EQ(sent[1].method, net::HttpMethod::kGet);
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "origClientOrderId"),
+              QueryValue(sent[0].raw_query, "newClientOrderId"));
+    EXPECT_TRUE(f.sleeps.empty());  // found at the first look
+}
+
+TEST(BinanceUSOrders, AnUnansweredOrderThatCannotBeFoundIsAnError) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError("/api/v3/order",
+                      types::Error{types::ErrorCategory::kServer, "HTTP 503"});
+    for (int i = 0; i < 2; ++i) {
+        f.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    auto placed = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+    ASSERT_FALSE(placed.has_value());
+    EXPECT_EQ(placed.error().category, types::ErrorCategory::kServer);
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 3u);  // one POST, two lookups
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+    const auto client_id = QueryValue(sent[0].raw_query, "newClientOrderId");
+    EXPECT_NE(placed.error().message.find(client_id), std::string::npos);
+    EXPECT_EQ(f.sleeps.size(), 1u);  // a pause before the second look
+}
+
+TEST(BinanceUSOrders, TestOrderGoesOnlyToTheTestEndpoint) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order/test", "{}");
+    ASSERT_OK(venue->TestOrder(Limit(types::Side::kBuy, "0.002", "700")));
+    const auto sent = f.http->To("/api/v3/order/test");
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "price"), "700.00");
+    EXPECT_EQ(f.http->To("/api/v3/order").size(), 0u);
+
+    f.http->PushStatus("/api/v3/order/test", 400,
+                       "{\"code\":-1013,\"msg\":\"Filter failure: "
+                       "PERCENT_PRICE_BY_SIDE\"}");
+    auto refused = venue->TestOrder(Limit(types::Side::kBuy, "0.002", "700"));
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().category, types::ErrorCategory::kRejected);
+}
+
+TEST(BinanceUSOrders, CancelsARememberedOrderOnItsSymbol) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order", Placed(42, "x", "NEW"));
+    ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 42, "CANCELED", "LIMIT",
+                                        "BUY", "700.00", "0.010", "0", "0"));
+    auto outcome = venue->CancelOrder("42");
+    ASSERT_OK(outcome);
+    EXPECT_EQ(*outcome, CancelOutcome::kCancelled);
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 2u);
+    EXPECT_EQ(sent[1].method, net::HttpMethod::kDelete);
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "symbol"), "ZECUSDT");
+    EXPECT_EQ(QueryValue(sent[1].raw_query, "orderId"), "42");
+}
+
+TEST(BinanceUSOrders, ACancelThatComesTooLateSaysWhatHappened) {
+    const std::pair<const char*, CancelOutcome> cases[] = {
+        {"FILLED", CancelOutcome::kAlreadyFilled},
+        {"CANCELED", CancelOutcome::kAlreadyClosed},
+        {"EXPIRED", CancelOutcome::kAlreadyClosed}};
+    for (const auto& [status, expected] : cases) {
+        Fixture f;
+        auto venue = f.Venue();
+        f.http->Push("/api/v3/order", Placed(42, "x", "NEW"));
+        ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+        f.http->PushStatus("/api/v3/order", 400,
+                           "{\"code\":-2011,\"msg\":\"Unknown order sent.\"}");
+        f.http->Push("/api/v3/order",
+                     Order("ZECUSDT", 42, status, "LIMIT", "BUY", "700.00",
+                           "0.010", "0.010", "7.00"));
+        auto outcome = venue->CancelOrder("42");
+        ASSERT_OK(outcome);
+        EXPECT_EQ(*outcome, expected) << status;
+    }
+}
+
+TEST(BinanceUSOrders, CancellingAnOrderNobodyKnowsIsNotFound) {
+    Fixture f;
+    auto venue = f.Venue();
+    // Not remembered: the symbol is looked for first, and it is on none.
+    f.http->PushStatus("/api/v3/order", 400,
+                       "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    auto outcome = venue->CancelOrder("999");
+    ASSERT_FALSE(outcome.has_value());
+    EXPECT_EQ(outcome.error().category, types::ErrorCategory::kNotFound);
+    for (const auto& r : f.http->To("/api/v3/order")) {
+        EXPECT_EQ(r.method, net::HttpMethod::kGet);  // no DELETE was sent
+    }
+}
+
+TEST(BinanceUSOrders, CancelsAnOrderPlacedBeforeThisProcessStarted) {
+    Fixture f;
+    auto venue = f.Venue({"BTC/USDT", "ZEC/USDT"});
+    f.http->PushStatus("/api/v3/order", 400,
+                       "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 5, "NEW", "LIMIT", "BUY",
+                                        "700.00", "0.010", "0", "0"));
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 5, "CANCELED", "LIMIT",
+                                        "BUY", "700.00", "0.010", "0", "0"));
+    auto outcome = venue->CancelOrder("5");
+    ASSERT_OK(outcome);
+    EXPECT_EQ(*outcome, CancelOutcome::kCancelled);
+    const auto sent = f.http->To("/api/v3/order");
+    ASSERT_EQ(sent.size(), 3u);
+    EXPECT_EQ(sent[2].method, net::HttpMethod::kDelete);
+    EXPECT_EQ(QueryValue(sent[2].raw_query, "symbol"), "ZECUSDT");
+}
+
+TEST(BinanceUSOrders, CancelAllCoversEverySymbol) {
+    Fixture f;
+    auto venue = f.Venue({"BTC/USDT", "ZEC/USDT"});
+    // BTC/USDT has nothing open: Binance answers -2011.
+    f.http->PushStatus("/api/v3/openOrders", 400,
+                       "{\"code\":-2011,\"msg\":\"Unknown order sent.\"}");
+    f.http->Push("/api/v3/openOrders",
+                 "[" +
+                     Order("ZECUSDT", 1, "CANCELED", "LIMIT", "BUY", "700.00",
+                           "0.010", "0", "0") +
+                     "," +
+                     Order("ZECUSDT", 2, "CANCELED", "LIMIT", "SELL", "1500.00",
+                           "0.010", "0", "0") +
+                     "]");
+    auto cancelled = venue->CancelAll();
+    ASSERT_OK(cancelled);
+    EXPECT_EQ(*cancelled, (std::vector<std::string>{"1", "2"}));
+    const auto sent = f.http->To("/api/v3/openOrders");
+    ASSERT_EQ(sent.size(), 2u);
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kDelete);
+    EXPECT_EQ(QueryValue(sent[0].raw_query, "symbol"), "BTCUSDT");
+}
+
+TEST(BinanceUSOrders, AFailedLookupAfterAnUnansweredOrderSaysSo) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError(
+        "/api/v3/order",
+        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+    // The lookup is a read, so it is retried; every attempt fails.
+    for (int i = 0; i < 5; ++i) {
+        f.http->PushError(
+            "/api/v3/order",
+            types::Error{types::ErrorCategory::kNetwork, "reset"});
+    }
+    auto placed = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+    ASSERT_FALSE(placed.has_value());
+    EXPECT_EQ(placed.error().category, types::ErrorCategory::kTimeout);
+    EXPECT_NE(placed.error().message.find("could not be looked up"),
+              std::string::npos);
+    EXPECT_EQ(placed.error().message.find("was not found"), std::string::npos);
+    std::size_t posts = 0;
+    for (const auto& r : f.http->To("/api/v3/order")) {
+        posts += r.method == net::HttpMethod::kPost;
+    }
+    EXPECT_EQ(posts, 1u);  // never sent again
+}
+
+TEST(BinanceUSOrders, AnUnansweredCancelOfAnOrderStillOpenIsAnError) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order", Placed(42, "x", "NEW"));
+    ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    f.http->PushError(
+        "/api/v3/order",
+        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 42, "NEW", "LIMIT", "BUY",
+                                        "700.00", "0.010", "0", "0"));
+    auto outcome = venue->CancelOrder("42");
+    ASSERT_FALSE(outcome.has_value());  // still working: the caller retries
+    EXPECT_EQ(outcome.error().category, types::ErrorCategory::kTimeout);
+}
+
+TEST(BinanceUSOrders, CancelAllCarriesOnPastAFailingSymbol) {
+    Fixture f;
+    auto venue = f.Venue({"BTC/USDT", "ZEC/USDT"});
+    f.http->PushStatus("/api/v3/openOrders", 503, "busy");
+    f.http->Push("/api/v3/openOrders",
+                 "[" +
+                     Order("ZECUSDT", 1, "CANCELED", "LIMIT", "BUY", "700.00",
+                           "0.010", "0", "0") +
+                     "," +
+                     Order("ZECUSDT", 2, "CANCELED", "LIMIT", "SELL", "1500.00",
+                           "0.010", "0", "0") +
+                     "]");
+    auto cancelled = venue->CancelAll();
+    ASSERT_FALSE(cancelled.has_value());
+    EXPECT_EQ(cancelled.error().category, types::ErrorCategory::kServer);
+    const auto& message = cancelled.error().message;
+    EXPECT_NE(message.find("BTC/USDT"), std::string::npos);
+    EXPECT_NE(message.find("cancelled 2 order(s)"), std::string::npos);
+    EXPECT_NE(message.find(" 1 2"), std::string::npos);
+    EXPECT_EQ(f.http->To("/api/v3/openOrders").size(), 2u);  // ZEC still tried
+}
+
+TEST(BinanceUSOrders, ABalanceRefusalInOtherWordsIsStillInsufficientFunds) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushStatus("/api/v3/order", 400,
+                       "{\"code\":-2010,\"msg\":\"Insufficient Balance.\"}");
+    f.http->PushStatus(
+        "/api/v3/order", 400,
+        "{\"code\":-2010,\"msg\":\"Order would immediately match and take.\"}");
+    EXPECT_EQ(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"))
+                  .error()
+                  .category,
+              types::ErrorCategory::kInsufficientFunds);
+    EXPECT_EQ(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"))
+                  .error()
+                  .category,
+              types::ErrorCategory::kRejected);
+}
+
+TEST(BinanceUSOrders, NewOrdersAreHeldToTheOrderRate) {
+    Fixture f;
+    auto venue = [&] {
+        f.http->Push("/api/v3/time",
+                     "{\"serverTime\":" + std::to_string(kNowMs) + "}");
+        BinanceUSApi::Options options;
+        options.clock = [&f] { return f.now; };
+        options.sleeper = [](std::chrono::milliseconds) {};
+        options.weight_per_second = 100000;
+        options.weight_burst = 100000;
+        options.orders_per_second = 20;  // one every 50 ms after the first
+        options.order_burst = 1;
+        return std::make_unique<BinanceUSTradingVenue>(
+            config::BinanceUSCredentials{"key", "secret"},
+            std::make_shared<RulesSource>(),
+            std::vector<types::Symbol>{"ZEC/USDT"}, f.http, options);
+    }();
+    for (int i = 0; i < 3; ++i) {
+        f.http->Push("/api/v3/order", Placed(i, "x", "NEW"));
+    }
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    }
+    // Two waits of 50 ms; a little slack for the clock's granularity.
+    EXPECT_GE(std::chrono::steady_clock::now() - start, 90ms);
 }
 
 }  // namespace

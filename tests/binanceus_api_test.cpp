@@ -194,6 +194,9 @@ TEST(BinanceUSApi, ReportsBinanceErrorCodes) {
     f.http->PushStatus(
         "/api/v3/order", 400,
         "{\"code\":-2010,\"msg\":\"Account has insufficient balance\"}");
+    f.http->PushStatus(
+        "/api/v3/order", 400,
+        "{\"code\":-2010,\"msg\":\"Order would immediately match.\"}");
     auto api = f.Api();
 
     auto missing =
@@ -206,6 +209,12 @@ TEST(BinanceUSApi, ReportsBinanceErrorCodes) {
         api.Signed(net::HttpMethod::kGet, "/api/v3/order", {}, 4, false);
     ASSERT_FALSE(denied.has_value());
     EXPECT_EQ(denied.error().category, types::ErrorCategory::kAuth);
+
+    auto broke =
+        api.Signed(net::HttpMethod::kGet, "/api/v3/order", {}, 4, false);
+    ASSERT_FALSE(broke.has_value());
+    EXPECT_EQ(broke.error().category, types::ErrorCategory::kInsufficientFunds);
+    EXPECT_EQ(broke.error().provider_code, "-2010");
 
     auto refused =
         api.Signed(net::HttpMethod::kGet, "/api/v3/order", {}, 4, false);

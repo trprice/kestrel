@@ -47,6 +47,9 @@ struct SymbolInfo {
     Decimal tick_size;       // price increment
     Decimal lot_size;        // quantity increment
     Decimal min_order_size;  // minimum quantity
+    // Minimum price × quantity, in the quote asset; zero when the venue sets
+    // none (or it is not known).
+    Decimal min_notional;
 };
 
 }  // namespace kestrel::types

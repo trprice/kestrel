@@ -30,6 +30,8 @@ int main(int argc, char** argv) {
     app::CommandSlot command;
     app::AddBarsCommand(app, command);
     app::AddAccountCommand(app, command);
+    app::AddOrderCommand(app, command);
+    app::AddCancelCommand(app, command);
     app::AddStreamCommand(app, command);
     app::AddStreamBarsCommand(app, command);
     app::AddInitDbCommand(app, command);

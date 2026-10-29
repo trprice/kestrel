@@ -47,6 +47,10 @@ class BinanceUSApi {
         util::RetryPolicy retry;
         double weight_per_second = 16.0;  // 960 per minute of the 1200
         double weight_burst = 100.0;
+        // New orders, which Binance.US also counts on their own: 100 per 10
+        // seconds and 200,000 a day. Used by BinanceUSTradingVenue.
+        double orders_per_second = 9.0;
+        double order_burst = 10.0;
         // Used when a 418 carries no Retry-After.
         std::chrono::seconds default_ban{120};
         std::function<types::Timestamp()> clock = types::Now;

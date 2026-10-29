@@ -2,10 +2,13 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <random>
 #include <set>
 
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/net/timed_http_client.hpp"
+#include "kestrel/trading/order_rules.hpp"
 #include "kestrel/util/json.hpp"
 
 namespace kestrel::trading {
@@ -22,6 +25,57 @@ constexpr int kAccountWeight = 10;
 constexpr int kOpenOrdersWeight = 3;  // with a symbol
 constexpr int kOrderWeight = 4;
 constexpr int kMyTradesWeight = 10;
+constexpr int kNewOrderWeight = 1;  // also the test endpoint
+constexpr int kCancelWeight = 1;
+constexpr int kCancelAllWeight = 1;  // with a symbol
+
+// How long to wait before the second look for an order whose placement or
+// cancel ended without a clear answer.
+constexpr auto kLookupPause = std::chrono::seconds(1);
+
+// How many order -> symbol entries are kept. A market maker places tens of
+// thousands of orders a day; an order that has dropped out is still found, by
+// asking each configured symbol.
+constexpr std::size_t kRememberedOrders = 10'000;
+
+// Binance accepts client order IDs matching ^[a-zA-Z0-9-_]{1,36}$.
+bool ValidClientOrderId(const std::string& id) {
+    if (id.empty() || id.size() > 36) {
+        return false;
+    }
+    return std::ranges::all_of(id, [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '-' || c == '_';
+    });
+}
+
+// A failure after which the request may or may not have taken effect.
+bool OutcomeUnknown(const types::Error& error) {
+    return error.category == ErrorCategory::kNetwork ||
+           error.category == ErrorCategory::kTimeout ||
+           error.category == ErrorCategory::kServer;
+}
+
+// `value`, a multiple of `increment`, written with the increment's decimals
+// and no more: Binance refuses a price or quantity with more decimals than the
+// asset allows (-1111), however many of them are zeros.
+std::string AtScaleOf(const types::Decimal& value,
+                      const types::Decimal& increment) {
+    return value
+        .Rescale(increment.Normalized().Scale(), types::Rounding::kNearest)
+        .ToString();
+}
+
+std::string RandomTag() {
+    static constexpr char kAlphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    std::random_device device;
+    std::uniform_int_distribution<int> pick(0, sizeof kAlphabet - 2);
+    std::string tag;
+    for (int i = 0; i < 8; ++i) {
+        tag += kAlphabet[pick(device)];
+    }
+    return tag;
+}
 
 // myTrades accepts a startTime/endTime range of at most 24 hours.
 constexpr auto kTradeWindow = std::chrono::hours(24);
@@ -221,13 +275,6 @@ Result<types::Fill> ParseTrade(const json& trade, const std::string& native,
     return fill;
 }
 
-types::Error NotImplemented(const char* what) {
-    return MakeError(ErrorCategory::kNotImplemented,
-                     std::string("BinanceUSTradingVenue::") + what +
-                         " is not implemented yet (the venue is read-only)")
-        .error();
-}
-
 }  // namespace
 
 BinanceUSTradingVenue::BinanceUSTradingVenue(
@@ -240,25 +287,319 @@ BinanceUSTradingVenue::BinanceUSTradingVenue(
       mSymbols(std::move(symbols)),
       mApi(std::move(credentials),
            http ? std::move(http) : net::MakeTimedHttpClient(), options),
-      mClock(options.clock) {}
+      mClock(options.clock),
+      mSleep(options.sleeper),
+      mOrderLimiter(options.orders_per_second, options.order_burst),
+      mClientTag(RandomTag()) {}
 
 void BinanceUSTradingVenue::Remember(const std::string& order_id,
                                      const types::Symbol& symbol) {
     std::lock_guard lock(mMutex);
-    mOrderSymbols[order_id] = symbol;
+    if (!mOrderSymbols.insert_or_assign(order_id, symbol).second) {
+        return;  // already known
+    }
+    mRememberOrder.push_back(order_id);
+    if (mRememberOrder.size() > kRememberedOrders) {
+        mOrderSymbols.erase(mRememberOrder.front());
+        mRememberOrder.pop_front();
+    }
+}
+
+std::optional<types::Symbol> BinanceUSTradingVenue::SymbolOf(
+    const std::string& order_id) {
+    std::lock_guard lock(mMutex);
+    if (auto it = mOrderSymbols.find(order_id); it != mOrderSymbols.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+std::string BinanceUSTradingVenue::NextClientOrderId() {
+    return "kst-" + mClientTag + "-" + std::to_string(mNextClientId++);
+}
+
+Result<BinanceUSApi::Params> BinanceUSTradingVenue::OrderParams(
+    const types::OrderRequest& raw, std::string& native,
+    std::string& client_id) {
+    if (raw.time_in_force == types::TimeInForce::kDay) {
+        return MakeError(ErrorCategory::kUnsupported,
+                         "binanceus has no day orders; use GTC, IOC or FOK");
+    }
+    if (raw.type == types::OrderType::kStop &&
+        raw.time_in_force != types::TimeInForce::kGtc) {
+        return MakeError(ErrorCategory::kUnsupported,
+                         "binanceus stop orders take no time in force");
+    }
+    auto symbol = types::NormalizeSymbol(raw.symbol);
+    if (!symbol) {
+        return std::unexpected(symbol.error());
+    }
+    if (!mDataSource) {
+        return MakeError(ErrorCategory::kInternal,
+                         "binanceus venue has no data source for symbol rules");
+    }
+    auto info = mDataSource->GetSymbolInfo(*symbol);
+    if (!info) {
+        return std::unexpected(info.error());
+    }
+    types::OrderRequest request = raw;
+    request.symbol = *symbol;
+    auto ruled = ApplySymbolRules(request, *info);
+    if (!ruled) {
+        return std::unexpected(ruled.error());
+    }
+    auto binance = data::ToBinanceUSSymbol(*symbol);
+    if (!binance) {
+        return std::unexpected(binance.error());
+    }
+    native = *binance;
+    client_id =
+        raw.client_order_id.empty() ? NextClientOrderId() : raw.client_order_id;
+    if (!ValidClientOrderId(client_id)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "binanceus client order IDs are 1-36 letters, "
+                         "digits, '-' or '_': '" +
+                             client_id + "'");
+    }
+
+    BinanceUSApi::Params params = {
+        {"symbol", native},
+        {"side", ruled->side == types::Side::kBuy ? "BUY" : "SELL"}};
+    switch (ruled->type) {
+        case types::OrderType::kMarket:
+            params.emplace_back("type", "MARKET");
+            break;
+        case types::OrderType::kLimit:
+            params.emplace_back("type", "LIMIT");
+            params.emplace_back(
+                "timeInForce",
+                ruled->time_in_force == types::TimeInForce::kIoc   ? "IOC"
+                : ruled->time_in_force == types::TimeInForce::kFok ? "FOK"
+                                                                   : "GTC");
+            break;
+        case types::OrderType::kStop:
+            params.emplace_back("type", "STOP_LOSS");
+            break;
+    }
+    params.emplace_back("quantity", AtScaleOf(ruled->quantity, info->lot_size));
+    if (ruled->type == types::OrderType::kLimit) {
+        params.emplace_back("price",
+                            AtScaleOf(*ruled->limit_price, info->tick_size));
+    }
+    if (ruled->type == types::OrderType::kStop) {
+        params.emplace_back("stopPrice",
+                            AtScaleOf(*ruled->stop_price, info->tick_size));
+    }
+    params.emplace_back("newClientOrderId", client_id);
+    params.emplace_back("newOrderRespType", "RESULT");
+    return params;
+}
+
+Result<types::OrderStatus> BinanceUSTradingVenue::LookupClientOrder(
+    const std::string& native, const std::string& client_id) {
+    auto body =
+        mApi.Signed(net::HttpMethod::kGet, "/api/v3/order",
+                    {{"symbol", native}, {"origClientOrderId", client_id}},
+                    kOrderWeight, true);
+    if (!body) {
+        return std::unexpected(body.error());
+    }
+    auto order = ParseOrder(*body);
+    if (order) {
+        Remember(order->order_id, order->symbol);
+    }
+    return order;
+}
+
+Result<void> BinanceUSTradingVenue::TestOrder(
+    const types::OrderRequest& request) {
+    std::string native;
+    std::string client_id;
+    auto params = OrderParams(request, native, client_id);
+    if (!params) {
+        return std::unexpected(params.error());
+    }
+    // Whether Binance counts test orders against the order rate is not
+    // documented clearly; counting them here can only err on the safe side.
+    mOrderLimiter.Acquire();
+    auto body = mApi.Signed(net::HttpMethod::kPost, "/api/v3/order/test",
+                            *params, kNewOrderWeight, false);
+    if (!body) {
+        return std::unexpected(body.error());
+    }
+    return {};
 }
 
 Result<types::OrderAcknowledgement> BinanceUSTradingVenue::PlaceOrder(
-    const types::OrderRequest&) {
-    return std::unexpected(NotImplemented("PlaceOrder"));
+    const types::OrderRequest& request) {
+    std::string native;
+    std::string client_id;
+    auto params = OrderParams(request, native, client_id);
+    if (!params) {
+        return std::unexpected(params.error());
+    }
+    mOrderLimiter.Acquire();
+    auto body = mApi.Signed(net::HttpMethod::kPost, "/api/v3/order", *params,
+                            kNewOrderWeight, false);
+    if (!body) {
+        if (!OutcomeUnknown(body.error())) {
+            return std::unexpected(body.error());  // refused: nothing placed
+        }
+        // It may have been placed: find out rather than send it again.
+        spdlog::warn(
+            "binanceus: placing {} ended without an answer ({}); "
+            "looking it up",
+            client_id, body.error().ToString());
+        std::optional<types::Error> lookup_failure;
+        for (int look = 0; look < 2; ++look) {
+            if (look > 0) {
+                mSleep(kLookupPause);
+            }
+            auto found = LookupClientOrder(native, client_id);
+            if (found) {
+                // Its creation time is the transactTime a direct answer
+                // would have carried.
+                return types::OrderAcknowledgement{
+                    found->order_id, found->client_order_id, found->state,
+                    found->created_time};
+            }
+            if (found.error().category != ErrorCategory::kNotFound) {
+                lookup_failure = found.error();
+                break;
+            }
+        }
+        types::Error error = body.error();
+        error.message +=
+            lookup_failure
+                ? " (order " + client_id + " could not be looked up either: " +
+                      lookup_failure->ToString() + "; it may exist)"
+                : " (order " + client_id +
+                      " was not found afterwards, but may still appear)";
+        return std::unexpected(std::move(error));
+    }
+    auto order = ParseOrder(*body);
+    if (!order) {
+        return std::unexpected(order.error());
+    }
+    Remember(order->order_id, order->symbol);
+    types::OrderAcknowledgement ack{order->order_id, order->client_order_id,
+                                    order->state, order->updated_time};
+    if (auto time = IntegerMember(*body, "transactTime"); time) {
+        ack.time = types::FromEpochMillis(*time);
+    }
+    return ack;
 }
 
-Result<CancelOutcome> BinanceUSTradingVenue::CancelOrder(const std::string&) {
-    return std::unexpected(NotImplemented("CancelOrder"));
+Result<CancelOutcome> BinanceUSTradingVenue::CancelOutcomeOf(
+    const std::string& order_id) {
+    auto order = GetOrder(order_id);
+    if (!order) {
+        return std::unexpected(order.error());
+    }
+    switch (order->state) {
+        case types::OrderState::kFilled:
+            return CancelOutcome::kAlreadyFilled;
+        case types::OrderState::kCancelled:
+        case types::OrderState::kRejected:
+        case types::OrderState::kExpired:
+            return CancelOutcome::kAlreadyClosed;
+        default:
+            return MakeError(ErrorCategory::kServer,
+                             "binanceus: order " + order_id +
+                                 " is still open after a cancel");
+    }
+}
+
+Result<CancelOutcome> BinanceUSTradingVenue::CancelOrder(
+    const std::string& order_id) {
+    auto symbol = SymbolOf(order_id);
+    if (!symbol) {
+        // Placed before this process started: find its symbol first.
+        auto order = GetOrder(order_id);
+        if (!order) {
+            return std::unexpected(order.error());
+        }
+        symbol = order->symbol;
+    }
+    auto native = data::ToBinanceUSSymbol(*symbol);
+    if (!native) {
+        return std::unexpected(native.error());
+    }
+    auto body = mApi.Signed(net::HttpMethod::kDelete, "/api/v3/order",
+                            {{"symbol", *native}, {"orderId", order_id}},
+                            kCancelWeight, false);
+    if (body) {
+        return CancelOutcome::kCancelled;
+    }
+    if (body.error().category == ErrorCategory::kNotFound) {
+        // -2011: not open any more (or never was). Which is it?
+        return CancelOutcomeOf(order_id);
+    }
+    if (OutcomeUnknown(body.error())) {
+        auto order = GetOrder(order_id);
+        if (order && order->state == types::OrderState::kCancelled) {
+            return CancelOutcome::kCancelled;
+        }
+        if (order && order->state == types::OrderState::kFilled) {
+            return CancelOutcome::kAlreadyFilled;
+        }
+    }
+    return std::unexpected(body.error());
 }
 
 Result<std::vector<std::string>> BinanceUSTradingVenue::CancelAll() {
-    return std::unexpected(NotImplemented("CancelAll"));
+    // Every symbol is tried even when one fails: this is what a kill switch
+    // calls, and one bad symbol must not leave the others' orders working.
+    std::vector<std::string> cancelled;
+    std::optional<types::Error> first_failure;
+    std::string failures;
+    const auto fail = [&](const types::Symbol& symbol, types::Error error) {
+        failures +=
+            (failures.empty() ? "" : "; ") + symbol + ": " + error.ToString();
+        if (!first_failure) {
+            first_failure = std::move(error);
+        }
+    };
+    for (const auto& symbol : mSymbols) {
+        auto native = data::ToBinanceUSSymbol(symbol);
+        if (!native) {
+            fail(symbol, native.error());
+            continue;
+        }
+        auto body = mApi.Signed(net::HttpMethod::kDelete, "/api/v3/openOrders",
+                                {{"symbol", *native}}, kCancelAllWeight, false);
+        if (!body) {
+            if (body.error().category != ErrorCategory::kNotFound) {
+                fail(symbol, body.error());
+            }
+            continue;  // kNotFound is -2011: nothing open on this symbol
+        }
+        if (!body->is_array()) {
+            fail(symbol, Malformed("openOrders cancel is not an array"));
+            continue;
+        }
+        for (const auto& row : *body) {
+            // Order lists come back with their own shape; only plain orders
+            // are counted.
+            if (auto id = IntegerMember(row, "orderId"); id) {
+                cancelled.push_back(std::to_string(*id));
+            }
+        }
+    }
+    if (first_failure) {
+        // The category of the first failure, and everything in the message:
+        // what failed, and what was cancelled regardless.
+        types::Error error = std::move(*first_failure);
+        error.message = "binanceus: cancel all failed for " + failures +
+                        " (cancelled " + std::to_string(cancelled.size()) +
+                        " order(s) on the other symbols";
+        for (const auto& id : cancelled) {
+            error.message += " " + id;
+        }
+        error.message += ")";
+        return std::unexpected(std::move(error));
+    }
+    return cancelled;
 }
 
 Result<std::vector<types::OrderStatus>> BinanceUSTradingVenue::GetOpenOrders() {

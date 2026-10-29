@@ -121,6 +121,7 @@ if(KESTREL_BUILD_APP)
     app/commands/init_db.cpp
     app/commands/account.cpp
     app/commands/bars.cpp
+    app/commands/order.cpp
     app/commands/stream_quotes.cpp
     app/commands/stream_bars.cpp
     app/commands/run.cpp
@@ -144,6 +145,12 @@ if(KESTREL_BUILD_APP)
       "zero_count|${_good}|105|not in range|bars,1h,0"
       "account_zero_days|${_good}|105|not in range|account,--days,0"
       "account_store_paper|${_good}|2|a paper venue has no history|account,--store"
+      "order_needs_test_or_confirm|${_good}|2|exactly one of --test|order,buy,ZEC/USDT,0.01"
+      "order_both_flags|${_good}|2|exactly one of --test|order,buy,ZEC/USDT,0.01,--test,--confirm"
+      "order_paper|${_good}|2|needs mode|order,buy,ZEC/USDT,0.01,--test"
+      "order_bad_side|${_good}|105|not in|order,hold,ZEC/USDT,0.01,--test"
+      "cancel_needs_confirm|${_good}|2|add --confirm|cancel,123"
+      "cancel_id_or_all|${_good}|2|an order ID or --all|cancel,--confirm"
       "negative_seconds|${_good}|105|not in range|stream,-1"
       "backtest_needs_range|${_good}|106|--from is required|backtest,sma_crossover"
       "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"

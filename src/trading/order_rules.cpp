@@ -58,6 +58,14 @@ types::Result<types::OrderRequest> ApplySymbolRules(
                              info.min_order_size.ToString() + " (lot size " +
                              info.lot_size.ToString() + ")");
     }
+    if (out.type == OrderType::kLimit && info.min_notional.Sign() > 0 &&
+        *out.limit_price * out.quantity < info.min_notional) {
+        return MakeError(
+            ErrorCategory::kRejected,
+            "order value " + (*out.limit_price * out.quantity).ToString() +
+                " is below the minimum " + info.min_notional.ToString() +
+                " for " + request.symbol);
+    }
     return out;
 }
 

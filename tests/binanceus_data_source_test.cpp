@@ -178,6 +178,30 @@ TEST(BinanceUSSymbolInfo, ParsedFromExchangeInfoAndCached) {
     EXPECT_EQ(f.http->requests[0].query.at("symbol"), "BTCUSD");
 }
 
+TEST(BinanceUSSymbolInfo, ReadsTheMinimumNotionalFromEitherFilter) {
+    for (const char* filter : {"MIN_NOTIONAL", "NOTIONAL"}) {
+        Fixture f;
+        f.http->Push(std::string(R"({"symbols":[{"symbol":"ZECUSDT","filters":[
+            {"filterType":"PRICE_FILTER","tickSize":"0.01000000"},
+            {"filterType":"LOT_SIZE","minQty":"0.00100000","stepSize":"0.00100000"},
+            {"filterType":")") +
+                     filter +
+                     R"(","minNotional":"1.00000000","applyToMarket":true}
+        ]}]})");
+        auto src = f.MakeSource();
+        auto info = src.GetSymbolInfo("ZEC/USDT");
+        ASSERT_OK(info);
+        EXPECT_EQ(info->min_notional, D("1")) << filter;
+    }
+    Fixture f;  // neither: no minimum
+    f.http->Push(R"({"symbols":[{"symbol":"ZECUSDT","filters":[
+        {"filterType":"PRICE_FILTER","tickSize":"0.01000000"},
+        {"filterType":"LOT_SIZE","minQty":"0.00100000","stepSize":"0.00100000"}
+    ]}]})");
+    auto src = f.MakeSource();
+    EXPECT_TRUE(src.GetSymbolInfo("ZEC/USDT")->min_notional.IsZero());
+}
+
 TEST(BinanceUSStream, BuildsCombinedStreamUrl) {
     EXPECT_EQ(data::BinanceUSQuoteStream::BuildUrl("wss://h:9443",
                                                    {"BTCUSD", "ETHUSD"}),

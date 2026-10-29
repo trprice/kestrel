@@ -75,6 +75,8 @@ REQUIRED` error, with the authorize URL, once it has expired.
 |---|---|
 | `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID. Read-only on the venue: places and cancels nothing, so it is the way to check live credentials. `--store` also syncs the account's fills into `account_fills` (live mode only; see Database) |
+| `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok] (--test \| --confirm)` | one order on the live venue: `--test` has the venue check it (signature, permissions, filters) without placing it, `--confirm` places it. Live mode only, and one of the two flags is required |
+| `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
@@ -99,8 +101,10 @@ come after the subcommand's arguments.
   Ctrl-C or SIGTERM (a second signal exits immediately). If `[risk]` sets any
   limit, orders go through the risk gate, and the daily-loss count starts at
   startup. Without `[risk]` it warns and trades unchecked in paper mode. Live
-  mode is refused without `[risk]`, and on any provider whose trading venue is
-  still a stub (currently all of them).
+  mode is refused without `[risk]`, and on any provider whose venue is not yet
+  cleared for live runs (currently all of them: Binance.US can place and cancel
+  orders, but `run` stays off for it until the startup checks are done; see
+  TODO).
 - Risk limits come from `[risk]`, with `[risk.<strategy>]` laid over it key by
   key for that strategy (a section naming an unknown strategy is an error).
   Besides the size, rate and daily-loss limits, `max_orders_per_day`,
@@ -439,7 +443,7 @@ order, on one thread and a simulated clock.
 | `Configuration` (`config/`) | The parsed TOML file plus credentials from the environment or the secrets file. Rejects credentials in the main config and unknown keys. |
 | `factory.hpp` | The only place that knows which concrete class goes with a provider name or strategy name. `CreateComponents` makes the data source and venue, `CreateStrategy` the strategy, `ResolveRiskLimits` the limits, and `CreateRunner` wires them into a ready-to-run `Runner`. |
 | `DataSource` (`data/`) | Read-only market data: `GetBars`, `GetSymbolInfo`, and `StreamQuotes`/`StreamBars`, which return a `Subscription` to stop. Implemented by `KrakenDataSource`, `BinanceUSDataSource` and `ReplayDataSource`; `SchwabDataSource` is a stub. |
-| `TradingVenue` (`trading/`) | Execution: place and cancel orders, list open orders and fills, positions and balances. Implemented by `PaperTradingVenue`; the Kraken, Schwab and Binance.US venues are stubs. |
+| `TradingVenue` (`trading/`) | Execution: place and cancel orders, list open orders and fills, positions and balances. Implemented by `PaperTradingVenue` and `BinanceUSTradingVenue`; the Kraken and Schwab venues are stubs. |
 | `PaperTradingVenue` | A simulated exchange built on any `DataSource`. It fills orders from the quote stream with fees, slippage and a configurable limit-fill model, and keeps balances. |
 | `RiskGatedVenue` | A `TradingVenue` that wraps another one and refuses orders that break a limit (size, open orders, order rate, daily loss, drawdown, symbol allowlist). It has a kill switch, `Halt()`. |
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |

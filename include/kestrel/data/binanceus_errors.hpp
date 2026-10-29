@@ -12,8 +12,9 @@ namespace kestrel::data {
 //   -2011, -2013 unknown order (cancel/query) kNotFound
 //   -1022, -2014, -2015 bad signature, key,
 //         or key/IP/permission refused       kAuth
-// Everything else keeps the category the HTTP status gave it (a refused order,
-// -2010, stays kRejected).
+//   -2010 mentioning "balance" (any case)    kInsufficientFunds
+// Everything else keeps the category the HTTP status gave it (any other
+// refused order, -2010 or -1013 a filter failure, stays kRejected).
 types::Error RefineBinanceUSError(types::Error error);
 
 }  // namespace kestrel::data

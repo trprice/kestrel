@@ -299,6 +299,14 @@ Result<types::SymbolInfo> BinanceUSDataSource::GetSymbolInfo(
     info.tick_size = *tick;
     info.lot_size = *step;
     info.min_order_size = *min_qty;
+    // Older symbols carry MIN_NOTIONAL, newer ones NOTIONAL; either may be
+    // missing.
+    for (const char* type : {"MIN_NOTIONAL", "NOTIONAL"}) {
+        if (auto min_notional = filter_value(type, "minNotional")) {
+            info.min_notional = *min_notional;
+            break;
+        }
+    }
     {
         std::lock_guard lock(mCacheMutex);
         mSymbolCache[symbol] = info;

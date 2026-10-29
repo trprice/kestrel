@@ -12,7 +12,9 @@ namespace kestrel::trading {
 //   quantity      rounded down to the lot size
 // Fails with kInvalidArgument for malformed requests (missing/non-positive
 // prices or quantity) and kRejected when the rounded quantity is below the
-// symbol's minimum order size.
+// symbol's minimum order size, or a limit order's price × quantity is below
+// its minimum notional (market and stop orders are left to the venue, which
+// knows the price they will trade at).
 types::Result<types::OrderRequest> ApplySymbolRules(
     const types::OrderRequest& request, const types::SymbolInfo& info);
 

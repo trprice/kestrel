@@ -197,9 +197,17 @@ the header of the code concerned.
 
 ### Venues and data
 - Kraken and Schwab trading venues are stubs that return `kNotImplemented`.
-  The Binance.US venue reads (balances, open orders, order lookup, fills) but
-  does not trade yet. Its `GetPositions` returns nothing, so the risk gate's
-  `max_position_notional` does not see holdings the account already had.
+- The Binance.US venue places and cancels orders, but `run` does not use it
+  live yet (`HasLiveVenue`). Its `GetPositions` returns nothing, so the risk
+  gate's `max_position_notional` does not see holdings the account already
+  had.
+- A Binance.US placement that times out and cannot be found afterwards is
+  reported as an error, but the order may still appear later; it would then
+  rest on the account untracked by the runner until the startup check (not
+  built yet) or a manual `cancel`.
+- Binance.US's test endpoint does not check the balance (a test sell of ZEC
+  the account does not hold is accepted), so `order --test` proves the
+  request, not that it can be paid for.
 - The latency rollups cover HTTP round trips only, and a window that fails to
   write is dropped, not retried.
 - The Schwab data source is a stub.
@@ -283,15 +291,23 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       that already exists, bars, quotes and orders. Needs market-hours handling
       for equities.
 - [ ] **Binance.US trading venue.** The data source is done. The venue is
-      read-only so far (signed client, balances, open orders, order lookup,
-      fills), checked against the live API on 2026-10-28 with `kestrel_app
-      account` (signing, clock offset, 30 days of fills in 24 h windows,
-      partial fills, BNB and USDT fees, a market order's lookup);
-      `PlaceOrder`, `CancelOrder` and `CancelAll` are still stubs.
-      Remaining: orders (never retry a POST; look the order up by client id),
-      the order-rate limit, startup reconciliation of leftover orders, and
-      flipping `HasLiveVenue`. The order-placement response shapes still
-      come from memory; check them with `POST /api/v3/order/test` first.
+      reads checked against the live API on 2026-10-28 with `kestrel_app
+      account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
+      STOP_LOSS; `kst-` client order IDs; never resent, looked up by client
+      ID after a timeout or 5xx), `CancelOrder` (-2011 looked up to tell
+      filled from closed), `CancelAll`, an order-rate limit (9/s, 10 burst,
+      against Binance's 100 per 10 s), and the minimum order value
+      (`SymbolInfo::min_notional`, also enforced by the paper venue). The test
+      endpoint accepted limit buy, market buy and limit sell requests on
+      2026-10-29 and refused a price under the band (-1013 PERCENT_PRICE).
+      A real round trip on 2026-10-29 (limit buy 0.002 ZEC at 700, 46%
+      under the market, order 412845258) checked the rest: the RESULT reply,
+      the open order and 1.40 USDT locked, a cancel from a fresh process
+      (symbol found by lookup), the balance released with no fill, and a
+      second cancel answered -2011 and reported as already closed.
+      Remaining: startup reconciliation of leftover orders, then flipping
+      `HasLiveVenue`. Exchange info now advertises 6000 request weight a
+      minute, not 1200: the 960 a minute the client keeps to could be raised.
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
       client, a summary when `run` stops, and one-minute rollups in
       `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the
