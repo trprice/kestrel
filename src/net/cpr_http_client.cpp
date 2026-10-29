@@ -48,40 +48,68 @@ types::Error ErrorFromHttpStatus(const HttpResponse& response) {
 CprHttpClient::CprHttpClient(std::chrono::milliseconds timeout)
     : mTimeout(timeout) {}
 
+CprHttpClient::~CprHttpClient() = default;
+
+std::unique_ptr<cpr::Session> CprHttpClient::TakeSession() {
+    {
+        std::lock_guard lock(mMutex);
+        if (!mIdle.empty()) {
+            auto session = std::move(mIdle.back());
+            mIdle.pop_back();
+            return session;
+        }
+    }
+    return std::make_unique<cpr::Session>();
+}
+
+void CprHttpClient::ReturnSession(std::unique_ptr<cpr::Session> session) {
+    std::lock_guard lock(mMutex);
+    if (mIdle.size() < kMaxIdleSessions) {
+        mIdle.push_back(std::move(session));
+    }
+}
+
 types::Result<HttpResponse> CprHttpClient::Send(const HttpRequest& request) {
     cpr::Parameters params;
     for (const auto& [k, v] : request.query) params.Add({k, v});
     cpr::Header headers;
     for (const auto& [k, v] : request.headers) headers[k] = v;
 
-    cpr::Session session;
+    // A reused session keeps what the last request set, so everything a
+    // request can set is set every time: the parameters (empty with a raw
+    // query), the headers, and the body or its removal.
+    auto session = TakeSession();
     if (request.raw_query.empty()) {
-        session.SetUrl(cpr::Url{request.url});
-        session.SetParameters(params);
+        session->SetUrl(cpr::Url{request.url});
+        session->SetParameters(params);
     } else {
-        session.SetUrl(cpr::Url{request.url + "?" + request.raw_query});
+        session->SetUrl(cpr::Url{request.url + "?" + request.raw_query});
+        session->SetParameters(cpr::Parameters{});
     }
-    session.SetHeader(headers);
-    session.SetTimeout(
+    session->SetHeader(headers);
+    session->SetTimeout(
         cpr::Timeout{static_cast<std::int32_t>(mTimeout.count())});
-    if (!request.body.empty()) {
-        session.SetBody(cpr::Body{request.body});
+    if (request.body.empty()) {
+        session->RemoveContent();
+    } else {
+        session->SetBody(cpr::Body{request.body});
     }
 
     cpr::Response r;
     switch (request.method) {
         case HttpMethod::kGet:
-            r = session.Get();
+            r = session->Get();
             break;
         case HttpMethod::kPost:
-            r = session.Post();
+            r = session->Post();
             break;
         case HttpMethod::kDelete:
-            r = session.Delete();
+            r = session->Delete();
             break;
     }
 
     if (r.error) {
+        // The connection may be half-dead: start the next request afresh.
         const auto category = r.error.code == cpr::ErrorCode::OPERATION_TIMEDOUT
                                   ? ErrorCategory::kTimeout
                                   : ErrorCategory::kNetwork;
@@ -89,6 +117,7 @@ types::Result<HttpResponse> CprHttpClient::Send(const HttpRequest& request) {
                                               " failed: " + r.error.message);
     }
 
+    ReturnSession(std::move(session));
     HttpResponse out;
     out.status = static_cast<int>(r.status_code);
     out.body = std::move(r.text);

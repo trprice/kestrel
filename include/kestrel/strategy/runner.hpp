@@ -62,7 +62,8 @@ struct RunnerOptions {
 // Run() thread, which is also free to call the venue over HTTP.
 //
 // Run() polls the venue on a poller thread of its own, so the strategy never
-// waits for a poll's HTTP round trips (about 0.8 s on Binance.US): the poller
+// waits for a poll's HTTP round trips (two of them, about 0.13 s each on
+// Binance.US over an open connection): the poller
 // queues what it finds as an event, and the fills and order changes are
 // delivered on the Run() thread like everything else. A poll can therefore
 // land between any two hooks, and a fill can be queued while the strategy is

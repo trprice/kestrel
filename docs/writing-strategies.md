@@ -88,7 +88,8 @@ class MyStrategy : public strategy::Strategy {
   the venue or the context.
 - **Be quick:** events queue up behind a slow hook. Quotes are conflated, but
   bars never are. On a live venue every `PlaceOrder` and `CancelOrder` is an
-  HTTP round trip (about 0.4 s on Binance.US) on this thread. Polling for
+  HTTP round trip (about 0.13 s on Binance.US once the connection is open)
+  on this thread. Polling for
   fills does not use this thread.
 - **Exceptions:** a hook that throws is logged and the runner moves on to the
   next event. Do not rely on that; handle errors where they happen.
