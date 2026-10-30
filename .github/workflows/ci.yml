@@ -23,12 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # The apt packages and IXWebSocket are cached; only the last layer (the
       # source) changes from push to push.
       - name: Build the test image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -49,10 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -74,7 +74,7 @@ jobs:
               strip -o /dist/kestrel_app /release/kestrel_app
               chown "'"$(id -u):$(id -g)"'" /dist/kestrel_app'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kestrel_app-${{ github.sha }}
           path: dist/kestrel_app
