@@ -1,42 +1,85 @@
 # Kestrel TODO
 
+## In progress
+
+### Strategy system and risk gate
+
+Built and tested with fakes, and reachable from `kestrel_app run` and
+`backtest`. Run on Binance.US in paper mode (including an 8 hour
+market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
+
+#### To finish
+- [ ] `run` does not cancel open orders on shutdown; decide whether it should.
+      (`MarketMaker` cancels its own quotes in `OnStop`; `SmaCrossover` and
+      other strategies leave theirs resting.)
+- [ ] Bound the runner's bar queue (quotes are conflated per symbol)
+- [ ] Cap the paper venue's fill history so long paper runs stay bounded and
+      fast, and stop rescanning all of it in `GetFills`
+- [ ] Backtest summary: equity curve, total return, max drawdown, trade count,
+      win rate, fees paid
+- [ ] Backtest fill model: fill at the next bar's open by default (filling a
+      signal computed on a close at that same close is a look-ahead), keeping
+      fill-on-close as an option; use bar high/low for limit and stop order
+      triggering
+
+### Schwab data source
+
+Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
+renews them and `SchwabApi` sends requests within the market-data rate limit.
+The factory builds `SchwabDataSource` on `SchwabApi` (in paper mode too), and
+the timeframe and symbol mappings are written. `GetBars`, `StreamQuotes` and
+`GetSymbolInfo` still return `kNotImplemented`; the header's TODO lists the
+endpoints.
+
+#### Next steps
+- [ ] Get app keys and check authorization against the live API: run
+      `authorize`, let a renewal happen, and confirm which error bodies
+      Schwab sends for an expired or revoked refresh token
+      (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp` looks for
+      `invalid_grant` or "refresh token") and whether renewals rotate the
+      refresh token.
+- [ ] `GetBars` on `GET /pricehistory`: page long ranges, drop the forming
+      candle, and decide on extended-hours bars (`needExtendedHoursData`).
+      Re-verify the timeframe list (1m 5m 10m 15m 30m 1d 1w 1M, from memory)
+      against Schwab's docs.
+- [ ] `GetSymbolInfo` from the fixed US equity rules (tick 0.01, or 0.0001
+      under $1; lot 1; minimum 1). The tick depends on the price, which
+      `SymbolInfo` cannot express yet.
+- [ ] Confirm how Schwab spells share classes (BRK.B vs BRK/B) for
+      `ToSchwabSymbol` / `FromSchwabSymbol`.
+- [ ] `StreamQuotes` on the streamer: `streamerInfo` from
+      `GET /trader/v1/userPreference`, WebSocket LOGIN with the access token,
+      SUBS to LEVELONE_EQUITIES, deltas merged into full quotes, and a
+      reconnect that logs in again with a renewed token.
+- [ ] `StreamBars` (CHART_EQUITY gives 1-minute bars), so bar strategies such
+      as `SmaCrossover` can run on Schwab; until then `run` has no bar stream
+      there.
+- [ ] Market hours: the runner's gap backfill sees every overnight and
+      weekend as a gap (one wasted `GetBars` call each), a quiet feed outside
+      the session must not look like a dead one to any future stale-feed
+      check, and a strategy needs to know when the market is closed.
+- [ ] Tests for `SchwabDataSource` on canned responses (bars, error bodies,
+      streamer messages), like `kraken_data_source_test.cpp` and
+      `binanceus_data_source_test.cpp`.
+- [ ] Docs: a `config/schwab.example.toml`, and update docs/design.md and
+      docs/configuration.md, which call the data source a stub and say there
+      is no Schwab example file.
+- [ ] Then the trading venue (see Venues under Projects). Its header's TODO
+      predates `SchwabAuth` and `SchwabApi` and should be rewritten to build
+      on them.
+
 ## Status
 
-The strategy, risk and backtest code has not run against a live venue, and
-`run` in live mode is refused until a trading venue is implemented. `run` has
-been exercised in paper mode on Binance.US, including an 8 hour market-making
-session.
-
-### Done
-- [x] Build system, `Decimal`, shared types, `Error` / `std::expected`
-- [x] `DataSource` / `TradingVenue` interfaces, `Configuration`, factory
-- [x] `PaperTradingVenue` (works with any `DataSource`)
-- [x] `KrakenDataSource`: REST bars and symbol info, WebSocket quotes (tested
-      live)
-- [x] `BinanceUSDataSource`: klines, symbol info, WebSocket quotes, closed-bar
-      stream
-- [x] Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables,
-      `BarStore`, `QuoteStore` / `QuoteWriter`, Binance.US closed-bar stream
-      (tested live)
-- [x] `PnlTracker`: realized P&L from fills, used by the paper venue and the
-      risk gate (tested with fakes)
-- [x] Strategy interface, `Runner` (event queue, warmup, gap backfill, fill
-      polling to `OnFill`), example `SmaCrossover` (tested with fakes)
-- [x] `RiskGatedVenue`: order and position size, open orders, order rate,
-      daily loss, symbol allowlist, kill switch (tested with fakes)
-- [x] `ReplayDataSource` and `RunBacktest`: the same `Runner`, a paper venue
-      and a simulated clock (tested with fakes)
-- [x] `kestrel_app run` and `backtest`, `[risk]` and `[strategy]` config,
-      strategy registry
-- [x] `MarketMaker` strategy with opt-in drawdown protection
-- [x] Run recording: fills and P&L snapshots in the database (`[recording]`)
+The strategy, risk and backtest code runs on Binance.US, in paper mode and
+live; `run` refuses live mode on any other provider until its trading venue
+is implemented (`HasLiveVenue` in `factory.cpp`).
 
 ### Stubs
-- [ ] Schwab data source, and the Kraken, Schwab and Binance.US trading
-      venues return `kNotImplemented`; each header has a TODO listing the
-      endpoints and auth needed. The timeframe mappings, symbol mapping and
-      Schwab's authorization (`authorize`, token renewal, `SchwabApi`) are
-      real. See Venues under Projects.
+- [ ] The Schwab data source, and the Kraken and Schwab trading venues,
+      return `kNotImplemented`; each header has a TODO listing the endpoints
+      and auth needed. The timeframe mappings, symbol mapping and Schwab's
+      authorization (`authorize`, token renewal, `SchwabApi`) are real. See
+      Schwab data source under In progress, and Venues under Projects.
 
 ### Not started
 - [ ] Indicators, more strategies, agent access (see Strategies under
@@ -234,64 +277,6 @@ the header of the code concerned.
   Operations covers monitoring; a stale-feed watchdog that pauses (or halts)
   the strategy is a trading-safety feature and belongs with the risk work.
 
-## In progress: strategy system and risk gate
-
-Built and tested with fakes. Not yet run against a live venue, and reachable
-from `kestrel_app run` and `backtest`.
-
-### Done
-- [x] `Strategy` / `Context` / `Requirements` interface
-- [x] `Runner`: queue, warmup, gap backfill, duplicate bars dropped, hook
-      exceptions contained, fill polling, `Begin`/`Drain`/`End` for
-      deterministic drivers
-- [x] `SmaCrossover` example strategy
-- [x] `OnOrderUpdate` hook and `TradingVenue::GetOrder`; the runner tracks the
-      strategy's active orders and reports state changes; `SmaCrossover` stops
-      waiting on an order that closed without a fill
-- [x] Per-symbol quote conflation in the runner
-- [x] `RiskGatedVenue::Halt` cancels again after an in-flight order lands
-- [x] `RiskGatedVenue`: order and position notional, open orders, order rate,
-      daily loss, symbol allowlist, price staleness, kill switch
-- [x] `PnlTracker` as the single P&L implementation, used by both the paper
-      venue and the risk gate
-- [x] `ReplayDataSource` and `RunBacktest`
-- [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
-      (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
-      runner through a watch thread
-- [x] Per-strategy risk limits (`[risk.<strategy>]` over `[risk]`), and
-      `max_orders_per_day`, `max_consecutive_losses` and `max_drawdown`
-- [x] `[risk]` and `[strategy]` config sections (unknown keys are errors);
-      strategy registry (`CreateStrategy`) in `factory.cpp`
-- [x] Live runs need `[risk]` limits and a non-stub venue, checked at startup
-      (`ValidateForRun`); the daily-loss baseline is started at startup and a
-      failure is fatal
-- [x] `CreateRunner` (factory) builds a ready-to-run runner and takes its
-      provider connection as an argument, so the paper, no-limits and
-      failed-baseline paths are tested with fakes; `LoadReplayData`
-      (backtest) and `types::ParseTimestamp` hold the logic the `backtest`
-      command used to carry; `cli_*` tests check the exit code and message
-      for bad arguments
-
-### To finish
-- [x] Run the runner against Binance.US data end to end in paper mode: an 8 hour
-      `market_maker` session traded, recorded and stopped cleanly
-- [ ] `run` does not cancel open orders on shutdown; decide whether it should.
-      (`MarketMaker` cancels its own quotes in `OnStop`; `SmaCrossover` and
-      other strategies leave theirs resting.)
-- [x] `backtest` loads bars from `BarStore` first and falls back to the
-      provider (`LoadReplayData`), saving what it fetched
-- [ ] Bound the runner's bar queue (quotes are conflated per symbol)
-- [ ] Cap the paper venue's fill history so long paper runs stay bounded and
-      fast, and stop rescanning all of it in `GetFills`
-- [ ] Backtest summary: equity curve, total return, max drawdown, trade count,
-      win rate, fees paid
-- [ ] Backtest fill model: fill at the next bar's open by default (filling a
-      signal computed on a close at that same close is a look-ahead), keeping
-      fill-on-close as an option; use bar high/low for limit and stop order
-      triggering
-- [x] Document how to write a strategy (docs/writing-strategies.md: hooks,
-      threading rules, `Context`, the risk gate)
-
 ## Projects
 
 ### Venues
@@ -299,18 +284,11 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
       history, signed with the existing HMAC helper. Data source is already
       done.
-- [ ] **Schwab data source and trading venue.** Bars, symbol info, quotes
-      and orders, plus market-hours handling for equities. Authorization is
-      done: `kestrel_app authorize` exchanges the browser's code for tokens,
-      `SchwabAuth` renews the access token (keeping the 7-day refresh
-      deadline) and saves it, and `SchwabApi` sends requests with the token,
-      retrying once after a 401, within the market-data rate limit. The
-      factory builds the data source with them in paper mode too. Not yet
-      checked against the live API (no app keys yet); when it is, confirm
-      which error bodies Schwab sends for an expired or revoked refresh
-      token (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp` looks
-      for `invalid_grant` or "refresh token"), and whether renewals rotate
-      the refresh token.
+- [ ] **Schwab trading venue.** Orders, open orders, fills, positions and
+      balances on the Trader API, after the data source (see Schwab data
+      source under In progress). It can reuse `SchwabAuth` and `SchwabApi`,
+      which already handle tokens, renewal and retrying once after a 401;
+      order placement has its own rate limit.
 - [ ] **Binance.US trading venue.** The data source is done. The venue is
       reads checked against the live API on 2026-10-28 with `kestrel_app
       account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
@@ -333,17 +311,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       Exchange info advertises 6000
       request weight a minute, not 1200; the client now keeps to 2400 (it
       was 960).
-- [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
-      client, a summary when `run` stops, and one-minute rollups in
-      `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the
-      slow-call warning.
 - [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
       until a fill shows in `GetFills`, and the venue's clock against ours.
       Needs order placement first; store it beside `venue_latency`.
-- [x] Pushed executions: `TradingVenue::StreamExecutions`, the runner queues
-      pushed fills and order changes as events and drops to a 30 s backstop
-      poll, and the paper venue pushes. `MarketMaker` counts fills the venue
-      has reported but `OnFill` has not delivered against its inventory room.
 - [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
       the API key (no new credentials), keepalive about every 30 minutes,
       `executionReport` to fills and order states, a REST catch-up after a
@@ -356,8 +326,8 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       several symbols needs a longer `fill_poll_interval`.
 - [ ] An optional delay on the paper venue's pushes (and fills), so paper
       runs can model live latency instead of seeing fills instantly.
-- [ ] Re-verify the timeframe lists for Schwab, Kraken and Binance.US against
-      each provider's docs before completing the stubs. The lists in the code
+- [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
+      provider's docs (Schwab's is a step under In progress). The lists in the code
       and docs/design.md came from memory.
 
 ### Strategies
@@ -383,8 +353,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 
 ### Backtesting and research
 - [ ] Parameter sweeps and walk-forward testing
-- [x] Load backtest bars from the database (`BarStore`) instead of building
-      `ReplayDataSource` by hand
 - [ ] Order and cancel latency in the paper venue, so a quote can fill an
       order that the strategy has already asked to cancel
 - [ ] Record the aggressor side of trades (Binance `m` flag) so trades can be
@@ -424,8 +392,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
         snapshots is about 360 kB).
       - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
       - Add a check that warns at startup when the disk is nearly full.
-- [x] Store the account's own trade history: `account_fills`, synced
-      incrementally by `kestrel_app account --store` (live mode).
 - [ ] Use `account_fills` for the cost basis of what the account holds at the
       start of a run, so selling a starting holding realizes a real profit or
       loss instead of the whole sale price (the 8 hour run's phantom
@@ -467,8 +433,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.
-- [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
-      the whole suite passes under both
 - [ ] CI: build and run tests on every push, with a clang-tidy job and the
       ASan/UBSan and TSan builds above. TSan is worth having, since the runner
       and venues are multithreaded.
@@ -478,3 +442,91 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
 - [ ] Shorting and margin in the paper venue and the P&L tracker
+
+
+## Done
+
+### Overall
+- [x] Build system, `Decimal`, shared types, `Error` / `std::expected`
+- [x] `DataSource` / `TradingVenue` interfaces, `Configuration`, factory
+- [x] `PaperTradingVenue` (works with any `DataSource`)
+- [x] `KrakenDataSource`: REST bars and symbol info, WebSocket quotes (tested
+      live)
+- [x] `BinanceUSDataSource`: klines, symbol info, WebSocket quotes, closed-bar
+      stream
+- [x] Database: PostgreSQL + TimescaleDB `bars` and `quotes` hypertables,
+      `BarStore`, `QuoteStore` / `QuoteWriter`, Binance.US closed-bar stream
+      (tested live)
+- [x] `PnlTracker`: realized P&L from fills, used by the paper venue and the
+      risk gate (tested with fakes)
+- [x] Strategy interface, `Runner` (event queue, warmup, gap backfill, fill
+      polling to `OnFill`), example `SmaCrossover` (tested with fakes)
+- [x] `RiskGatedVenue`: order and position size, open orders, order rate,
+      daily loss, symbol allowlist, kill switch (tested with fakes)
+- [x] `ReplayDataSource` and `RunBacktest`: the same `Runner`, a paper venue
+      and a simulated clock (tested with fakes)
+- [x] `kestrel_app run` and `backtest`, `[risk]` and `[strategy]` config,
+      strategy registry
+- [x] `MarketMaker` strategy with opt-in drawdown protection
+- [x] Run recording: fills and P&L snapshots in the database (`[recording]`)
+
+### Strategy system and risk gate
+- [x] `Strategy` / `Context` / `Requirements` interface
+- [x] `Runner`: queue, warmup, gap backfill, duplicate bars dropped, hook
+      exceptions contained, fill polling, `Begin`/`Drain`/`End` for
+      deterministic drivers
+- [x] `SmaCrossover` example strategy
+- [x] `OnOrderUpdate` hook and `TradingVenue::GetOrder`; the runner tracks the
+      strategy's active orders and reports state changes; `SmaCrossover` stops
+      waiting on an order that closed without a fill
+- [x] Per-symbol quote conflation in the runner
+- [x] `RiskGatedVenue::Halt` cancels again after an in-flight order lands
+- [x] `RiskGatedVenue`: order and position notional, open orders, order rate,
+      daily loss, symbol allowlist, price staleness, kill switch
+- [x] `PnlTracker` as the single P&L implementation, used by both the paper
+      venue and the risk gate
+- [x] `ReplayDataSource` and `RunBacktest`
+- [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
+      (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
+      runner through a watch thread
+- [x] Per-strategy risk limits (`[risk.<strategy>]` over `[risk]`), and
+      `max_orders_per_day`, `max_consecutive_losses` and `max_drawdown`
+- [x] `[risk]` and `[strategy]` config sections (unknown keys are errors);
+      strategy registry (`CreateStrategy`) in `factory.cpp`
+- [x] Live runs need `[risk]` limits and a non-stub venue, checked at startup
+      (`ValidateForRun`); the daily-loss baseline is started at startup and a
+      failure is fatal
+- [x] `CreateRunner` (factory) builds a ready-to-run runner and takes its
+      provider connection as an argument, so the paper, no-limits and
+      failed-baseline paths are tested with fakes; `LoadReplayData`
+      (backtest) and `types::ParseTimestamp` hold the logic the `backtest`
+      command used to carry; `cli_*` tests check the exit code and message
+      for bad arguments
+- [x] Run the runner against Binance.US data end to end in paper mode: an 8 hour
+      `market_maker` session traded, recorded and stopped cleanly
+- [x] `backtest` loads bars from `BarStore` first and falls back to the
+      provider (`LoadReplayData`), saving what it fetched
+- [x] Document how to write a strategy (docs/writing-strategies.md: hooks,
+      threading rules, `Context`, the risk gate)
+
+### Venues
+- [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
+      client, a summary when `run` stops, and one-minute rollups in
+      `venue_latency` with `[recording]`. `[http] slow_request_ms` sets the
+      slow-call warning.
+- [x] Pushed executions: `TradingVenue::StreamExecutions`, the runner queues
+      pushed fills and order changes as events and drops to a 30 s backstop
+      poll, and the paper venue pushes. `MarketMaker` counts fills the venue
+      has reported but `OnFill` has not delivered against its inventory room.
+
+### Backtesting and research
+- [x] Load backtest bars from the database (`BarStore`) instead of building
+      `ReplayDataSource` by hand
+
+### Operations
+- [x] Store the account's own trade history: `account_fills`, synced
+      incrementally by `kestrel_app account --store` (live mode).
+
+### Engineering
+- [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
+      the whole suite passes under both
