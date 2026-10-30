@@ -1,5 +1,38 @@
 # Running Kestrel
 
+## Required packages
+
+A machine that only runs `kestrel_app`, without building it, needs the shared
+libraries it links against. The Release binary that CI builds on Ubuntu 26.04
+(the `kestrel_app-<commit>` artifact) runs on a clean Ubuntu 26.04 with:
+
+```sh
+sudo apt install --no-install-recommends ca-certificates libcpr1 libpq5 \
+    libspdlog1.15 libfmt10 libtomlplusplus3t64 libssl3t64 zlib1g
+```
+
+| Package | Why |
+|---|---|
+| `ca-certificates` | verifies the venues' TLS certificates (REST and WebSocket) |
+| `libcpr1` | HTTP client; pulls in libcurl |
+| `libssl3t64`, `zlib1g` | TLS and compression, also for the WebSocket client (IXWebSocket is linked in) |
+| `libpq5` | PostgreSQL client, for `--store`, `init-db`, `backtest` and `[recording]`; needed to start even without a database |
+| `libspdlog1.15`, `libfmt10` | logging |
+| `libtomlplusplus3t64` | reading the config file |
+
+The package names and versions are Ubuntu 26.04's. A binary built elsewhere
+links against whatever that machine had installed, and dependencies fetched
+during the build (see [building.md](building.md)) are linked in rather than
+needed at run time; `ldd kestrel_app` lists what a given binary needs, and any
+line saying `not found` is a missing package.
+
+The database is only needed by the commands above that use it. It can be on
+another machine; the one that holds it needs PostgreSQL with TimescaleDB
+(`postgresql-18 postgresql-18-timescaledb` on Ubuntu 26.04), and setting it up
+with `scripts/setup_database.sh` needs `psql`. See [database.md](database.md).
+
+## Usage
+
 ```sh
 ./build/kestrel_app --config config/kestrel.toml bars 1h 24
 ```
