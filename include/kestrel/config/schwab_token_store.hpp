@@ -44,9 +44,9 @@ class SchwabTokenStore {
     static SchwabTokenHealth Check(const SchwabTokens& tokens,
                                    types::Timestamp now);
 
-    // Logged when there are no usable tokens at all (first run or expired).
-    static void LogReauthorizationInstructions(const std::string& app_key,
-                                               const std::string& redirect_uri);
+    // Logged when there are no usable tokens at all (first run, expired or
+    // refused): says to run the `authorize` command.
+    static void LogReauthorizationInstructions();
 
    private:
     std::filesystem::path mPath;

@@ -29,11 +29,14 @@ struct Components {
 // mode. Callers use only the abstract interfaces.
 //
 // Live mode fails with kAuth if the provider's credentials are not configured.
+// Schwab needs them in paper mode too, with a token file from `kestrel_app
+// authorize`, since its market data is behind OAuth.
 types::Result<Components> CreateComponents(
     const config::Configuration& configuration);
 
 // Just the provider's DataSource, for work that needs no venue (backtests).
-// Unlike CreateComponents it starts no streams.
+// Unlike CreateComponents it starts no streams. Schwab's needs its credentials
+// and tokens, as above.
 types::Result<std::shared_ptr<data::DataSource>> CreateDataSource(
     const config::Configuration& configuration);
 

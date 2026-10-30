@@ -115,7 +115,4 @@ class BinanceUSApi {
     bool mBanned = false;
 };
 
-// Percent-encodes everything but the RFC 3986 unreserved characters.
-std::string UrlEncode(std::string_view text);
-
 }  // namespace kestrel::trading

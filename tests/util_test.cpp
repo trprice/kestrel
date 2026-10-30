@@ -4,6 +4,7 @@
 #include "kestrel/util/json.hpp"
 #include "kestrel/util/rate_limiter.hpp"
 #include "kestrel/util/retry.hpp"
+#include "kestrel/util/url.hpp"
 #include "test_helpers.hpp"
 
 namespace {
@@ -35,6 +36,28 @@ TEST(Base64, RoundTrip) {
     }
     EXPECT_EQ(util::Base64Encode("foobar"), "Zm9vYmFy");
     EXPECT_FALSE(util::Base64Decode("abc").has_value());
+}
+
+TEST(Url, EncodesEverythingButUnreservedCharacters) {
+    EXPECT_EQ(util::UrlEncode("AZaz09-._~"), "AZaz09-._~");
+    EXPECT_EQ(util::UrlEncode("a b/c+d=e&f%"), "a%20b%2Fc%2Bd%3De%26f%25");
+}
+
+TEST(Url, DecodesPercentEscapesAndPlus) {
+    EXPECT_EQ(util::UrlDecode("C0.abc%40"), "C0.abc@");
+    EXPECT_EQ(util::UrlDecode("a+b%2Fc%2fd"), "a b/c/d");
+    EXPECT_EQ(util::PercentDecode("a+b%2Bc%40"), "a+b+c@");
+    EXPECT_EQ(util::UrlDecode("100%"), "100%");  // no digits after '%'
+    EXPECT_EQ(util::UrlDecode("%4"), "%4");      // only one
+    EXPECT_EQ(util::UrlDecode("%zz1"), "%zz1");  // not hex
+    EXPECT_EQ(util::UrlDecode(util::UrlEncode("a b/c+d=e&f%@")),
+              "a b/c+d=e&f%@");
+}
+
+TEST(Url, FormEncodesFieldsInKeyOrder) {
+    EXPECT_EQ(util::FormEncode({{"b", "x y"}, {"a", "1&2"}}),
+              "a=1%262&b=x%20y");
+    EXPECT_EQ(util::FormEncode({}), "");
 }
 
 TEST(Json, KeepsFractionalNumbersExact) {

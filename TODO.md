@@ -35,7 +35,8 @@ session.
 - [ ] Schwab data source, and the Kraken, Schwab and Binance.US trading
       venues return `kNotImplemented`; each header has a TODO listing the
       endpoints and auth needed. The timeframe mappings, symbol mapping and
-      the Schwab token store are real. See Venues under Projects.
+      Schwab's authorization (`authorize`, token renewal, `SchwabApi`) are
+      real. See Venues under Projects.
 
 ### Not started
 - [ ] Indicators, more strategies, agent access (see Strategies under
@@ -298,9 +299,18 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
       history, signed with the existing HMAC helper. Data source is already
       done.
-- [ ] **Schwab data source and trading venue.** OAuth with the token store
-      that already exists, bars, quotes and orders. Needs market-hours handling
-      for equities.
+- [ ] **Schwab data source and trading venue.** Bars, symbol info, quotes
+      and orders, plus market-hours handling for equities. Authorization is
+      done: `kestrel_app authorize` exchanges the browser's code for tokens,
+      `SchwabAuth` renews the access token (keeping the 7-day refresh
+      deadline) and saves it, and `SchwabApi` sends requests with the token,
+      retrying once after a 401, within the market-data rate limit. The
+      factory builds the data source with them in paper mode too. Not yet
+      checked against the live API (no app keys yet); when it is, confirm
+      which error bodies Schwab sends for an expired or revoked refresh
+      token (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp` looks
+      for `invalid_grant` or "refresh token"), and whether renewals rotate
+      the refresh token.
 - [ ] **Binance.US trading venue.** The data source is done. The venue is
       reads checked against the live API on 2026-10-28 with `kestrel_app
       account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,

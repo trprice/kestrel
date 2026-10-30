@@ -5,6 +5,7 @@
 #include "kestrel/data/binanceus_errors.hpp"
 #include "kestrel/util/hmac.hpp"
 #include "kestrel/util/json.hpp"
+#include "kestrel/util/url.hpp"
 
 namespace kestrel::trading {
 
@@ -27,29 +28,12 @@ std::string Plain(const BinanceUSApi::Params& params) {
         if (!out.empty()) {
             out += '&';
         }
-        out += UrlEncode(key) + '=' + UrlEncode(value);
+        out += util::UrlEncode(key) + '=' + util::UrlEncode(value);
     }
     return out;
 }
 
 }  // namespace
-
-std::string UrlEncode(std::string_view text) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
-    std::string out;
-    for (const unsigned char c : text) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
-            c == '~') {
-            out += static_cast<char>(c);
-        } else {
-            out += '%';
-            out += kHex[c >> 4];
-            out += kHex[c & 0xF];
-        }
-    }
-    return out;
-}
 
 BinanceUSApi::BinanceUSApi(config::BinanceUSCredentials credentials,
                            std::shared_ptr<net::HttpClient> http,

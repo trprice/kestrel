@@ -71,11 +71,6 @@ TEST(BinanceUSApi, SignsTheEncodedQueryItSends) {
     EXPECT_NE(query.find("newClientOrderId=a%20b%26c&"), std::string::npos);
 }
 
-TEST(BinanceUSApi, EncodesEverythingButUnreservedCharacters) {
-    EXPECT_EQ(UrlEncode("AZaz09-._~"), "AZaz09-._~");
-    EXPECT_EQ(UrlEncode("a b/c+d=e&f%"), "a%20b%2Fc%2Bd%3De%26f%25");
-}
-
 TEST(BinanceUSApi, SendsTheKeyAndTheSignedQueryVerbatim) {
     Fixture f;
     f.ServerTime(kLocalMs);

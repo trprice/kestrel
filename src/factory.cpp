@@ -7,9 +7,9 @@
 #include <set>
 #include <stdexcept>
 
-#include "kestrel/config/schwab_token_store.hpp"
 #include "kestrel/data/binanceus_data_source.hpp"
 #include "kestrel/data/kraken_data_source.hpp"
+#include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
 #include "kestrel/db/trade_store.hpp"
 #include "kestrel/net/timed_http_client.hpp"
@@ -89,39 +89,45 @@ Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
                               *cfg.Credentials(), ds, cfg.GetSymbols(), http)};
 }
 
+// Schwab's market data needs OAuth tokens even in paper mode, so the data
+// source fails to build without the app's credentials and a token file from
+// `kestrel_app authorize`. An expired refresh token fails here, loudly, rather
+// than at the first request.
+Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
+    const config::SchwabConfiguration& cfg) {
+    if (!cfg.Credentials()) {
+        return MakeError(
+            ErrorCategory::kAuth,
+            "Schwab needs the app's key and secret, even for market data in "
+            "paper mode; set KESTREL_SCHWAB_APP_KEY and "
+            "KESTREL_SCHWAB_APP_SECRET or add them to the secrets file");
+    }
+    auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
+    auto auth = std::make_shared<data::SchwabAuth>(
+        *cfg.Credentials(), config::SchwabTokenStore(cfg.TokenFile()), http,
+        cfg.RedirectUri());
+    if (auto loaded = auth->Load(); !loaded) {
+        return std::unexpected(loaded.error());
+    }
+    return std::make_shared<data::SchwabDataSource>(
+        std::make_shared<data::SchwabApi>(auth, http,
+                                          data::SchwabApi::Options{}));
+}
+
 Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
-    auto ds = std::make_shared<data::SchwabDataSource>();
+    auto ds = MakeSchwabDataSource(cfg);
+    if (!ds) {
+        return std::unexpected(ds.error());
+    }
     if (cfg.GetMode() == config::Mode::kPaper) {
-        auto venue = MakePaper(cfg, ds);
+        auto venue = MakePaper(cfg, *ds);
         if (!venue) {
             return std::unexpected(venue.error());
         }
-        return Components{ds, std::move(*venue)};
+        return Components{*ds, std::move(*venue)};
     }
-    if (!cfg.Credentials()) {
-        return std::unexpected(MissingCredentials(
-            "schwab", "KESTREL_SCHWAB_APP_KEY and KESTREL_SCHWAB_APP_SECRET"));
-    }
-    // Surface an expired refresh token now, loudly, instead of on the first
-    // order.
-    const config::SchwabTokenStore store(cfg.TokenFile());
-    auto tokens = store.Load();
-    if (!tokens) {
-        config::SchwabTokenStore::LogReauthorizationInstructions(
-            cfg.Credentials()->app_key, cfg.RedirectUri());
-        return MakeError(ErrorCategory::kAuth,
-                         "no usable Schwab tokens: " + tokens.error().message);
-    }
-    if (config::SchwabTokenStore::Check(*tokens, types::Now()) ==
-        config::SchwabTokenHealth::kReauthorizationRequired) {
-        config::SchwabTokenStore::LogReauthorizationInstructions(
-            cfg.Credentials()->app_key, cfg.RedirectUri());
-        return MakeError(
-            ErrorCategory::kAuth,
-            "Schwab refresh token expired; re-authorization required");
-    }
-    return Components{ds, std::make_unique<trading::SchwabTradingVenue>(
-                              *cfg.Credentials(), ds)};
+    return Components{*ds, std::make_unique<trading::SchwabTradingVenue>(
+                               *cfg.Credentials(), *ds)};
 }
 
 using StrategyPtr = std::unique_ptr<strategy::Strategy>;
@@ -427,8 +433,15 @@ Result<std::shared_ptr<data::DataSource>> CreateDataSource(
         case config::Provider::kBinanceUS:
             return std::make_shared<data::BinanceUSDataSource>(
                 net::MakeTimedHttpClient(configuration.GetHttp().slow_request));
-        case config::Provider::kSchwab:
-            return std::make_shared<data::SchwabDataSource>();
+        case config::Provider::kSchwab: {
+            auto ds = MakeSchwabDataSource(
+                dynamic_cast<const config::SchwabConfiguration&>(
+                    configuration));
+            if (!ds) {
+                return std::unexpected(ds.error());
+            }
+            return std::shared_ptr<data::DataSource>(std::move(*ds));
+        }
     }
     return MakeError(ErrorCategory::kInternal, "unknown provider");
 }

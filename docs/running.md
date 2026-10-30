@@ -23,9 +23,33 @@ for the config file.
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
 | `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] (--test \| --confirm)` | one order on the live venue; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
 | `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
+| `authorize [--status]` | Schwab only: authorizes Kestrel to use the account and saves its tokens; `--status` shows when they expire |
 
 `--store` writes what a command fetches to the `[database]`; see
 [database.md](database.md).
+
+## Authorizing Schwab
+
+Schwab's API needs OAuth tokens for everything, market data included, so
+authorize once before any other command on `provider = "schwab"`:
+
+1. Register an app at developer.schwab.com with the Market Data Production
+   and Accounts and Trading Production products, and set its callback URL to
+   `[schwab] redirect_uri` (default `https://127.0.0.1:8182`) exactly. Wait
+   for its status to be Ready For Use.
+2. Give Kestrel the app's key and secret (see
+   [configuration.md](configuration.md#credentials)).
+3. Run `kestrel_app -c config/schwab.toml authorize`. Open the page it prints,
+   log in to Schwab and approve access. Schwab sends the browser to the
+   callback URL, which shows an error page because nothing listens there;
+   that is expected. Paste the whole address from the address bar into the
+   prompt straight away, since the code in it is short-lived.
+
+The browser can be on any machine: Schwab never connects to the callback URL,
+it only sends the browser there. The tokens are saved to `[schwab]
+token_file`. After that the access token is renewed automatically, but the
+refresh token expires 7 days after the authorization; run `authorize` again
+before then (`authorize --status` shows when).
 
 ## Backtesting and running strategies
 

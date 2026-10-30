@@ -1,6 +1,9 @@
 #pragma once
 
+#include <memory>
+
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/data/schwab_auth.hpp"
 
 namespace kestrel::data {
 
@@ -12,14 +15,13 @@ struct SchwabFrequency {
 };
 types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 
-// STUB. Not yet functional; every call returns kNotImplemented.
+// STUB. Not yet functional; every call returns kNotImplemented. The
+// authorization is done: requests go through SchwabApi, which adds the access
+// token (renewing it as needed) and keeps to the rate limit.
 //
 // TODO(schwab): implement against the Schwab Trader API "Market Data" product.
 //   Base URL: https://api.schwabapi.com/marketdata/v1
-//   Auth:     OAuth2 authorization-code flow. Every request carries
-//             `Authorization: Bearer <access_token>`; access tokens last ~30
-//             minutes and are renewed with the refresh token (valid ~7 days,
-//             then the user must re-authorize). See config::SchwabTokenStore.
+//   Auth:     SchwabApi::Send (see SchwabAuth and `kestrel_app authorize`).
 //   GetBars:  GET /pricehistory?symbol=&periodType=&frequencyType=&frequency=
 //             &startDate=<epoch ms>&endDate=<epoch ms>&needExtendedHoursData=
 //             Response: {"candles":[{"open","high","low","close","volume",
@@ -33,9 +35,12 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 //             quote time). Updates are deltas, so merge them.
 //   SymbolInfo: Schwab has no instrument-metadata endpoint for tick/lot size;
 //             US equities use tick 0.01 (0.0001 under $1), lot 1, min 1.
-//   Limits:   ~120 market-data requests/minute per app.
+//   Limits:   ~120 market-data requests/minute per app (SchwabApi's limiter).
 class SchwabDataSource : public DataSource {
    public:
+    explicit SchwabDataSource(std::shared_ptr<SchwabApi> api)
+        : mApi(std::move(api)) {}
+
     std::string_view Name() const override { return "schwab"; }
     types::Result<std::vector<types::Bar>> GetBars(const types::Symbol&,
                                                    types::Timeframe,
@@ -45,6 +50,9 @@ class SchwabDataSource : public DataSource {
         const std::vector<std::string>&, QuoteCallback) override;
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol&) override;
+
+   private:
+    std::shared_ptr<SchwabApi> mApi;
 };
 
 }  // namespace kestrel::data

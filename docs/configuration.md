@@ -41,23 +41,31 @@ warns if other users can read it):
 
 Environment variables win over the file, and a key and its secret must both be
 given. `KESTREL_SECRETS_FILE` or `[general] secrets_file` points at a different
-file. Kraken market data needs no credentials; paper mode needs none at all.
-Live mode without credentials fails at startup.
+file. Kraken and Binance.US market data need no credentials, so paper mode on
+them needs none at all. Schwab's market data is behind OAuth, so Schwab needs
+its app key and secret, and tokens, in paper mode too. Live mode without
+credentials fails at startup.
 
 A Binance.US key needs read permission for `account` and trading permission
 for `order` and `run`; never enable withdrawals. The same key serves the
 user-data stream when it is added.
 
-**Schwab tokens** are persisted to `[schwab] token_file` (default
-`schwab_tokens.json`, mode 0600). The 7-day refresh token can only be replaced
-by a human re-authorizing in a browser, so Kestrel logs a warning in the last
-24 hours and a `SCHWAB RE-AUTHORIZATION REQUIRED` error, with the authorize
-URL, once it has expired.
+**Schwab tokens** come from `kestrel_app authorize` (see
+[running.md](running.md#authorizing-schwab)) and are kept in `[schwab]
+token_file` (default `schwab_tokens.json` next to the config, mode 0600; keep
+it out of version control). The access token lasts 30 minutes and is renewed
+automatically, and each renewal is saved to the file. The refresh token lasts
+7 days from the authorization, and renewing does not extend it; only running
+`authorize` again replaces it. Kestrel logs a warning in its last 24 hours,
+and a `SCHWAB RE-AUTHORIZATION REQUIRED` error, saying to run `authorize`,
+once it has expired or Schwab refuses it.
 
 ## Provider tables
 
 `[kraken]` and `[binanceus]` take `rest_url` and `ws_url` (defaults: the
-production endpoints). `[schwab]` takes `redirect_uri` and `token_file`.
+production endpoints). `[schwab]` takes `redirect_uri` (default
+`https://127.0.0.1:8182`), which must match the app's callback URL in the
+Schwab developer portal exactly, and `token_file`.
 
 ## `[paper]`
 

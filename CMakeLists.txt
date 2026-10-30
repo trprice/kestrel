@@ -63,12 +63,14 @@ add_library(kestrel
   src/util/hmac.cpp
   src/util/json.cpp
   src/util/rate_limiter.cpp
+  src/util/url.cpp
   src/util/retry.cpp
   src/net/cpr_http_client.cpp
   src/net/timed_http_client.cpp
   src/data/symbols.cpp
   src/data/kraken_data_source.cpp
   src/data/kraken_quote_stream.cpp
+  src/data/schwab_auth.cpp
   src/data/schwab_data_source.cpp
   src/data/binanceus_data_source.cpp
   src/data/binanceus_errors.cpp
@@ -128,6 +130,7 @@ if(KESTREL_BUILD_APP)
     app/commands/run.cpp
     app/commands/backtest.cpp
     app/commands/trades.cpp
+    app/commands/authorize.cpp
   )
   target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
@@ -198,6 +201,7 @@ if(KESTREL_BUILD_TESTS)
     tests/pnl_tracker_test.cpp
     tests/timed_http_client_test.cpp
     tests/cpr_http_client_test.cpp
+    tests/schwab_auth_test.cpp
     tests/binanceus_api_test.cpp
     tests/binanceus_trading_venue_test.cpp
     tests/risk_gate_test.cpp

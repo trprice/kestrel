@@ -87,8 +87,8 @@ SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens,
         spdlog::error(
             "SCHWAB RE-AUTHORIZATION REQUIRED: the refresh token expired at "
             "{}. Trading and market data "
-            "are unavailable until you re-authorize in a browser and store the "
-            "new tokens.",
+            "are unavailable until you re-authorize with `kestrel_app "
+            "authorize`.",
             types::FormatIso8601(tokens.refresh_expires_at));
         return SchwabTokenHealth::kReauthorizationRequired;
     }
@@ -96,7 +96,7 @@ SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens,
     if (remaining < std::chrono::hours(24)) {
         spdlog::warn(
             "Schwab refresh token expires in {} minutes (at {}); re-authorize "
-            "soon to avoid an outage.",
+            "soon with `kestrel_app authorize` to avoid an outage.",
             std::chrono::duration_cast<std::chrono::minutes>(remaining).count(),
             types::FormatIso8601(tokens.refresh_expires_at));
     }
@@ -104,14 +104,11 @@ SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens,
                                            : SchwabTokenHealth::kValid;
 }
 
-void SchwabTokenStore::LogReauthorizationInstructions(
-    const std::string& app_key, const std::string& redirect_uri) {
+void SchwabTokenStore::LogReauthorizationInstructions() {
     spdlog::error(
-        "SCHWAB RE-AUTHORIZATION REQUIRED: open "
-        "https://api.schwabapi.com/v1/oauth/authorize?client_id={}"
-        "&redirect_uri={} in a browser, log in, approve access, and exchange "
-        "the returned code for tokens.",
-        app_key, redirect_uri);
+        "SCHWAB RE-AUTHORIZATION REQUIRED: run `kestrel_app -c <config> "
+        "authorize`, open the URL it prints, log in to Schwab, approve access "
+        "and paste back the address the browser is sent to.");
 }
 
 }  // namespace kestrel::config

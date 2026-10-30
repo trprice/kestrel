@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     app::AddRunCommand(app, command);
     app::AddBacktestCommand(app, command);
     app::AddTradesCommand(app, command);
+    app::AddAuthorizeCommand(app, command);
 
     CLI11_PARSE(app, argc, argv);
 
