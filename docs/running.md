@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--equity-csv` also writes the equity curve |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
@@ -94,11 +94,48 @@ before then (`authorize --status` shows when).
 - `backtest <strategy> --from <date> --to <date>` fetches the strategy's
   bars (plus its warmup) from the database, falling back to the provider for
   missing bars, replays them and any stored quotes through the same `Runner`
-  and a paper venue using `[paper]`, and prints the fills, positions and
-  balances. `--to` is exclusive; dates are `YYYY-MM-DD` or ISO 8601 UTC
-  with the `Z` (`2026-10-19T17:00:00Z`).
+  and a paper venue using `[paper]`, and prints the fills, positions,
+  balances and a summary (below). `--to` is exclusive; dates are
+  `YYYY-MM-DD` or ISO 8601 UTC with the `Z` (`2026-10-19T17:00:00Z`).
   `backtest` records no run, fills or P&L. With a `[database]`, it does save
   the bars it had to fetch from the provider, so the next backtest finds them.
+- **The backtest summary** values every balance in the quote asset after
+  each quote (at its mid, or the last trade when a side is missing) or, for
+  a strategy without quotes, each bar close:
+
+  ```
+  summary (USDT), 2026-10-30T17:50:23.391Z to 2026-10-31T17:49:00.000Z
+    start equity   12465.73
+    end equity     12560.242185
+    return         +0.76% (+94.512185)
+    hold start     12570.79  (the starting balances valued at the end)
+    vs hold        -10.547815
+    max drawdown   -0.70% (-88.634435, 2026-10-31T01:37:45.765Z to 2026-10-31T04:55:35.511Z)
+    realized       +88.45651371
+    unrealized     +6.05567129
+    fills          1172 (495 buy, 677 sell; 1172 maker, 0 taker)
+    volume         55314.00937
+    fees           0
+    closing sells  677, 440 won (64%)
+    ZEC/USDT  1232.865 -> 1285.395; held 1.711 .. 2.406 ZEC (start 2, end 2.009)
+  ```
+
+  - **vs hold** is the end equity less what the starting balances alone are
+    worth at the end: what trading added beyond holding them. Read it before
+    the return, which on a day the price moves is mostly the move.
+  - **max drawdown** is the largest fall from a peak, checked at every price.
+  - **realized** is average cost, fees included, with the starting holding
+    given the first mark as its cost basis; **unrealized** is the rest of the
+    change in equity.
+  - **closing sells** are sells of something held, and **won** those that
+    realized more than zero: the rule the risk gate counts losing sells by.
+  - The summary needs the symbols to share a quote asset, and every starting
+    balance to be that asset or a symbol's base; otherwise it is skipped
+    with the reason.
+  - `--equity-csv FILE` also writes the equity curve, one row a minute from
+    `--from` and a last one at `--to`: `time`, `equity`, `hold_equity`, and
+    each symbol's mark and base asset held. A path that cannot be written is
+    refused before anything is loaded.
 - `run <strategy>` trades on live data through the paper or live venue until
   Ctrl-C or SIGTERM (a second signal exits immediately), and logs each HTTP
   endpoint's response times when it stops. If `[risk]` sets any limit, orders

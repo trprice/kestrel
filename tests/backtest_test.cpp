@@ -236,6 +236,33 @@ TEST(BacktestTest, RunsASmaCrossoverEndToEnd) {
     EXPECT_TRUE(found_usd);
 }
 
+TEST(BacktestTest, SummarizesTheRun) {
+    auto result = RunBacktest(Data(kCloses), Sma(), Options());
+    ASSERT_OK(result);
+    ASSERT_OK(result->summary);
+    const auto& s = *result->summary;
+
+    EXPECT_EQ(s.quote_asset, "USD");
+    EXPECT_EQ(s.start_time, Hour(5));  // the first bar replayed closes
+    EXPECT_EQ(s.end_time, Hour(8));
+    EXPECT_EQ(s.start_equity, D("10000"));
+    EXPECT_EQ(s.end_equity, D("9992.5"));  // the venue's USD balance
+    EXPECT_EQ(s.hold_equity, D("10000"));  // nothing but cash to hold
+    EXPECT_EQ(s.realized, D("-7.5"));
+    EXPECT_EQ(s.unrealized, D("0"));
+    EXPECT_EQ(s.fills, 2u);
+    EXPECT_EQ(s.closing_sells, 1u);
+    EXPECT_EQ(s.winning_sells, 0u);
+    // 0.5 BTC bought at 20 is worth 10 at hour 7's close of 20 and 2.5 at
+    // hour 8's close of 5: equity falls from 10000 to 9992.5.
+    EXPECT_EQ(s.max_drawdown, D("7.5"));
+    // Every minute from hour 5 to hour 8.
+    ASSERT_EQ(s.curve.size(), 181u);
+    EXPECT_EQ(s.curve.front().time, Hour(5));
+    EXPECT_EQ(s.curve.back().time, Hour(8));
+    EXPECT_EQ(s.curve.back().equity, D("9992.5"));
+}
+
 TEST(BacktestTest, AppliesSlippageAndFees) {
     auto options = Options();
     options.paper.slippage = D("0.01");
@@ -447,6 +474,26 @@ TEST(BacktestTest, ReplaysStoredQuotesToAQuoteStrategy) {
     EXPECT_EQ(result->fills[0].side, Side::kBuy);
     EXPECT_EQ(result->fills[0].price, D("201"));
     EXPECT_EQ(result->fills[0].time, Hour(0) + std::chrono::minutes(20));
+}
+
+TEST(BacktestTest, SummarizesAQuoteStrategyAtTheMid) {
+    std::vector<RecordingBuyer::Event> events;
+    auto options = Options();
+    options.start = Hour(0);
+    options.end = Hour(1);
+    auto result = RunBacktest(QuoteData(), std::make_unique<RecordingBuyer>(events),
+                              options);
+    ASSERT_OK(result);
+    ASSERT_OK(result->summary);
+    ASSERT_EQ(result->fills.size(), 1u);
+    const auto& last = result->summary->symbols.at(0);
+    // The end equity is the venue's balances valued at the last quote's mid.
+    types::Decimal want;
+    for (const auto& balance : result->balances) {
+        want += balance.asset == "USD" ? balance.total
+                                       : balance.total * last.last_mark;
+    }
+    EXPECT_EQ(result->summary->end_equity, want);
 }
 
 TEST(BacktestTest, OnlyReplaysQuotesInTheRange) {

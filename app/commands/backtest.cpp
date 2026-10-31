@@ -2,6 +2,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <fstream>
 #include <iostream>
 
 #include "command.hpp"
@@ -16,13 +17,24 @@ namespace {
 class BacktestCommand : public Command {
    public:
     BacktestCommand(std::string strategy_name, types::Timestamp from,
-                    types::Timestamp to, bool quotes_from_trades)
+                    types::Timestamp to, bool quotes_from_trades,
+                    std::string equity_csv)
         : mName(std::move(strategy_name)),
           mFrom(from),
           mTo(to),
-          mQuotesFromTrades(quotes_from_trades) {}
+          mQuotesFromTrades(quotes_from_trades),
+          mEquityCsv(std::move(equity_csv)) {}
 
     int Run(const config::Configuration& config) override {
+        // Opened first, so a bad path is refused before any data is loaded.
+        std::ofstream csv;
+        if (!mEquityCsv.empty()) {
+            csv.open(mEquityCsv);
+            if (!csv) {
+                spdlog::error("--equity-csv: cannot write {}", mEquityCsv);
+                return 2;
+            }
+        }
         auto limits = ResolveRiskLimits(mName, config);
         if (!limits) {
             spdlog::error("risk: {}", limits.error().ToString());
@@ -75,6 +87,22 @@ class BacktestCommand : public Command {
             return Fail("backtest", result.error());
         }
         PrintReport(*result);
+        if (!result->summary) {
+            std::cout << "summary: unavailable: "
+                      << result->summary.error().message << '\n';
+        } else {
+            PrintSummary(*result->summary);
+            if (csv.is_open()) {
+                WriteCurve(csv, *result->summary);
+                if (!csv) {
+                    spdlog::error("--equity-csv: writing {} failed",
+                                  mEquityCsv);
+                    return 1;
+                }
+                spdlog::info("equity curve: {} points written to {}",
+                             result->summary->curve.size(), mEquityCsv);
+            }
+        }
         return 0;
     }
 
@@ -105,10 +133,84 @@ class BacktestCommand : public Command {
         }
     }
 
+    // Amounts to 8 places without trailing zeros; fractions as percentages.
+    static std::string Amount(const types::Decimal& d) {
+        return d.Rescale(8, types::Rounding::kNearest).Normalized().ToString();
+    }
+    static std::string Signed(const types::Decimal& d) {
+        return (d.Sign() > 0 ? "+" : "") + Amount(d);
+    }
+    static std::string Percent(const types::Decimal& fraction) {
+        const auto pct = (fraction * types::Decimal(100, 0))
+                             .Rescale(2, types::Rounding::kNearest);
+        return (pct.Sign() > 0 ? "+" : "") + pct.ToString() + "%";
+    }
+
+    static void PrintSummary(const backtest::BacktestSummary& s) {
+        std::cout << "summary (" << s.quote_asset << "), "
+                  << types::FormatIso8601(s.start_time) << " to "
+                  << types::FormatIso8601(s.end_time) << '\n';
+        std::cout << "  start equity   " << Amount(s.start_equity) << '\n'
+                  << "  end equity     " << Amount(s.end_equity) << '\n'
+                  << "  return         " << Percent(s.return_fraction) << " ("
+                  << Signed(s.end_equity - s.start_equity) << ")\n"
+                  << "  hold start     " << Amount(s.hold_equity)
+                  << "  (the starting balances valued at the end)\n"
+                  << "  vs hold        " << Signed(s.end_equity - s.hold_equity)
+                  << '\n'
+                  << "  max drawdown   " << Percent(-s.max_drawdown_fraction)
+                  << " (" << Signed(-s.max_drawdown);
+        if (!s.max_drawdown.IsZero()) {
+            std::cout << ", " << types::FormatIso8601(s.drawdown_peak_time)
+                      << " to " << types::FormatIso8601(s.drawdown_trough_time);
+        }
+        std::cout << ")\n"
+                  << "  realized       " << Signed(s.realized) << '\n'
+                  << "  unrealized     " << Signed(s.unrealized) << '\n'
+                  << "  fills          " << s.fills << " (" << s.buys
+                  << " buy, " << s.sells << " sell; " << s.maker_fills
+                  << " maker, " << s.taker_fills << " taker)\n"
+                  << "  volume         " << Amount(s.volume) << '\n'
+                  << "  fees           " << Amount(s.fees) << '\n'
+                  << "  closing sells  " << s.closing_sells << ", "
+                  << s.winning_sells << " won";
+        if (s.closing_sells > 0) {
+            std::cout << " (" << s.winning_sells * 100 / s.closing_sells
+                      << "%)";
+        }
+        std::cout << '\n';
+        for (const auto& sym : s.symbols) {
+            std::cout << "  " << sym.symbol << "  " << Amount(sym.first_mark)
+                      << " -> " << Amount(sym.last_mark) << "; held "
+                      << Amount(sym.min_held) << " .. " << Amount(sym.max_held)
+                      << ' ' << sym.base << " (start " << Amount(sym.start_held)
+                      << ", end " << Amount(sym.end_held) << ")\n";
+        }
+    }
+
+    static void WriteCurve(std::ostream& out,
+                           const backtest::BacktestSummary& s) {
+        out << "time,equity,hold_equity";
+        for (const auto& sym : s.symbols) {
+            out << ",mark " << sym.symbol << ",held " << sym.base;
+        }
+        out << '\n';
+        for (const auto& point : s.curve) {
+            out << types::FormatIso8601(point.time) << ','
+                << Amount(point.equity) << ',' << Amount(point.hold_equity);
+            for (std::size_t i = 0; i < point.marks.size(); ++i) {
+                out << ',' << Amount(point.marks[i]) << ','
+                    << Amount(point.held[i]);
+            }
+            out << '\n';
+        }
+    }
+
     std::string mName;
     types::Timestamp mFrom;
     types::Timestamp mTo;
     bool mQuotesFromTrades;
+    std::string mEquityCsv;
 };
 
 struct Args {
@@ -116,6 +218,7 @@ struct Args {
     std::string from;
     std::string to;
     bool quotes_from_trades = false;
+    std::string equity_csv;
 };
 
 }  // namespace
@@ -141,10 +244,15 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                   "Replay quotes rebuilt from stored trades (`trades --store`) "
                   "instead of recorded quotes; approximate, see "
                   "docs/database.md");
+    sub->add_option("--equity-csv", args->equity_csv,
+                    "Also write the equity curve, sampled every minute, to "
+                    "this CSV file")
+        ->type_name("FILE");
     sub->callback([&slot, args] {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
-            *types::ParseTimestamp(args->to), args->quotes_from_trades);
+            *types::ParseTimestamp(args->to), args->quotes_from_trades,
+            args->equity_csv);
     });
 }
 

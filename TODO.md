@@ -15,8 +15,6 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
-- [ ] Backtest summary: equity curve, total return, max drawdown, trade count,
-      win rate, fees paid
 - [ ] Backtest fill model: fill at the next bar's open by default (filling a
       signal computed on a close at that same close is a look-ahead), keeping
       fill-on-close as an option; use bar high/low for limit and stop order
@@ -232,8 +230,10 @@ the header of the code concerned.
   fees. Resting limit and stop orders can only trigger at closes, never on an
   intrabar high or low.
 - An order placed in `OnStart` is rejected because no quote exists yet.
-- The result is raw fills, positions and balances. There is no equity curve,
-  drawdown or other summary statistics.
+- The summary has no annualized figures (Sharpe and the like); one day of
+  data is too little for them. Its realized P&L gives the starting holding
+  the first mark as cost basis, so on a trending day it includes the move on
+  what was sold; "vs hold" is the figure that leaves the move out.
 - Symbol info (tick, lot, minimum size) must be supplied by hand for every
   symbol.
 
@@ -359,7 +359,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       attributed to the right side of the book. Done for the stored trade
       history (`market_trades.taker_side`); the live quote stream still
       merges a trade into the quote without its side.
-- [ ] Benchmark comparison against buy-and-hold
+- [ ] Benchmark comparison against buy-and-hold: the backtest summary's "vs
+      hold" covers holding the starting balances; comparing against other
+      benchmarks (an index, a basket) is not done
 
 ### Risk
 - [ ] Portfolio-level limits (total exposure across symbols, concentration)
@@ -508,6 +510,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       provider (`LoadReplayData`), saving what it fetched
 - [x] Document how to write a strategy (docs/writing-strategies.md: hooks,
       threading rules, `Context`, the risk gate)
+- [x] Backtest summary: equity, return, return against holding the starting
+      balances, max drawdown, realized and unrealized P&L, fills, volume,
+      fees, closing sells won, inventory range, and the equity curve sampled
+      every minute (`--equity-csv`)
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP

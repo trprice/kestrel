@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <span>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "kestrel/backtest/replay_data_source.hpp"
+#include "kestrel/backtest/summary.hpp"
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/db/bar_store.hpp"
 #include "kestrel/db/market_trade_store.hpp"
@@ -24,6 +26,9 @@ struct BacktestOptions {
     // replayed. Earlier bars in the data source are available as warmup.
     types::Timestamp start;
     types::Timestamp end;  // must be after start
+    // How often the summary's equity curve is sampled; zero keeps only its
+    // first and last points.
+    std::chrono::milliseconds equity_interval = std::chrono::minutes(1);
 };
 
 struct BacktestResult {
@@ -32,6 +37,12 @@ struct BacktestResult {
     std::vector<types::Fill> fills;
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
+    // Equity, return against holding the starting balances, drawdown, fills
+    // and fees (see BacktestSummary). An error, and the rest of the result
+    // still valid, when the balances could not be valued: symbols without a
+    // shared quote asset, a starting balance with no price, or no price
+    // replayed at all.
+    types::Result<BacktestSummary> summary;
 };
 
 // Where LoadReplayData looks before going to the venue. Any may be null.
@@ -107,6 +118,9 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // ahead of the order (see LimitFillModel). Trades are visible only in stored
 // quotes that carry last/last_size (Binance.US does; Kraken sends no size).
 // Neither model simulates order or cancel latency.
+// The summary values the balances after every bar or quote replayed, at the
+// quote's mid (the last trade when a side is missing) or, for a strategy
+// without quotes, the bar's close.
 // A calendar-length timeframe (1M) fails with kUnsupported, and an end that is
 // not after the start with kInvalidArgument. `data` needs bars (and quotes if
 // asked for) and SetSymbolInfo for every symbol the strategy trades.

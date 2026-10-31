@@ -247,6 +247,19 @@ types::Result<BacktestResult> RunBacktest(
     if (auto begun = runner.Begin(); !begun) {
         return std::unexpected(begun.error());
     }
+    auto summary = SummaryBuilder::Create(
+        needs.symbols, options.paper.default_quote_asset,
+        options.paper.initial_balances, options.start, options.equity_interval);
+    // Called after each event, once the strategy and the venue have seen it.
+    auto observe = [&](const types::Symbol& symbol,
+                       std::optional<Decimal> mark) {
+        if (!summary) {
+            return;
+        }
+        if (auto balances = venue->GetBalances()) {
+            summary->Observe(now, symbol, mark, *balances);
+        }
+    };
 
     for (const Replayed& item : timeline) {
         now = item.time;
@@ -256,6 +269,7 @@ types::Result<BacktestResult> RunBacktest(
             venue->OnQuote(*item.quote);
             data->EmitQuote(*item.quote);
             runner.Drain();
+            observe(*item.symbol, SummaryBuilder::MarkOf(*item.quote));
             continue;
         }
         if (!needs.quotes) {
@@ -270,6 +284,9 @@ types::Result<BacktestResult> RunBacktest(
 
         data->Emit(*item.symbol, item.timeframe, item.bar);
         runner.Drain();
+        // With quotes the venue trades on them, so they alone set the marks.
+        observe(*item.symbol, needs.quotes ? std::nullopt
+                                           : std::optional(item.bar.close));
     }
     runner.End();
 
@@ -286,6 +303,12 @@ types::Result<BacktestResult> RunBacktest(
     result.fills = std::move(*fills);
     result.positions = std::move(*positions);
     result.balances = std::move(*balances);
+    result.summary = summary ? summary->Finish(options.end, result.fills)
+                             : std::unexpected(summary.error());
+    if (!result.summary) {
+        spdlog::warn("backtest: no summary: {}",
+                     result.summary.error().ToString());
+    }
     return result;
 }
 

@@ -93,6 +93,7 @@ add_library(kestrel
   src/trading/binanceus_trading_venue.cpp
   src/backtest/replay_data_source.cpp
   src/backtest/backtest.cpp
+  src/backtest/summary.cpp
   src/strategy/runner.cpp
   src/strategy/run_recorder.cpp
   src/strategy/sma_crossover.cpp
@@ -161,6 +162,7 @@ if(KESTREL_BUILD_APP)
       "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"
       "backtest_backwards_range|${_good}|2|must be after its start|backtest,sma_crossover,--from,2026-02-01,--to,2026-01-01"
       "backtest_unknown_strategy|${_good}|1|unknown strategy|backtest,nope,--from,2026-01-01,--to,2026-02-01"
+      "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
       "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,sma_crossover")
     foreach(_case IN LISTS _cli_cases)
       string(REPLACE "|" ";" _fields "${_case}")
@@ -209,6 +211,7 @@ if(KESTREL_BUILD_TESTS)
     tests/run_recorder_test.cpp
     tests/backtest_test.cpp
     tests/backtest_db_test.cpp
+    tests/backtest_summary_test.cpp
     tests/sma_crossover_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp
