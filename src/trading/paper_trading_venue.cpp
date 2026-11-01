@@ -722,7 +722,10 @@ Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
     ExpireDayOrders();
     std::vector<types::OrderStatus> out;
     for (const Order* order : mActive) {
-        if (types::IsActive(order->status.state)) {
+        // An order whose cancel was acknowledged is not listed, as a live
+        // venue would not once its cancel returned, though it can still
+        // fill until the cancel reaches the book.
+        if (types::IsActive(order->status.state) && !order->cancelling) {
             out.push_back(order->status);
         }
     }

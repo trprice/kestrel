@@ -992,6 +992,7 @@ TEST(PaperLatency, AnOrderCanFillWhileItsCancelIsInFlight) {
 
     EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
     EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
     f.Advance(1);
     venue->OnQuote(Q("51100.0", "51110.0"));  // before the cancel lands
     EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kFilled);
@@ -1007,7 +1008,7 @@ TEST(PaperLatency, ACancelThatArrivesFirstCancels) {
     ASSERT_OK(ack);
     // Cancelled while still in flight: it arrives, then the cancel does.
     EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
-    EXPECT_EQ(venue->GetOpenOrders()->size(), 1u);
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());  // as acknowledged
     f.Advance(2);
     venue->OnQuote(Q("49990.0", "50000.0"));
     EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kCancelled);

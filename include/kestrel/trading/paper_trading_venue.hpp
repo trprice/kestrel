@@ -68,7 +68,8 @@ struct PaperOptions {
     // book it arrives at, and closed with a pushed update if it fails. An
     // order being cancelled is acknowledged as kCancelled at once but can
     // still fill until the cancel arrives, so fills may follow the
-    // acknowledgement. A backtest replays quotes at the times they were
+    // acknowledgement; GetOpenOrders no longer lists it, so it does not count
+    // against a risk gate's max_open_orders. A backtest replays quotes at the times they were
     // received, after the market data's own delay, so set this to the whole
     // round trip (the one-way trip to the venue plus that delay), not half.
     std::chrono::milliseconds order_latency{0};

@@ -226,6 +226,16 @@ the header of the code concerned.
   -2.0 vs hold, 2 bps from -10.5 to -33.1, and 6 bps kept +4.6 only on
   inventory. Each latency is one fixed delay, without jitter, and an order
   or cancel takes effect at the first quote at or after it is due.
+- Replayed over live run 12's window (Oct 29 23:28-23:58, its settings and
+  starting balances, `conservative` fills), the backtest with 130 / 600 ms
+  matched the live 1 s markout (-2.99 bps against -3.00) but filled more
+  often (55 fills against 43) and at worse prices against the mid at the
+  fill (-0.74 bps against +0.76). Without latency the 1 s markout was
+  -2.43 bps. Live fill times are the exchange's and the quotes' are ours,
+  about 60 ms apart; shifting them makes little difference. The P&L at the
+  end differs by inventory timing (+0.0004 against -0.138 USDT on about
+  54 USDT traded), so it is no check. One 30 minute run, 43 fills: a hint,
+  not a calibration.
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
   quotes replay stored quotes (`QuoteStore`); there are no stored quotes for
   a range that was never recorded. `--quotes-from-trades` replays quotes
@@ -408,9 +418,11 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       or let a strategy ask whether a fill ID was delivered).
 
 ### Backtesting and research
-- [ ] Check the backtest against live runs: replay the window of a live run
-      (runs 10 and 12, Oct 2026) and compare fill counts, prices and P&L with
-      what happened, to calibrate `limit_fill_model = "conservative"`.
+- [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
+      30 min) has stored quotes for its window (see Known limitations under
+      Backtesting for the result); runs 7 to 11 have only public trades, which
+      `--quotes-from-trades` replays without sizes. Keep `stream --store`
+      running during live runs, and compare each against its replay.
 - [ ] Parameter sweeps and walk-forward testing: `backtest --sweep
       half_spread_bps=2,3,4,6` replaying the loaded quotes once per value and
       printing one table (summary and markouts), then tuning on one day and
