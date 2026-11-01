@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -57,6 +59,23 @@ struct PaperOptions {
     // large orders fill in several partial fills as quotes arrive.
     bool cap_limit_fills_at_quote_size = false;
     LimitFillModel limit_fill_model = LimitFillModel::kCross;
+    // Latency, so paper runs and backtests pay for the round trips a live
+    // venue costs. Zero, the default, is instant.
+    //
+    // From PlaceOrder / CancelOrder to the order or the cancel reaching the
+    // book. A new order is acknowledged as kNew and cannot fill before it
+    // arrives; a post-only or fill-or-kill order is checked then, against the
+    // book it arrives at, and closed with a pushed update if it fails. An
+    // order being cancelled is acknowledged as kCancelled at once but can
+    // still fill until the cancel arrives, so fills may follow the
+    // acknowledgement. A backtest replays quotes at the times they were
+    // received, after the market data's own delay, so set this to the whole
+    // round trip (the one-way trip to the venue plus that delay), not half.
+    std::chrono::milliseconds order_latency{0};
+    // From a fill or a change of an order's state to its push through
+    // StreamExecutions. Queries (GetOrder, GetFills, GetOpenOrders,
+    // GetBalances) answer with the venue's state at once.
+    std::chrono::milliseconds report_latency{0};
 };
 
 // Simulated venue that works with any DataSource. It decides fills from live
@@ -80,7 +99,9 @@ struct PaperOptions {
 // every cancel or expiry as it happens: from the quote thread for a resting
 // order, or from inside PlaceOrder / CancelOrder for one that fills or closes
 // there. Updates are delivered after the state mutex is released, in the
-// order they happened.
+// order they happened. With latency (PaperOptions::order_latency and
+// report_latency), what is due happens on the next call into the venue or
+// the next quote at or after the time it is due.
 class PaperTradingVenue : public TradingVenue {
    public:
     PaperTradingVenue(std::shared_ptr<data::DataSource> data_source,
@@ -143,6 +164,16 @@ class PaperTradingVenue : public TradingVenue {
     // All of these require mMutex to be held.
     // Queues `order`'s state, and `fill` if there is one, for the listeners.
     void Notice(const Order& order, const std::optional<types::Fill>& fill);
+    // Carries out the orders and cancels whose order_latency is up.
+    void ProcessPending();
+    // A delayed order reaching the book: the post-only and fill-or-kill
+    // checks, then Enter().
+    void Arrive(Order& order);
+    // Cancels now, or sends the cancel on its way (order_latency).
+    void Cancel(Order& order);
+    // Matches an order that has reached the book against it, joins the queue,
+    // and closes an immediate-or-cancel remainder.
+    void Enter(Order& order);
     std::optional<Candidate> Evaluate(const Order& order,
                                       const types::Quote& quote,
                                       bool placing) const;
@@ -183,7 +214,15 @@ class PaperTradingVenue : public TradingVenue {
     std::map<types::Symbol, types::Quote> mQuotes;
     std::uint64_t mNextOrder = 1;
     std::uint64_t mNextFill = 1;
-    std::vector<ExecutionUpdate> mNotices;  // queued for Deliver()
+    // Queued for Deliver(), with the time each is due (report_latency).
+    std::deque<std::pair<types::Timestamp, ExecutionUpdate>> mNotices;
+    // Orders and cancels in flight (order_latency), in the order sent.
+    struct InFlight {
+        types::Timestamp due;
+        std::string order_id;
+        bool cancel = false;
+    };
+    std::deque<InFlight> mInFlight;
     const std::shared_ptr<Listeners> mListeners = std::make_shared<Listeners>();
 
     std::unique_ptr<data::Subscription> mSubscription;  // last: destroyed first

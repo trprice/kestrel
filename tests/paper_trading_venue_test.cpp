@@ -911,4 +911,132 @@ TEST(PaperPush, ConcurrentQuotesAndOrdersPushEveryFillOnce) {
     }
 }
 
+// order_latency and report_latency of 2 s; the fixture's clock moves in
+// seconds.
+struct Latent : Fixture {
+    Latent() {
+        options.order_latency = std::chrono::seconds(2);
+        options.report_latency = std::chrono::seconds(2);
+        options.initial_balances["BTC"] = D("1");
+    }
+    void Advance(int seconds) { clock_seconds += seconds; }
+};
+
+TEST(PaperLatency, AnOrderCannotFillBeforeItReachesTheBook) {
+    Latent f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kNew);
+    EXPECT_EQ(Bal(*venue, "USD").locked.Sign(), 1);  // reserved at once
+
+    f.Advance(1);
+    venue->OnQuote(Q("48890.0", "48900.0"));  // through it, but still in flight
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+
+    f.Advance(1);
+    venue->OnQuote(Q("48890.0", "48900.0"));  // arrived: rests, then fills
+    ASSERT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 1u);
+}
+
+TEST(PaperLatency, AMarketableOrderTakesTheBookItArrivesAt) {
+    Latent f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kNew);
+    f.Advance(1);
+    venue->OnQuote(Q("50090.0", "50100.0"));
+    f.Advance(1);
+    venue->OnQuote(Q("50190.0", "50200.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_EQ(fills->size(), 1u);
+    // It arrived before the last quote, so at 50100 plus 5 bps of slippage.
+    EXPECT_EQ(fills->at(0).price, D("50125.1"));
+}
+
+TEST(PaperLatency, APostOnlyOrderIsCheckedAgainstTheBookItArrivesAt) {
+    Latent f;
+    f.options.report_latency = std::chrono::milliseconds(0);
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto buy = Order(Side::kBuy, OrderType::kLimit, "0.1", "49995.0");
+    buy.post_only = true;
+    auto ack = venue->PlaceOrder(buy);
+    ASSERT_OK(ack);  // would rest on the book it was sent against
+    f.Advance(1);
+    venue->OnQuote(Q("49980.0", "49990.0"));  // the ask fell through it
+    f.Advance(2);
+    venue->OnQuote(Q("49980.0", "49990.0"));
+    ASSERT_EQ(pushed.updates.size(), 1u);
+    EXPECT_EQ(pushed.updates[0].order->state, OrderState::kRejected);
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+}
+
+TEST(PaperLatency, AnOrderCanFillWhileItsCancelIsInFlight) {
+    Latent f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kSell, OrderType::kLimit, "0.1", "51000.0"));
+    ASSERT_OK(ack);
+    f.Advance(2);
+    venue->OnQuote(Q("49990.0", "50000.0"));  // arrived, resting
+
+    EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
+    EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
+    f.Advance(1);
+    venue->OnQuote(Q("51100.0", "51110.0"));  // before the cancel lands
+    EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kFilled);
+    ASSERT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 1u);
+}
+
+TEST(PaperLatency, ACancelThatArrivesFirstCancels) {
+    Latent f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(
+        Order(Side::kSell, OrderType::kLimit, "0.1", "51000.0"));
+    ASSERT_OK(ack);
+    // Cancelled while still in flight: it arrives, then the cancel does.
+    EXPECT_EQ(*venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
+    EXPECT_EQ(venue->GetOpenOrders()->size(), 1u);
+    f.Advance(2);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kCancelled);
+    venue->OnQuote(Q("51100.0", "51110.0"));
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+TEST(PaperLatency, FillsArePushedReportLatencyLater) {
+    Latent f;
+    f.options.order_latency = std::chrono::milliseconds(0);
+    auto venue = f.Make();
+    Pushed pushed;
+    auto sub = venue->StreamExecutions(pushed.Callback());
+    ASSERT_OK(sub);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto ack = venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, OrderState::kFilled);
+    EXPECT_TRUE(pushed.updates.empty());
+    // Queries are not delayed.
+    EXPECT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 1u);
+    f.Advance(1);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    EXPECT_TRUE(pushed.updates.empty());
+    f.Advance(1);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    ASSERT_EQ(pushed.updates.size(), 1u);
+    EXPECT_EQ(pushed.updates[0].fill->order_id, ack->order_id);
+}
+
 }  // namespace

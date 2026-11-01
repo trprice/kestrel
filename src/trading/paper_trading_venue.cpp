@@ -56,6 +56,11 @@ struct PaperTradingVenue::Order {
     // LimitFillModel::kConservative, resting limits only: size queued ahead of
     // this order at its price, or unknown.
     std::optional<Decimal> queue_ahead;
+    // order_latency: whether the order has reached the book, and whether a
+    // cancel is on its way to it.
+    bool arrived = true;
+    bool cancelling = false;
+    bool post_only = false;
 
     Decimal Remaining() const {
         return status.quantity - status.filled_quantity;
@@ -150,7 +155,8 @@ void PaperTradingVenue::Notice(const Order& order,
     if (mListeners->count == 0) {
         return;  // nobody to tell; do not let the queue grow
     }
-    mNotices.push_back(ExecutionUpdate{fill, order.status});
+    mNotices.emplace_back(mClock() + mOptions.report_latency,
+                          ExecutionUpdate{fill, order.status});
 }
 
 void PaperTradingVenue::Deliver() {
@@ -161,7 +167,11 @@ void PaperTradingVenue::Deliver() {
     std::vector<ExecutionUpdate> batch;
     {
         std::lock_guard lock(mMutex);
-        batch.swap(mNotices);
+        const auto now = mClock();
+        while (!mNotices.empty() && mNotices.front().first <= now) {
+            batch.push_back(std::move(mNotices.front().second));
+            mNotices.pop_front();
+        }
     }
     for (const ExecutionUpdate& update : batch) {
         for (const auto& [id, callback] : mListeners->callbacks) {
@@ -402,9 +412,72 @@ void PaperTradingVenue::ExpireDayOrders() {
     });
 }
 
+void PaperTradingVenue::ProcessPending() {
+    const auto now = mClock();
+    while (!mInFlight.empty() && mInFlight.front().due <= now) {
+        const InFlight action = std::move(mInFlight.front());
+        mInFlight.pop_front();
+        const auto it = mOrders.find(action.order_id);
+        if (it == mOrders.end() || !types::IsActive(it->second.status.state)) {
+            continue;  // filled (or closed) before this reached it
+        }
+        if (action.cancel) {
+            Close(it->second, OrderState::kCancelled, "cancelled by user");
+        } else {
+            Arrive(it->second);
+        }
+    }
+}
+
+void PaperTradingVenue::Arrive(Order& order) {
+    order.arrived = true;
+    const auto quote_it = mQuotes.find(order.status.symbol);
+    const types::Quote* quote =
+        quote_it == mQuotes.end() ? nullptr : &quote_it->second;
+    const auto& limit = order.status.limit_price;
+    if (order.post_only && limit && quote &&
+        (order.status.side == Side::kBuy
+             ? quote->ask && *limit >= *quote->ask
+             : quote->bid && *limit <= *quote->bid)) {
+        Close(order, OrderState::kRejected,
+              "post-only order would take liquidity at " + limit->ToString());
+        return;
+    }
+    if (order.status.time_in_force == types::TimeInForce::kFok) {
+        const auto c =
+            quote ? Evaluate(order, *quote, /*placing=*/true) : std::nullopt;
+        if (!c || c->quantity < order.Remaining()) {
+            Close(order, OrderState::kExpired,
+                  "fill-or-kill order could not be filled in full");
+            return;
+        }
+    }
+    Enter(order);
+}
+
+void PaperTradingVenue::Enter(Order& order) {
+    const auto quote_it = mQuotes.find(order.status.symbol);
+    if (quote_it != mQuotes.end()) {
+        TryMatch(order, quote_it->second, /*placing=*/true);
+        if (types::IsActive(order.status.state) &&
+            order.status.type == OrderType::kLimit &&
+            mOptions.limit_fill_model == LimitFillModel::kConservative) {
+            UpdateQueue(order,
+                        quote_it->second);  // joins the back of the queue
+        }
+    }
+    if (types::IsActive(order.status.state) &&
+        order.status.time_in_force == types::TimeInForce::kIoc) {
+        Close(order, OrderState::kExpired,
+              "immediate-or-cancel remainder cancelled");
+    }
+}
+
 void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    // What arrived before this quote met the book as it was.
+    ProcessPending();
     const bool seen_before = mQuotes.contains(quote.symbol);
     types::Quote& latest = mQuotes[quote.symbol];
     // Only the trade fields are compared, so keep those, not a copy of the
@@ -426,7 +499,7 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
 
     ExpireDayOrders();
     for (Order* order : mActive) {
-        if (order->status.symbol == quote.symbol) {
+        if (order->status.symbol == quote.symbol && order->arrived) {
             TryMatch(*order, latest, /*placing=*/false, trade);
         }
     }
@@ -470,10 +543,13 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
 
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
     ExpireDayOrders();
     const auto now = mClock();
+    const bool delayed = mOptions.order_latency.count() > 0;
 
     Order order;
+    order.post_only = request.post_only;
     order.info = *info;
     order.base_asset = parts->base;
     order.quote_asset = parts->quote.value_or(mOptions.default_quote_asset);
@@ -523,7 +599,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                 : mOptions.taker_fee_rate;
         order.reserve_unit = ref_price * (one + fee_rate);
     }
-    if (request.post_only && quote &&
+    // Delayed, the post-only check is made against the book the order
+    // arrives at (Arrive).
+    if (!delayed && request.post_only && quote &&
         (request.side == Side::kBuy
              ? quote->ask && *request.limit_price >= *quote->ask
              : quote->bid && *request.limit_price <= *quote->bid)) {
@@ -552,8 +630,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                   static_cast<unsigned long long>(mNextOrder++));
     order.status.order_id = id;
 
-    // Fill-or-kill: all or nothing, decided before anything is booked.
-    if (request.time_in_force == types::TimeInForce::kFok) {
+    // Fill-or-kill: all or nothing, decided before anything is booked (or,
+    // delayed, when it arrives).
+    if (!delayed && request.time_in_force == types::TimeInForce::kFok) {
         const auto c =
             quote ? Evaluate(order, *quote, /*placing=*/true) : std::nullopt;
         if (!c || c->quantity < order.Remaining()) {
@@ -573,18 +652,12 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
         mOrders.emplace(order.status.order_id, std::move(order));
     Order& placed = it->second;
     mActive.push_back(&placed);
-    if (quote) {
-        TryMatch(placed, *quote, /*placing=*/true);
-        if (types::IsActive(placed.status.state) &&
-            placed.status.type == OrderType::kLimit &&
-            mOptions.limit_fill_model == LimitFillModel::kConservative) {
-            UpdateQueue(placed, *quote);  // joins the back of the queue
-        }
-    }
-    if (types::IsActive(placed.status.state) &&
-        request.time_in_force == types::TimeInForce::kIoc) {
-        Close(placed, OrderState::kExpired,
-              "immediate-or-cancel remainder cancelled");
+    if (delayed) {
+        placed.arrived = false;
+        mInFlight.push_back(
+            {now + mOptions.order_latency, placed.status.order_id});
+    } else {
+        Enter(placed);
     }
     spdlog::debug("paper: order {} {} {} {} -> {}", placed.status.order_id,
                   types::ToString(request.side),
@@ -599,6 +672,7 @@ Result<CancelOutcome> PaperTradingVenue::CancelOrder(
     const std::string& order_id) {
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
     ExpireDayOrders();
     const auto it = mOrders.find(order_id);
     if (it == mOrders.end()) {
@@ -611,20 +685,31 @@ Result<CancelOutcome> PaperTradingVenue::CancelOrder(
     if (!types::IsActive(order.status.state)) {
         return CancelOutcome::kAlreadyClosed;
     }
-    Close(order, OrderState::kCancelled, "cancelled by user");
+    Cancel(order);
     return CancelOutcome::kCancelled;
+}
+
+void PaperTradingVenue::Cancel(Order& order) {
+    if (mOptions.order_latency.count() == 0) {
+        Close(order, OrderState::kCancelled, "cancelled by user");
+    } else if (!order.cancelling) {
+        order.cancelling = true;
+        mInFlight.push_back(
+            {mClock() + mOptions.order_latency, order.status.order_id, true});
+    }
 }
 
 Result<std::vector<std::string>> PaperTradingVenue::CancelAll() {
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
     ExpireDayOrders();
     std::vector<std::string> cancelled;
     for (Order* order : mActive) {
         if (!types::IsActive(order->status.state)) {
             continue;
         }
-        Close(*order, OrderState::kCancelled, "cancelled by user");
+        Cancel(*order);
         cancelled.push_back(order->status.order_id);
     }
     return cancelled;
@@ -633,6 +718,7 @@ Result<std::vector<std::string>> PaperTradingVenue::CancelAll() {
 Result<std::vector<types::OrderStatus>> PaperTradingVenue::GetOpenOrders() {
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
     ExpireDayOrders();
     std::vector<types::OrderStatus> out;
     for (const Order* order : mActive) {
@@ -647,6 +733,7 @@ Result<types::OrderStatus> PaperTradingVenue::GetOrder(
     const std::string& order_id) {
     DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
     ExpireDayOrders();
     auto it = mOrders.find(order_id);
     if (it == mOrders.end()) {

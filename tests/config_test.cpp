@@ -56,6 +56,26 @@ TEST(Config, LimitFillModelDefaultsToCrossAndAcceptsConservative) {
                      .has_value());
 }
 
+TEST(Config, PaperLatencyDefaultsToNone) {
+    auto def = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
+    ASSERT_OK(def);
+    EXPECT_EQ(def->GetPaperOptions().order_latency.count(), 0);
+    EXPECT_EQ(def->GetPaperOptions().report_latency.count(), 0);
+
+    const std::string base = kKrakenToml;
+    auto set = config::KrakenConfiguration::Parse(
+        base + "order_latency_ms = 130\nreport_latency_ms = 600\n", NoEnv());
+    ASSERT_OK(set);
+    EXPECT_EQ(set->GetPaperOptions().order_latency.count(), 130);
+    EXPECT_EQ(set->GetPaperOptions().report_latency.count(), 600);
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "order_latency_ms = -1\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "report_latency_ms = 0.5\n", NoEnv())
+                     .has_value());
+}
+
 TEST(Config, DatabaseSectionIsOptionalAndTakesPasswordFromEnv) {
     auto none = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
     ASSERT_OK(none);

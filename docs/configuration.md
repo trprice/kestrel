@@ -78,7 +78,14 @@ Used in paper mode, by `run` and by `backtest`.
 | `slippage_bps` | how far through the touch a market order fills |
 | `default_quote_asset` | quote asset for symbols that have none (equities) |
 | `cap_limit_fills_at_quote_size` | limit fills capped at the size shown at the touch |
+| `order_latency_ms` | how long an order or a cancel takes to reach the book (default 0); until then a new order cannot fill and an order being cancelled still can. Post-only and fill-or-kill are checked when it arrives. For a backtest, use the whole REST round trip (about 130 ms to Binance.US from the US West Coast), since the replayed quotes already carry the market data's delay |
+| `report_latency_ms` | how long a fill or an order's new state takes to reach the strategy (default 0). Live Binance.US is polled every second, so about 600 ms on average |
 | `limit_fill_model` | `cross` (optimistic: the touch reaches the limit) or `conservative` (the touch goes through it, a trade prints through it, or trades at it clear the queue ahead); use `conservative` for anything that rests limit orders |
+
+Set both latencies for any backtest meant to predict a live run. Without
+them a cancel takes effect at once, so a quote is never filled after the
+strategy decided to move it, which flatters a market maker more than any of
+its parameters.
 
 The paper venue applies the same symbol rules as a live one: tick, lot,
 minimum size and minimum order value.

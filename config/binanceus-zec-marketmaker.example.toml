@@ -27,12 +27,19 @@ maker_fee_bps = 0              # 0%
 taker_fee_bps = 2              # 0.02%
 slippage_bps  = 0
 limit_fill_model = "conservative"
+# The live round trips: orders and cancels take 130 ms to reach the book
+# (the REST round trip, as the replayed quotes already carry the feed's
+# delay), and fills reach the strategy about 600 ms later (Binance.US is
+# polled every second). Without them a backtest flatters the market maker.
+order_latency_ms  = 130
+report_latency_ms = 600
 
 [strategy]
 symbol           = "ZEC/USDT"
 quantity         = "0.05"      # ZEC per quote
-half_spread_bps  = 4           # the market's own is about 1.5; 2 lost to holding
-                               # in the Oct 2026 replays, 4-6 did best
+half_spread_bps  = 4           # the market's own is about 1.5. In the Oct 2026
+                               # replays, with the latencies above, only 6 beat
+                               # holding, and only on inventory; see TODO.md
 max_inventory    = "0.5"       # ZEC either side of the starting 2
 skew_bps         = 4
 requote_bps      = 0.5

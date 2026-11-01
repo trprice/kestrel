@@ -146,6 +146,10 @@ strategy test defines a small `FakeContext` around them (see
 strategy bars or quotes and assert on the orders it placed. Then run a
 backtest over stored data (`kestrel_app backtest my_strategy --from ... --to
 ...`). Use `limit_fill_model = "conservative"` for anything that rests limit
-orders; the default `cross` model flatters those. Paper-trade it with `run`
+orders; the default `cross` model flatters those. Set `[paper]
+order_latency_ms` and `report_latency_ms` to the live venue's round trips
+(see [configuration.md](configuration.md#paper)): a strategy that cancels
+and replaces orders can be filled while a cancel is in flight, and handles
+fills that arrive after the cancel was acknowledged. Paper-trade it with `run`
 before trusting the result, and see [TODO.md](../TODO.md) for what the paper
 venue and backtest do not model.

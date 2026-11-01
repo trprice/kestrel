@@ -301,6 +301,23 @@ class ConfigParser {
             if (const auto v = paper->get("cap_limit_fills_at_quote_size")) {
                 p.cap_limit_fills_at_quote_size = v->value_or(false);
             }
+            for (const auto& [key, latency] :
+                 {std::pair{"order_latency_ms", &p.order_latency},
+                  std::pair{"report_latency_ms", &p.report_latency}}) {
+                const auto* node = paper->get(key);
+                if (!node) {
+                    continue;
+                }
+                const auto v = node->is_integer() ? node->value<std::int64_t>()
+                                                  : std::nullopt;
+                if (!v || *v < 0) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     std::string("[paper] ") + key +
+                                         " must be a whole number of "
+                                         "milliseconds");
+                }
+                *latency = std::chrono::milliseconds(*v);
+            }
             if (const auto v = paper->get("limit_fill_model")) {
                 const auto name = v->value<std::string>();
                 if (name == "cross") {

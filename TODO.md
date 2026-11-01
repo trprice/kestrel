@@ -194,8 +194,10 @@ the header of the code concerned.
   never sold.
 - `post_only = true` stops a quote from filling as a taker when the book
   moves through it while the order is in flight (41 of 106 fills in run 10).
-  A refused quote is retried on the next quote; a backtest never sees one,
-  since the paper venue matches against the same book the strategy saw.
+  A refused quote is retried on the next quote. A backtest sees refusals
+  only with `[paper] order_latency_ms` set, as a pushed kRejected rather
+  than an error from PlaceOrder, so they are not in the "post-only quote(s)
+  refused" count.
 - Each requote goes to the back of the queue, so a tight `requote_bps` costs
   fills under `limit_fill_model = "conservative"`. The ZEC/USDT example
   replaces a quote on about every other update (29.5k placements for 51k
@@ -210,13 +212,20 @@ the header of the code concerned.
   venue fills a different (rounded) quantity the fills never add up to it.
   There is no reconciliation yet (see the project item under Strategies).
 - Backtest ordering: a quote is matched against resting orders first, and
-  the paper venue pushes the fill and the order's state, so the strategy hears
-  of the fill before it sees the quote that caused it. That is better informed
-  than live trading, where the fill report takes a round trip; there is no
-  fill latency in a backtest at all (see the paper latency item under
-  Backtesting and research).
+  without `[paper] report_latency_ms` the paper venue pushes the fill and the
+  order's state at once, so the strategy hears of the fill before it sees the
+  quote that caused it. Set the latencies (see Backtesting below) for
+  anything meant to predict a live run.
 
 ### Backtesting (`backtest/backtest.hpp`)
+- Latency is off unless `[paper] order_latency_ms` / `report_latency_ms` are
+  set, and it changes the results more than any strategy parameter. On the
+  ZEC/USDT quote days with 130 ms / 600 ms, the market maker filled 3 to 6
+  times as often, mostly orders filled while their cancel was in flight, and
+  its 1 s markout fell to -3 to -5 bps on Oct 30: 4 bps went from +5.9 to
+  -2.0 vs hold, 2 bps from -10.5 to -33.1, and 6 bps kept +4.6 only on
+  inventory. Each latency is one fixed delay, without jitter, and an order
+  or cancel takes effect at the first quote at or after it is due.
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
   quotes replay stored quotes (`QuoteStore`); there are no stored quotes for
   a range that was never recorded. `--quotes-from-trades` replays quotes
@@ -362,6 +371,12 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       option. Quotes already carry `bid_size` / `ask_size`. The cheapest
       common defence against adverse selection; measure it by the 1 s and
       10 s markouts.
+- [ ] Requote asymmetrically: cancel at once when the market moves toward a
+      resting quote, and only lazily when it moves away. With 130 ms of order
+      latency, most fills on the ZEC/USDT days were quotes the market had
+      moved onto while their cancel was in flight, and a wider `requote_bps`
+      (3 or 6 against 1) lost more, since it leaves quotes in place as the
+      market moves through them.
 - [ ] Keep queue position: leave a resting quote alone while it is still at
       the touch even if its target moved, and optionally join the touch (or
       improve it by a tick) instead of quoting a computed price. Each
@@ -393,12 +408,6 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       or let a strategy ask whether a fill ID was delivered).
 
 ### Backtesting and research
-- [ ] Latency in the paper venue: delay its pushes and fills, and its order
-      and cancel acknowledgements, so a quote can fill an order the strategy
-      has already asked to cancel. A backtest now hears of a fill before the
-      quote that caused it (see Known limitations); live, the round trip is
-      about 130 ms. With an edge of a few bps this matters more than any
-      parameter, since winning settings may lose live without it.
 - [ ] Check the backtest against live runs: replay the window of a live run
       (runs 10 and 12, Oct 2026) and compare fill counts, prices and P&L with
       what happened, to calibrate `limit_fill_model = "conservative"`.
@@ -574,6 +583,10 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       balances, max drawdown, realized and unrealized P&L, fills, volume,
       fees, closing sells won, inventory range, and the equity curve sampled
       every minute (`--equity-csv`)
+- [x] Paper venue latency: `[paper] order_latency_ms` (orders and cancels
+      reach the book later, so an order can fill while its cancel is in
+      flight, and post-only and fill-or-kill are checked on arrival) and
+      `report_latency_ms` (pushed fills and order states arrive later)
 - [x] Backtest markouts: each fill against the mid before it (spread
       captured), 1 s, 10 s, 1 min and 5 min after it, and at the end (equal
       to vs hold plus quote-asset fees)
