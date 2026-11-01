@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace kestrel::strategy {
@@ -19,6 +20,13 @@ constexpr std::chrono::minutes kHistory{15};
 // How long a reported fill may go without its OnFill before it is logged.
 constexpr std::chrono::seconds kUnconfirmedWarning{30};
 const Decimal kBpsDivisor = Decimal::FromInt(10000);
+// The mid is sampled for the volatility at most this often, so the flicker
+// of the book between trades does not count as volatility.
+constexpr std::chrono::seconds kVolSampleInterval{1};
+
+double ToDouble(const Decimal& d) {
+    return static_cast<double>(d.Mantissa()) / std::pow(10.0, d.Scale());
+}
 
 // `value` * `bps` / 10000.
 Decimal Bps(const Decimal& value, const Decimal& bps) {
@@ -44,6 +52,20 @@ MarketMaker::MarketMaker(MarketMakerParams params)
         mParams.max_quote_age < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument(
             "skew_bps, requote_bps and max_quote_age cannot be negative");
+    }
+    if (mParams.vol_multiplier.IsNegative() ||
+        mParams.max_half_spread_bps.IsNegative()) {
+        throw std::invalid_argument(
+            "vol_multiplier and max_half_spread_bps cannot be negative");
+    }
+    if (mParams.vol_multiplier.Sign() > 0 &&
+        mParams.vol_window <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("vol_window must be positive");
+    }
+    if (mParams.max_half_spread_bps.Sign() > 0 &&
+        mParams.max_half_spread_bps < mParams.half_spread_bps) {
+        throw std::invalid_argument(
+            "max_half_spread_bps must be at least half_spread_bps");
     }
     const auto& r = mParams.protection;
     const auto require_positive = [](bool enabled, const Decimal& value,
@@ -133,7 +155,7 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
                                    kScale, Rounding::kNearest);
     lean = std::clamp(lean, Decimal::FromInt(-1), Decimal::FromInt(1));
     const Decimal reservation = mid - Bps(mid, mParams.skew_bps * lean);
-    const Decimal half = Bps(mid, mParams.half_spread_bps);
+    const Decimal half = Bps(mid, HalfSpreadBps(context.Now(), mid));
 
     Decimal bid = (reservation - half).RoundToIncrement(tick, Rounding::kDown);
     Decimal ask = (reservation + half).RoundToIncrement(tick, Rounding::kUp);
@@ -156,6 +178,51 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     Manage(context, mAsk, Side::kSell,
            pause.ask ? std::nullopt : std::optional(ask), Size(ask_room),
            ask_room, threshold);
+}
+
+Decimal MarketMaker::HalfSpreadBps(types::Timestamp now, const Decimal& mid) {
+    if (mParams.vol_multiplier.IsZero()) {
+        return mParams.half_spread_bps;
+    }
+    if (!mVolLast) {
+        mVolLast.emplace(now, mid);
+        mVolFirst = now;
+    } else if (now - mVolLast->first >= kVolSampleInterval) {
+        const double move =
+            (ToDouble(mid) / ToDouble(mVolLast->second) - 1.0) * 1e4;
+        mVolSamples.push_back({mVolLast->first, now, move * move});
+        mVolLast.emplace(now, mid);
+        // The newest sample is kept even if it alone is older than the
+        // window: after a gap it is all there is.
+        while (mVolSamples.size() >= 2 &&
+               mVolSamples.front().start < now - mParams.vol_window) {
+            mVolSamples.pop_front();
+        }
+        mVolBps = 0;
+        if (now - *mVolFirst >= mParams.vol_window) {
+            double sum = 0;
+            for (const VolSample& s : mVolSamples) {
+                sum += s.squared_bps;
+            }
+            const std::chrono::duration<double, std::ratio<60>> covered =
+                mVolSamples.back().end - mVolSamples.front().start;
+            mVolBps = std::sqrt(sum / covered.count());
+        }
+    }
+
+    Decimal half = mParams.half_spread_bps;
+    const double scaled = ToDouble(mParams.vol_multiplier) * mVolBps;
+    if (scaled > ToDouble(half)) {
+        half = Decimal(std::llround(scaled * 100), 2);  // to 0.01 bps
+        ++mHalfWidened;
+    }
+    if (mParams.max_half_spread_bps.Sign() > 0) {
+        half = std::min(half, mParams.max_half_spread_bps);
+    }
+    ++mHalfCount;
+    mHalfSum += ToDouble(half);
+    mHalfMax = std::max(mHalfMax, half);
+    return half;
 }
 
 Decimal MarketMaker::Move(types::Timestamp now,
@@ -491,6 +558,15 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
 }
 
 void MarketMaker::OnStop(Context& context) {
+    if (mHalfCount > 0) {
+        spdlog::info(
+            "market_maker: half-spread {:.2f} bps on average, {} at most, "
+            "widened by volatility on {:.1f}% of quotes",
+            mHalfSum / static_cast<double>(mHalfCount),
+            mHalfMax.Normalized().ToString(),
+            100.0 * static_cast<double>(mHalfWidened) /
+                static_cast<double>(mHalfCount));
+    }
     if (mWouldTake > 0) {
         spdlog::info(
             "market_maker: {} post-only quote(s) refused as they would have "

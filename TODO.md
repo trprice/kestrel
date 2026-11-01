@@ -177,8 +177,16 @@ the header of the code concerned.
 - A halt is permanent for the run; only restarting the process resumes it.
   Nothing is persisted, so a restart starts with fresh P&L and a fresh peak.
 - Rules run only when a quote arrives, so a silent feed trips none of them.
-- No volatility scaling of the spread, and no pulling of quotes when the feed
-  goes quiet: it only acts when a quote arrives.
+- No pulling of quotes when the feed goes quiet: it only acts when a quote
+  arrives.
+- Volatility scaling of the spread (`vol_multiplier`) did not beat a fixed
+  spread of the same average width on the two recorded ZEC/USDT quote days
+  (2026-10-19, 8 h; 2026-10-30, 24 h; conservative fills). Fixed 4 bps made
+  +5.9 / +6.4 USDT vs hold; scaled at base 3, multiplier 0.4 (averaging
+  4.4-4.8 bps) +2.9 / +6.4, and other windows (1-30 min) and multipliers no
+  better. Both beat the 2 bps example, which lost 10.5 vs hold on Oct 30.
+  The amounts are mostly inventory timing, so retest on more recorded days
+  before choosing; until then it stays off by default.
 - Inventory is the base-asset balance at start and the fills since, less any
   fee charged in the base asset (Binance.US takes a taker buy's fee from the
   ZEC bought). Before that was deducted, live run 10 (2026-10-29) had 99 sells

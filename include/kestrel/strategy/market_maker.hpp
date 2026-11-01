@@ -73,6 +73,17 @@ struct MarketMakerParams {
     // the mid. It must cover the fees on both legs and leave room for adverse
     // selection.
     types::Decimal half_spread_bps;
+    // Volatility scaling of the spread, off while vol_multiplier is zero. The
+    // volatility is the mid's typical one-minute move in basis points, worked
+    // out from its moves over the last vol_window (sampled at most once a
+    // second, and divided by the time they cover, so a gap in the feed does
+    // not distort it). The half-spread is then the larger of half_spread_bps
+    // and vol_multiplier times that, held to max_half_spread_bps when that is
+    // set (zero: no cap). Until vol_window of history has been seen,
+    // half_spread_bps alone is used.
+    types::Decimal vol_multiplier{0, 0};
+    std::chrono::milliseconds vol_window{std::chrono::minutes(5)};
+    types::Decimal max_half_spread_bps{0, 0};
     // How far the position may stray from where it started, in base units,
     // either way. Past it the side that would add to the position stops
     // quoting.
@@ -113,14 +124,19 @@ struct MarketMakerParams {
 // side cancels its resting quote; the exits are market orders for the whole
 // position, and no second exit is sent until the first one's fills arrive.
 //
-// Not modelled yet: scaling the spread with volatility, pulling quotes when
-// the feed goes quiet (the strategy only runs when a quote arrives), and fees
-// charged in the base asset (the P&L counts them, the inventory does not).
+// With vol_multiplier set, the spread widens with the mid's recent
+// volatility (see MarketMakerParams).
+//
+// Not modelled yet: pulling quotes when the feed goes quiet (the strategy only
+// runs when a quote arrives), and fees charged in the base asset (the P&L
+// counts them, the inventory does not).
 class MarketMaker : public Strategy {
    public:
     // Throws std::invalid_argument unless quantity, half_spread_bps and
     // max_inventory are positive (max_inventory at least quantity) and
-    // skew_bps, requote_bps and max_quote_age are not negative. Each enabled
+    // skew_bps, requote_bps, max_quote_age and vol_multiplier are not
+    // negative; with vol_multiplier set, vol_window must be positive, and a
+    // max_half_spread_bps that is set at least half_spread_bps. Each enabled
     // protection rule's amounts must be positive (the filters' and the
     // durations may be zero).
     explicit MarketMaker(MarketMakerParams params);
@@ -155,6 +171,10 @@ class MarketMaker : public Strategy {
     // Cancels a resting quote; false if it cannot be replaced yet.
     bool Pull(Context& context, Resting& quote);
     types::Decimal Size(const types::Decimal& room) const;
+    // Samples the mid for the volatility, and returns the half-spread to
+    // quote, in basis points.
+    types::Decimal HalfSpreadBps(types::Timestamp now,
+                                 const types::Decimal& mid);
 
     // Protection. All run on the quote's mid and the book.
     struct Pause {
@@ -220,6 +240,23 @@ class MarketMaker : public Strategy {
     std::size_t mWouldTake = 0;  // post-only quotes refused, for the log
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
     std::map<std::string, Unconfirmed> mUnconfirmed;  // by order ID
+
+    // Volatility. Each sample is a move of the mid: when it started, when
+    // it ended, and its square in basis points squared.
+    struct VolSample {
+        types::Timestamp start;
+        types::Timestamp end;
+        double squared_bps;
+    };
+    std::optional<std::pair<types::Timestamp, types::Decimal>> mVolLast;
+    std::optional<types::Timestamp> mVolFirst;
+    std::deque<VolSample> mVolSamples;
+    double mVolBps = 0;  // one-minute volatility; zero until the window fills
+    // For the log at the end: the half-spreads quoted.
+    std::size_t mHalfCount = 0;
+    std::size_t mHalfWidened = 0;
+    double mHalfSum = 0;
+    types::Decimal mHalfMax;
 };
 
 }  // namespace kestrel::strategy

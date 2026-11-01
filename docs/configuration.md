@@ -121,6 +121,9 @@ are errors, and the symbol must be listed in `[general] symbols`.
 |---|---|
 | `symbol`, `quantity` | required; `quantity` is base units per quote |
 | `half_spread_bps` | required; distance of each quote from the reservation price |
+| `vol_multiplier` | widen the spread with volatility: the half-spread becomes the larger of `half_spread_bps` and this times the mid's typical one-minute move in bps (default 0: off) |
+| `vol_window_ms` | how far back that volatility is measured; until this much has been seen, `half_spread_bps` alone is used (default 300000) |
+| `max_half_spread_bps` | cap on a widened half-spread (0, the default: none); at least `half_spread_bps` |
 | `max_inventory` | required; how far the position may stray from where it started, either way |
 | `skew_bps` | how far the reservation price leans when the position is `max_inventory` away (default 0) |
 | `requote_bps` | how far the target must move before a resting quote is replaced (default 1) |

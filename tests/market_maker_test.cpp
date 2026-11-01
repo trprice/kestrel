@@ -111,7 +111,14 @@ TEST(MarketMakerTest, RejectsBadParameters) {
              [](MarketMakerParams& p) { p.requote_bps = D("-1"); },
              [](MarketMakerParams& p) {
                  p.max_quote_age = std::chrono::milliseconds(-1);
-             }}) {
+             },
+             [](MarketMakerParams& p) { p.vol_multiplier = D("-1"); },
+             [](MarketMakerParams& p) {
+                 p.vol_multiplier = D("1");
+                 p.vol_window = std::chrono::milliseconds(0);
+             },
+             [](MarketMakerParams& p) { p.max_half_spread_bps = D("-1"); },
+             [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); }}) {
         auto p = Params();
         change(p);
         EXPECT_THROW(MarketMaker{p}, std::invalid_argument);
@@ -188,6 +195,72 @@ TEST(MarketMakerTest, LeansAwayFromTheHeavySideOfTheInventory) {
     // 100.00 (still behind the touch).
     EXPECT_EQ(m.Orders()[0].limit_price, D("99.80"));
     EXPECT_EQ(m.Orders()[1].limit_price, D("100.00"));
+}
+
+// Volatility scaling over a one-minute window, requoting on any tick's move.
+MarketMakerParams VolParams(const char* multiplier) {
+    auto p = Params();
+    p.vol_multiplier = D(multiplier);
+    p.vol_window = std::chrono::minutes(1);
+    p.requote_bps = D("0");
+    return p;
+}
+
+TEST(MarketMakerTest, KeepsTheBaseSpreadUntilTheVolatilityWindowFills) {
+    Maker m("1", VolParams("100"));
+    for (int i = 0; i < 59; ++i) {
+        m.Quote(i % 2 ? "100.19" : "99.99", i % 2 ? "100.21" : "100.01");
+        m.context.now += std::chrono::seconds(1);
+    }
+    // 59 seconds of 20 bps swings, but less than the window: still 10 bps.
+    m.Quote("99.99", "100.01");
+    const auto& orders = m.Orders();
+    ASSERT_GE(orders.size(), 2u);
+    EXPECT_EQ(orders[orders.size() - 2].limit_price, D("99.90"));
+    EXPECT_EQ(orders.back().limit_price, D("100.10"));
+}
+
+TEST(MarketMakerTest, StaysAtTheBaseSpreadInACalmMarket) {
+    Maker m("1", VolParams("100"));
+    for (int i = 0; i <= 120; ++i) {
+        m.Quote("99.99", "100.01");
+        m.context.now += std::chrono::seconds(1);
+    }
+    ASSERT_EQ(m.Orders().size(), 2u);  // never replaced
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.90"));
+    EXPECT_EQ(m.Orders()[1].limit_price, D("100.10"));
+}
+
+TEST(MarketMakerTest, WidensWithVolatilityMeasuredOverTheTimeCovered) {
+    Maker m("1", VolParams("2"));
+    m.Quote("99.99", "100.01");
+    // A 20 bps move over a 10 minute gap: 400 bps^2 / 10 minutes is a
+    // one-minute volatility of sqrt(40) = 6.32 bps, so the half-spread is
+    // 2 * 6.32 = 12.65 bps of 100.20 (0.12675) rather than 10 (0.1002).
+    m.context.now += std::chrono::minutes(10);
+    m.Quote("100.19", "100.21");
+    ASSERT_EQ(m.Orders().size(), 4u);
+    EXPECT_EQ(m.Orders()[2].limit_price, D("100.07"));
+    EXPECT_EQ(m.Orders()[3].limit_price, D("100.33"));
+
+    // A second later the move has left the window, and the spread narrows.
+    m.context.now += std::chrono::seconds(1);
+    m.Quote("100.19", "100.21");
+    ASSERT_EQ(m.Orders().size(), 6u);
+    EXPECT_EQ(m.Orders()[4].limit_price, D("100.09"));
+    EXPECT_EQ(m.Orders()[5].limit_price, D("100.31"));
+}
+
+TEST(MarketMakerTest, HoldsAWidenedSpreadToTheMaximum) {
+    auto p = VolParams("2");
+    p.max_half_spread_bps = D("11");
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.context.now += std::chrono::minutes(10);
+    m.Quote("100.19", "100.21");  // 12.65 bps, held to 11 (0.11022)
+    ASSERT_EQ(m.Orders().size(), 4u);
+    EXPECT_EQ(m.Orders()[2].limit_price, D("100.08"));
+    EXPECT_EQ(m.Orders()[3].limit_price, D("100.32"));
 }
 
 TEST(MarketMakerTest, NeverCrossesTheBook) {

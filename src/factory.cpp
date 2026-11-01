@@ -366,6 +366,10 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     auto quantity = p.Quantity("quantity");
     auto half_spread = p.Quantity("half_spread_bps");
     auto max_inventory = p.Quantity("max_inventory");
+    auto vol_multiplier = p.Number("vol_multiplier", params.vol_multiplier);
+    auto vol_window = p.Millis("vol_window_ms", params.vol_window);
+    auto max_half_spread =
+        p.Number("max_half_spread_bps", params.max_half_spread_bps);
     auto skew = p.Number("skew_bps", params.skew_bps);
     auto requote = p.Number("requote_bps", params.requote_bps);
     auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
@@ -375,6 +379,9 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!quantity) return std::unexpected(quantity.error());
     if (!half_spread) return std::unexpected(half_spread.error());
     if (!max_inventory) return std::unexpected(max_inventory.error());
+    if (!vol_multiplier) return std::unexpected(vol_multiplier.error());
+    if (!vol_window) return std::unexpected(vol_window.error());
+    if (!max_half_spread) return std::unexpected(max_half_spread.error());
     if (!skew) return std::unexpected(skew.error());
     if (!requote) return std::unexpected(requote.error());
     if (!max_age) return std::unexpected(max_age.error());
@@ -387,6 +394,9 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.quantity = *quantity;
     params.half_spread_bps = *half_spread;
     params.max_inventory = *max_inventory;
+    params.vol_multiplier = *vol_multiplier;
+    params.vol_window = *vol_window;
+    params.max_half_spread_bps = *max_half_spread;
     params.skew_bps = *skew;
     params.requote_bps = *requote;
     params.max_quote_age = *max_age;
