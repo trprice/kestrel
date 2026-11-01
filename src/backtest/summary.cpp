@@ -83,6 +83,7 @@ types::Result<SummaryBuilder> SummaryBuilder::Create(
     builder.mStartBalances = start_balances;
     builder.mBalances = start_balances;
     builder.mMarks.resize(builder.mSummary.symbols.size());
+    builder.mMarkHistory.resize(builder.mSummary.symbols.size());
     builder.mStart = start;
     builder.mInterval = std::max(sample_interval, std::chrono::milliseconds(0));
     return builder;
@@ -153,6 +154,7 @@ void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
                 s.first_mark = Round(*mark);
             }
             mMarks[i] = Round(*mark);
+            mMarkHistory[i].emplace_back(time, *mMarks[i]);
         }
     }
     mBalances.clear();
@@ -198,6 +200,70 @@ void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
         mSummary.drawdown_peak_time = mPeakTime;
         mSummary.drawdown_trough_time = time;
     }
+}
+
+std::vector<Markout> SummaryBuilder::Markouts(
+    types::Timestamp end, const std::vector<types::Fill>& fills) const {
+    std::vector<Markout> markouts(std::size(kMarkoutHorizons) + 2);
+    markouts.front().horizon = std::chrono::milliseconds(0);
+    for (std::size_t i = 0; i < std::size(kMarkoutHorizons); ++i) {
+        markouts[i + 1].horizon = kMarkoutHorizons[i];
+    }  // the last one's horizon stays none: the end
+
+    using History = std::vector<std::pair<types::Timestamp, Decimal>>;
+    // The last mark at or before `time` (strictly before, if `before`).
+    const auto mark_at = [](const History& history, types::Timestamp time,
+                            bool before) -> std::optional<Decimal> {
+        const auto it =
+            before ? std::ranges::lower_bound(history, time, {},
+                                              &History::value_type::first)
+                   : std::ranges::upper_bound(history, time, {},
+                                              &History::value_type::first);
+        if (it == history.begin()) {
+            return std::nullopt;
+        }
+        return std::prev(it)->second;
+    };
+
+    for (const types::Fill& fill : fills) {
+        const auto it = std::ranges::find(mSummary.symbols, fill.symbol,
+                                          &SymbolSummary::symbol);
+        if (it == mSummary.symbols.end()) {
+            continue;
+        }
+        const History& history = mMarkHistory[static_cast<std::size_t>(
+            it - mSummary.symbols.begin())];
+        // The mid the order was resting against: before the quote that
+        // filled it, which has already moved.
+        if (!mark_at(history, fill.time, true)) {
+            continue;
+        }
+        const Decimal notional = Round(fill.price * fill.quantity);
+        for (Markout& m : markouts) {
+            std::optional<Decimal> mid;
+            if (!m.horizon) {
+                mid = mark_at(history, end, false);
+            } else if (m.horizon->count() == 0) {
+                mid = mark_at(history, fill.time, true);
+            } else if (fill.time + *m.horizon <= end) {
+                mid = mark_at(history, fill.time + *m.horizon, false);
+            }
+            if (!mid) {
+                continue;
+            }
+            const Decimal edge = fill.side == types::Side::kBuy
+                                     ? *mid - fill.price
+                                     : fill.price - *mid;
+            ++m.fills;
+            m.pnl += Round(edge * fill.quantity);
+            m.volume += notional;
+        }
+    }
+    for (Markout& m : markouts) {
+        m.bps = Fraction(m.pnl * Decimal::FromInt(10000), m.volume)
+                    .Rescale(2, Rounding::kNearest);
+    }
+    return markouts;
 }
 
 types::Result<BacktestSummary> SummaryBuilder::Finish(
@@ -260,6 +326,7 @@ types::Result<BacktestSummary> SummaryBuilder::Finish(
             }
         }
     }
+    s.markouts = Markouts(end, fills);
     s.realized = pnl.Realized();
     s.unrealized = s.end_equity - s.start_equity - s.realized;
     return s;

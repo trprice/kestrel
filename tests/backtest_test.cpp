@@ -494,6 +494,13 @@ TEST(BacktestTest, SummarizesAQuoteStrategyAtTheMid) {
                                        : balance.total * last.last_mark;
     }
     EXPECT_EQ(result->summary->end_equity, want);
+    // What the fills made by the end is what trading added beyond holding,
+    // before the fees.
+    const auto& s = *result->summary;
+    ASSERT_FALSE(s.markouts.empty());
+    EXPECT_FALSE(s.markouts.back().horizon);
+    EXPECT_EQ(s.markouts.back().fills, 1u);
+    EXPECT_EQ(s.markouts.back().pnl, s.end_equity - s.hold_equity + s.fees);
 }
 
 TEST(BacktestTest, OnlyReplaysQuotesInTheRange) {

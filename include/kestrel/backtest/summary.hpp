@@ -38,6 +38,23 @@ struct SymbolSummary {
     types::Decimal end_held;
 };
 
+// What the fills made against the mid some time after them: for a buy, (the
+// mid then - the price) * quantity, and the reverse for a sell. Fees are not
+// included. The markout at the fill itself is the spread captured, against
+// the mid before the fill; how much it falls by a later horizon is adverse
+// selection (the price moving against the fill), and the markout at the end
+// is what the fills made in all, so it equals vs hold plus the fees when they
+// are charged in the quote asset.
+struct Markout {
+    // Zero: at the fill. None: at the end of the backtest.
+    std::optional<std::chrono::milliseconds> horizon;
+    std::size_t fills = 0;  // fills with a mid before them and the horizon
+                            // before the end
+    types::Decimal pnl;     // quote asset
+    types::Decimal volume;  // of those fills
+    types::Decimal bps;     // pnl / volume, in basis points
+};
+
 // What a backtest made or lost. Amounts are in `quote_asset` and kept to 8
 // decimal places; fractions are of the starting equity (return) or of the peak
 // (drawdown), so 0.01 is 1%.
@@ -81,6 +98,10 @@ struct BacktestSummary {
     std::size_t closing_sells = 0;
     std::size_t winning_sells = 0;
 
+    // At the fill, after each of SummaryBuilder::kMarkoutHorizons, and at
+    // the end.
+    std::vector<Markout> markouts;
+
     // Sampled: the first moment equity is known, then every
     // `sample_interval` from the backtest's start, and the end.
     std::vector<EquityPoint> curve;
@@ -91,6 +112,10 @@ struct BacktestSummary {
 // with the run's fills. Not thread-safe.
 class SummaryBuilder {
    public:
+    static constexpr std::chrono::milliseconds kMarkoutHorizons[] = {
+        std::chrono::seconds(1), std::chrono::seconds(10),
+        std::chrono::minutes(1), std::chrono::minutes(5)};
+
     // `symbols` are the strategy's; an equity symbol takes
     // `default_quote_asset` as its quote. kInvalidArgument when the symbols do
     // not share a quote asset, or a starting balance is neither that asset nor
@@ -122,11 +147,16 @@ class SummaryBuilder {
     std::optional<types::Decimal> Value(
         const std::map<std::string, types::Decimal>& balances) const;
     EquityPoint Point(types::Timestamp time) const;
+    std::vector<Markout> Markouts(types::Timestamp end,
+                                  const std::vector<types::Fill>& fills) const;
 
     BacktestSummary mSummary;
     std::map<std::string, types::Decimal> mStartBalances;
     std::map<std::string, types::Decimal> mBalances;
     std::vector<std::optional<types::Decimal>> mMarks;  // by symbol index
+    // Every mark observed, in time order, by symbol index.
+    std::vector<std::vector<std::pair<types::Timestamp, types::Decimal>>>
+        mMarkHistory;
     types::Timestamp mStart;
     std::chrono::milliseconds mInterval{0};
     types::Timestamp mNextSample;

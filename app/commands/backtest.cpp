@@ -179,6 +179,23 @@ class BacktestCommand : public Command {
                       << "%)";
         }
         std::cout << '\n';
+        if (s.fills > 0) {
+            std::cout
+                << "  markouts       against the mid, fees not included\n";
+            for (const auto& m : s.markouts) {
+                std::string label =
+                    !m.horizon                ? "at the end"
+                    : m.horizon->count() == 0 ? "at the fill"
+                    : m.horizon->count() % 60000 == 0
+                        ? std::to_string(m.horizon->count() / 60000) + " min"
+                        : std::to_string(m.horizon->count() / 1000) + " s";
+                label.resize(std::max<std::size_t>(label.size(), 12), ' ');
+                std::cout << "    " << label << ' '
+                          << (m.bps.Sign() > 0 ? "+" : "") << m.bps.ToString()
+                          << " bps (" << Signed(m.pnl) << ", " << m.fills
+                          << " fills)\n";
+            }
+        }
         for (const auto& sym : s.symbols) {
             std::cout << "  " << sym.symbol << "  " << Amount(sym.first_mark)
                       << " -> " << Amount(sym.last_mark) << "; held "

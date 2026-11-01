@@ -198,6 +198,45 @@ TEST(BacktestSummaryTest, RefusesWhatItCannotValue) {
                                        At(0), std::chrono::minutes(1)));
 }
 
+TEST(BacktestSummaryTest, MarksOutEachFillAgainstTheMidAfterIt) {
+    auto b = Builder();
+    b.Observe(At(10), kZec, D("100"), Balances("1000", "1"));
+    b.Observe(At(20), kZec, D("98"), Balances("901", "2"));  // the buy's quote
+    b.Observe(At(21), kZec, D("97"), Balances("901", "2"));
+    b.Observe(At(80), kZec, D("102"), Balances("901", "2"));
+    b.Observe(At(350), kZec, D("102"), Balances("1002", "1"));
+    auto s = b.Finish(At(400), {FillOf(Side::kBuy, "1", "99", 5),  // no mid yet
+                                FillOf(Side::kBuy, "1", "99", 20),
+                                FillOf(Side::kSell, "1", "101", 350)});
+    ASSERT_OK(s);
+
+    struct Want {
+        std::optional<std::chrono::milliseconds> horizon;
+        std::size_t fills;
+        const char* pnl;
+        const char* bps;
+    };
+    using std::chrono::milliseconds;
+    using std::chrono::minutes;
+    using std::chrono::seconds;
+    // The buy at 99: the mid before it was 100 (+1), then 97 (-2), then 102
+    // (+3). The sell at 101 against 102 is -1 throughout, and too near the
+    // end for a minute's markout.
+    const std::vector<Want> want = {
+        {milliseconds(0), 2, "0", "0"}, {seconds(1), 2, "-3", "-150"},
+        {seconds(10), 2, "-3", "-150"}, {minutes(1), 1, "3", "303.03"},
+        {minutes(5), 1, "3", "303.03"}, {std::nullopt, 2, "2", "100"},
+    };
+    ASSERT_EQ(s->markouts.size(), want.size());
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        SCOPED_TRACE(i);
+        EXPECT_EQ(s->markouts[i].horizon, want[i].horizon);
+        EXPECT_EQ(s->markouts[i].fills, want[i].fills);
+        EXPECT_EQ(s->markouts[i].pnl, D(want[i].pnl));
+        EXPECT_EQ(s->markouts[i].bps, D(want[i].bps));
+    }
+}
+
 TEST(BacktestSummaryTest, MarksAtTheMidOrTheLastTrade) {
     types::Quote q;
     q.bid = D("99");

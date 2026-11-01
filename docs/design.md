@@ -174,7 +174,7 @@ include/kestrel/   public headers, one directory per area:
                      order rules, PnlTracker, RiskGatedVenue
   strategy/          Strategy, Runner, RunRecorder, SmaCrossover, MarketMaker
   backtest/          ReplayDataSource, LoadReplayData, RunBacktest,
-                     SummaryBuilder (the P&L summary)
+                     SummaryBuilder (the P&L summary and markouts)
   factory.hpp        builds a provider's data source and venue, a strategy by
                      name, resolved risk limits, and a ready-to-run Runner
 src/               implementation, same directories (plus factory.cpp)

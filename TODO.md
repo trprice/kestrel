@@ -213,8 +213,8 @@ the header of the code concerned.
   the paper venue pushes the fill and the order's state, so the strategy hears
   of the fill before it sees the quote that caused it. That is better informed
   than live trading, where the fill report takes a round trip; there is no
-  fill latency in a backtest at all (see the paper-delay item under
-  Projects).
+  fill latency in a backtest at all (see the paper latency item under
+  Backtesting and research).
 
 ### Backtesting (`backtest/backtest.hpp`)
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
@@ -242,6 +242,10 @@ the header of the code concerned.
   data is too little for them. Its realized P&L gives the starting holding
   the first mark as cost basis, so on a trending day it includes the move on
   what was sold; "vs hold" is the figure that leaves the move out.
+- Markouts take the mid from the replayed quotes: at the fill, the last mid
+  stamped before the fill's time, so a quote in the same millisecond is not
+  counted as before it. A fill closer to the end than a horizon is left out
+  of that horizon. Fees are not included.
 - Symbol info (tick, lot, minimum size) must be supplied by hand for every
   symbol.
 
@@ -332,8 +336,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       `GetOpenOrders` (weight 3) every second uses about 780 of the 2400
       weight per minute the client keeps to, per symbol, so a live run on
       several symbols needs a longer `fill_poll_interval`.
-- [ ] An optional delay on the paper venue's pushes (and fills), so paper
-      runs can model live latency instead of seeing fills instantly.
 - [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
       provider's docs (Schwab's is a step under In progress). The lists in the code
       and docs/design.md came from memory.
@@ -348,6 +350,37 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Multi-symbol strategies (pairs trading, momentum rotation across a basket)
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
+
+#### Market maker
+Roughly in order of expected value. The backtest markouts show where the P&L comes
+from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
+fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
+made +0.77 USDT in the five minutes after their fills but +9.99 by the end
+(inventory riding the price). Check a change's markouts, not only "vs hold".
+- [ ] Centre the quotes on the microprice (the mid weighted by the size at
+      the touch, leaning toward the thin side) instead of the mid, as an
+      option. Quotes already carry `bid_size` / `ask_size`. The cheapest
+      common defence against adverse selection; measure it by the 1 s and
+      10 s markouts.
+- [ ] Keep queue position: leave a resting quote alone while it is still at
+      the touch even if its target moved, and optionally join the touch (or
+      improve it by a tick) instead of quoting a computed price. Each
+      replacement goes to the back of the queue (see Known limitations), and
+      on wide-tick pairs queue position is most of the edge.
+- [ ] Lean against recent order flow: raise both quotes, or pull the ask,
+      after mostly aggressive buying in the last N seconds, and the reverse.
+      Needs the aggressor side in the live quote stream (under Backtesting
+      and research). The momentum filter is a bid-only, price-based version.
+- [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
+      the next quote (see Known limitations), so stale quotes are not filled
+      after a move the strategy never saw.
+- [ ] Stronger inventory control: a skew that grows faster than linearly
+      with the position (Avellaneda-Stoikov style) and with how long the
+      position has been held. The current skew is linear in the position.
+- [ ] Quote several levels a side with smaller sizes, for pairs that swing
+      enough to fill them.
+- [ ] Persist the halt state and protection P&L, so a restart does not reset
+      the loss and drawdown caps (see Known limitations).
 - [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
       timeout (a few backstop polls), ask the venue: `GetOrder` for its real
       filled quantity (correcting a size assumed from the acknowledgement),
@@ -360,13 +393,29 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       or let a strategy ask whether a fill ID was delivered).
 
 ### Backtesting and research
-- [ ] Parameter sweeps and walk-forward testing
-- [ ] Order and cancel latency in the paper venue, so a quote can fill an
-      order that the strategy has already asked to cancel
+- [ ] Latency in the paper venue: delay its pushes and fills, and its order
+      and cancel acknowledgements, so a quote can fill an order the strategy
+      has already asked to cancel. A backtest now hears of a fill before the
+      quote that caused it (see Known limitations); live, the round trip is
+      about 130 ms. With an edge of a few bps this matters more than any
+      parameter, since winning settings may lose live without it.
+- [ ] Check the backtest against live runs: replay the window of a live run
+      (runs 10 and 12, Oct 2026) and compare fill counts, prices and P&L with
+      what happened, to calibrate `limit_fill_model = "conservative"`.
+- [ ] Parameter sweeps and walk-forward testing: `backtest --sweep
+      half_spread_bps=2,3,4,6` replaying the loaded quotes once per value and
+      printing one table (summary and markouts), then tuning on one day and
+      testing on the next. The sweeps so far were shell loops.
+- [ ] A pair scanner: rank a venue's pairs by the market spread against the
+      one-minute volatility, trade rate, maker fee and tick size against the
+      price. Market making pays where the spread is wide for how fast the
+      price moves (ZEC/USDT: about 1.5 bps of half-spread against 11 bps a
+      minute), so the pair matters more than tuning.
 - [ ] Record the aggressor side of trades (Binance `m` flag) so trades can be
       attributed to the right side of the book. Done for the stored trade
       history (`market_trades.taker_side`); the live quote stream still
-      merges a trade into the quote without its side.
+      merges a trade into the quote without its side. Needed by the market
+      maker's order-flow item and for queue modelling.
 - [ ] Benchmark comparison against buy-and-hold: the backtest summary's "vs
       hold" covers holding the starting balances; comparing against other
       benchmarks (an index, a basket) is not done
@@ -383,6 +432,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       reports that use them
 
 ### Operations
+- [ ] Record quotes continuously: `stream --store` under systemd (a loop
+      that restarts it) on the server, for several pairs, so backtests are not
+      drawn from 32 hours of one pair. Mind the retention item below.
 - [ ] **Data retention for the database** (from the 10 minute paper run,
       2026-10-28; nothing is configured yet, no compression or retention
       policy exists on either hypertable). `quotes` is the only table that
@@ -522,6 +574,11 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       balances, max drawdown, realized and unrealized P&L, fills, volume,
       fees, closing sells won, inventory range, and the equity curve sampled
       every minute (`--equity-csv`)
+- [x] Backtest markouts: each fill against the mid before it (spread
+      captured), 1 s, 10 s, 1 min and 5 min after it, and at the end (equal
+      to vs hold plus quote-asset fees)
+- [x] Market maker volatility scaling of the spread (`vol_multiplier`,
+      `vol_window_ms`, `max_half_spread_bps`), off by default
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
