@@ -440,6 +440,11 @@ TEST(Factory, MarketMakerReadsTheTowardsRequoteThreshold) {
     EXPECT_FALSE(make("requote_toward_bps='x'\n").has_value());
     EXPECT_TRUE(make("microprice_weight=0.5\n").has_value());
     EXPECT_FALSE(make("microprice_weight=2\n").has_value());
+    EXPECT_TRUE(
+        make("flow_pull_imbalance=0.6\nflow_window_ms=5000\n").has_value());
+    EXPECT_FALSE(make("flow_pull_imbalance=1.5\n").has_value());
+    EXPECT_FALSE(
+        make("flow_pull_imbalance=0.6\nflow_window_ms=0\n").has_value());
 }
 
 TEST(Factory, CreateStrategyRejectsBadInput) {

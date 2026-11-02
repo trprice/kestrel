@@ -69,6 +69,14 @@ MarketMaker::MarketMaker(MarketMakerParams params)
         mParams.microprice_weight > Decimal::FromInt(1)) {
         throw std::invalid_argument("microprice_weight must be from 0 to 1");
     }
+    if (mParams.flow_pull_imbalance.IsNegative() ||
+        mParams.flow_pull_imbalance > Decimal::FromInt(1)) {
+        throw std::invalid_argument("flow_pull_imbalance must be from 0 to 1");
+    }
+    if (mParams.flow_pull_imbalance.Sign() > 0 &&
+        mParams.flow_window <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("flow_window must be positive");
+    }
     if (mParams.max_half_spread_bps.Sign() > 0 &&
         mParams.max_half_spread_bps < mParams.half_spread_bps) {
         throw std::invalid_argument(
@@ -147,15 +155,24 @@ Decimal MarketMaker::Size(const Decimal& room) const {
 }
 
 void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
-    if (!mReady || quote.symbol != mParams.symbol || !quote.bid || !quote.ask ||
-        quote.bid->Sign() <= 0 || *quote.bid >= *quote.ask) {
+    if (!mReady || quote.symbol != mParams.symbol) {
+        return;
+    }
+    if (mParams.flow_pull_imbalance.Sign() > 0) {
+        NoteTrade(quote, context.Now());
+    }
+    if (!quote.bid || !quote.ask || quote.bid->Sign() <= 0 ||
+        *quote.bid >= *quote.ask) {
         return;
     }
     const Decimal tick = mInfo.tick_size;
     const Decimal mid =
         Decimal::Divide(*quote.bid + *quote.ask, Decimal::FromInt(2), kScale,
                         Rounding::kNearest);
-    const Pause pause = Protect(context, quote, mid);
+    Pause pause = Protect(context, quote, mid);
+    if (mParams.flow_pull_imbalance.Sign() > 0) {
+        FlowPause(context.Now(), pause);
+    }
 
     // Lean away from the side the position is heavy on.
     Decimal lean = Decimal::Divide(mInventory - mStart, mParams.max_inventory,
@@ -205,6 +222,62 @@ Decimal MarketMaker::Centre(const types::Quote& quote, const Decimal& mid) {
     ++mCentreCount;
     mCentreShiftSum += std::abs(ToDouble(centre) / ToDouble(mid) - 1.0) * 1e4;
     return centre;
+}
+
+void MarketMaker::NoteTrade(const types::Quote& quote, types::Timestamp now) {
+    const bool first = !mFirstQuote;
+    if (first) {
+        mFirstQuote = now;
+    }
+    mLastQuote = now;
+    // Book updates repeat the last trade, so a trade is new only if its
+    // price, size, side or time changed. The first quote's trade came before
+    // the strategy was listening.
+    const LastTrade last{quote.last, quote.last_size, quote.last_taker_side,
+                         quote.exchange_time};
+    if (quote.last && !first && (!mLastTrade || last != *mLastTrade)) {
+        if (!quote.last_size || quote.last_size->Sign() <= 0 ||
+            !quote.last_taker_side) {
+            ++mFlowUncounted;
+        } else {
+            const bool bought = *quote.last_taker_side == Side::kBuy;
+            mFlow.push_back({now, *quote.last_size, bought});
+            (bought ? mFlowBought : mFlowSold) += *quote.last_size;
+        }
+    }
+    if (quote.last) {
+        mLastTrade = last;
+    }
+    while (!mFlow.empty() && mFlow.front().time <= now - mParams.flow_window) {
+        const FlowTrade& old = mFlow.front();
+        (old.bought ? mFlowBought : mFlowSold) -= old.size;
+        mFlow.pop_front();
+    }
+}
+
+void MarketMaker::FlowPause(types::Timestamp now, Pause& pause) {
+    const Decimal total = mFlowBought + mFlowSold;
+    const Decimal imbalance =
+        total.Sign() > 0 ? Decimal::Divide(mFlowBought - mFlowSold, total,
+                                           kScale, Rounding::kNearest)
+                         : Decimal();
+    const auto note = [&](FlowPulls& pulls, bool on, const char* side) {
+        if (on && !pulls.on) {
+            ++pulls.count;
+            pulls.since = now;
+            spdlog::debug("market_maker: pulling the {} on order flow ({})",
+                          side, imbalance.ToString());
+        } else if (!on && pulls.on) {
+            pulls.total += now - pulls.since;
+        }
+        pulls.on = on;
+    };
+    const bool bid = imbalance <= -mParams.flow_pull_imbalance;
+    const bool ask = imbalance >= mParams.flow_pull_imbalance;
+    note(mFlowBid, bid, "bid");
+    note(mFlowAsk, ask, "ask");
+    pause.bid = pause.bid || bid;
+    pause.ask = pause.ask || ask;
 }
 
 Decimal MarketMaker::HalfSpreadBps(types::Timestamp now, const Decimal& mid) {
@@ -609,6 +682,26 @@ void MarketMaker::OnStop(Context& context) {
             "market_maker: the microprice moved the centre {:.2f} bps from "
             "the mid on average",
             mCentreShiftSum / static_cast<double>(mCentreCount));
+    }
+    if (mParams.flow_pull_imbalance.Sign() > 0 && mFirstQuote) {
+        const double span =
+            std::chrono::duration<double>(mLastQuote - *mFirstQuote).count();
+        const auto share = [&](const FlowPulls& pulls) {
+            auto total = pulls.total;
+            if (pulls.on) {
+                total += mLastQuote - pulls.since;
+            }
+            return span > 0
+                       ? 100.0 * std::chrono::duration<double>(total).count() /
+                             span
+                       : 0.0;
+        };
+        spdlog::info(
+            "market_maker: order flow pulled the bid {} time(s) ({:.1f}% of "
+            "the run) and the ask {} ({:.1f}%); {} trade(s) without a side "
+            "or size not counted",
+            mFlowBid.count, share(mFlowBid), mFlowAsk.count, share(mFlowAsk),
+            mFlowUncounted);
     }
     if (mWouldTake > 0) {
         spdlog::info(

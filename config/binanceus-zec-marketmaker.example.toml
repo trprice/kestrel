@@ -54,6 +54,12 @@ requote_toward_bps = 0         # ...but one it moved towards at once (TODO.md)
 # Centre the quotes towards the microprice (0: the mid, 1: the full weighted
 # mid). It did not help in the Oct 2026 replays; see TODO.md.
 # microprice_weight   = 0
+# Pull the bid while the trades of the last flow_window_ms were mostly sales
+# (imbalance at or below -flow_pull_imbalance, by size), the ask while they
+# were mostly purchases. Off at 0. It helped at 2 and 4 bps but not at 6 in
+# the Oct 2026 replays; see TODO.md.
+# flow_pull_imbalance = 0.5
+# flow_window_ms      = 2000
 # post_only      = true        # refuse instead of filling as a taker (live)
 
 # Drawdown protection. Every rule is off until its flag is set to true; the

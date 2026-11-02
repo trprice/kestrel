@@ -122,6 +122,12 @@ TEST(MarketMakerTest, RejectsBadParameters) {
              [](MarketMakerParams& p) { p.max_half_spread_bps = D("-1"); },
              [](MarketMakerParams& p) { p.microprice_weight = D("-0.1"); },
              [](MarketMakerParams& p) { p.microprice_weight = D("1.1"); },
+             [](MarketMakerParams& p) { p.flow_pull_imbalance = D("-0.1"); },
+             [](MarketMakerParams& p) { p.flow_pull_imbalance = D("1.1"); },
+             [](MarketMakerParams& p) {
+                 p.flow_pull_imbalance = D("0.5");
+                 p.flow_window = std::chrono::milliseconds(0);
+             },
              [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); }}) {
         auto p = Params();
         change(p);
@@ -187,6 +193,85 @@ TEST(MarketMakerTest, UsesTheMidWhenTheQuoteHasNoSizes) {
     ASSERT_EQ(m.Orders().size(), 2u);
     EXPECT_EQ(m.Orders()[0].limit_price, D("99.90"));
     EXPECT_EQ(m.Orders()[1].limit_price, D("100.10"));
+}
+
+// The book at 99.99 / 100.01 with the last trade, as a merged quote carries it.
+types::Quote TradeQuote(const char* size, std::optional<Side> taker,
+                        std::int64_t trade_ms) {
+    auto q = QuoteOf("99.99", "100.01");
+    q.last = D("100.00");
+    q.last_size = D(size);
+    q.last_taker_side = taker;
+    q.exchange_time = types::Timestamp(std::chrono::milliseconds(trade_ms));
+    return q;
+}
+
+MarketMakerParams FlowParams() {
+    auto p = Params();
+    p.flow_pull_imbalance = D("0.5");
+    p.flow_window = std::chrono::seconds(5);
+    return p;
+}
+
+TEST(MarketMakerTest, PullsTheBidWhileSellersHitIt) {
+    Maker m("1", FlowParams());
+    // The first quote's trade came before the strategy listened.
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 1));
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    m.context.now += std::chrono::seconds(1);
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 2));
+    EXPECT_EQ(m.context.venue.cancelled, std::vector<std::string>{"order-1"});
+    EXPECT_EQ(m.Orders().size(), 2u);  // the ask stays
+
+    // A book update repeats the trade; it is not counted again, and the bid
+    // stays off while the trade is in the window.
+    m.context.now += std::chrono::seconds(3);
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 2));
+    EXPECT_EQ(m.Orders().size(), 2u);
+
+    // Five seconds on, the trade has left the window.
+    m.context.now += std::chrono::seconds(2);
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 2));
+    ASSERT_EQ(m.Orders().size(), 3u);
+    EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
+}
+
+TEST(MarketMakerTest, PullsTheAskWhileBuyersLiftIt) {
+    Maker m("1", FlowParams());
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+    // The sale alone pulls the bid; then bought 3 against 1 sold is +0.5, at
+    // the threshold: the ask goes and the bid comes back.
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 1));
+    m.strategy.OnQuote(m.context, TradeQuote("3", Side::kBuy, 2));
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    ASSERT_EQ(m.Orders().size(), 3u);
+    EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
+}
+
+TEST(MarketMakerTest, QuotesTheBidAgainOnceTheFlowEvensOut) {
+    Maker m("1", FlowParams());
+    m.Quote("99.99", "100.01");
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 1));
+    EXPECT_EQ(m.context.venue.cancelled, std::vector<std::string>{"order-1"});
+    // Sold 1, bought 2: +0.33, inside 0.5 either way.
+    m.strategy.OnQuote(m.context, TradeQuote("2", Side::kBuy, 2));
+    ASSERT_EQ(m.Orders().size(), 3u);
+    EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
+    // A trade without a side is not counted: still +0.33.
+    m.strategy.OnQuote(m.context, TradeQuote("5", std::nullopt, 3));
+    EXPECT_EQ(m.context.venue.cancelled.size(), 1u);
+    EXPECT_EQ(m.Orders().size(), 3u);
+}
+
+TEST(MarketMakerTest, IgnoresOrderFlowByDefault) {
+    Maker m;
+    m.Quote("99.99", "100.01");
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 1));
+    m.strategy.OnQuote(m.context, TradeQuote("1", Side::kSell, 2));
+    EXPECT_TRUE(m.context.venue.cancelled.empty());
 }
 
 TEST(MarketMakerTest, LeavesAQuoteAloneUntilTheTargetMovesEnough) {

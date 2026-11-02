@@ -93,6 +93,18 @@ struct MarketMakerParams {
     // tends to overstate the next move. A quote without both sizes uses the
     // mid.
     types::Decimal microprice_weight{0, 0};
+    // Pull the quote that recent trades are running against: no bid while the
+    // trades of the last flow_window were mostly sellers hitting the bid, no
+    // ask while they were mostly buyers lifting the ask, so a quote is not
+    // left in the way of a sweep. The imbalance is (bought - sold) / (bought
+    // + sold), by size, over the trades the quotes carried (a change in the
+    // last trade's price, size, side or time is a new trade); the bid is
+    // pulled at -flow_pull_imbalance or below, the ask at +flow_pull_imbalance
+    // or above, and comes back once the imbalance is inside that. A trade
+    // without a side or size is not counted. Zero (the default) is off; at
+    // most 1, which pulls only when every trade went one way.
+    types::Decimal flow_pull_imbalance{0, 0};
+    std::chrono::milliseconds flow_window{std::chrono::seconds(5)};
     // How far the position may stray from where it started, in base units,
     // either way. Past it the side that would add to the position stops
     // quoting.
@@ -145,6 +157,9 @@ struct MarketMakerParams {
 // With vol_multiplier set, the spread widens with the mid's recent
 // volatility (see MarketMakerParams).
 //
+// With flow_pull_imbalance set, the side recent trades are running against
+// is pulled (see MarketMakerParams).
+//
 // Not modelled yet: pulling quotes when the feed goes quiet (the strategy only
 // runs when a quote arrives), and fees charged in the base asset (the P&L
 // counts them, the inventory does not).
@@ -155,9 +170,10 @@ class MarketMaker : public Strategy {
     // skew_bps, requote_bps, requote_toward_bps, max_quote_age and
     // vol_multiplier are not negative; with vol_multiplier set, vol_window
     // must be positive, and a max_half_spread_bps that is set at least
-    // half_spread_bps; microprice_weight is from 0 to 1. Each enabled
-    // protection rule's amounts must be positive (the filters' and the
-    // durations may be zero).
+    // half_spread_bps; microprice_weight and flow_pull_imbalance are from 0 to
+    // 1, and with flow_pull_imbalance set flow_window must be positive. Each
+    // enabled protection rule's amounts must be positive (the filters' and
+    // the durations may be zero).
     explicit MarketMaker(MarketMakerParams params);
 
     std::string_view Name() const override { return "market_maker"; }
@@ -199,6 +215,9 @@ class MarketMaker : public Strategy {
                                  const types::Decimal& mid);
     // The point the quotes are centred on, before the inventory skew.
     types::Decimal Centre(const types::Quote& quote, const types::Decimal& mid);
+    // Notes a trade the quote carries, if it is new, and drops those older
+    // than flow_window.
+    void NoteTrade(const types::Quote& quote, types::Timestamp now);
 
     // Protection. All run on the quote's mid and the book.
     struct Pause {
@@ -209,6 +228,8 @@ class MarketMaker : public Strategy {
     // must not quote.
     Pause Protect(Context& context, const types::Quote& quote,
                   const types::Decimal& mid);
+    // Adds the sides the recent trades are running against to `pause`.
+    void FlowPause(types::Timestamp now, Pause& pause);
     // Basis-point move of the mid over `window`; zero without that history.
     types::Decimal Move(types::Timestamp now, std::chrono::milliseconds window,
                         const types::Decimal& mid) const;
@@ -284,6 +305,38 @@ class MarketMaker : public Strategy {
     // For the log at the end: how far the microprice moved the centre.
     std::size_t mCentreCount = 0;
     double mCentreShiftSum = 0;  // absolute, in bps
+
+    // Order flow: the trades of the last flow_window, and the last trade
+    // seen, to tell a new one from a book update that repeats it.
+    struct FlowTrade {
+        types::Timestamp time;
+        types::Decimal size;
+        bool bought;  // a buyer took
+    };
+    struct LastTrade {
+        std::optional<types::Decimal> price;
+        std::optional<types::Decimal> size;
+        std::optional<types::Side> taker_side;
+        std::optional<types::Timestamp> time;
+        bool operator==(const LastTrade&) const = default;
+    };
+    std::optional<LastTrade> mLastTrade;
+    std::deque<FlowTrade> mFlow;
+    types::Decimal mFlowBought;
+    types::Decimal mFlowSold;
+    // For the log at the end: trades not counted, and for each side (bid,
+    // ask) how often and for how long the flow pulled it.
+    std::size_t mFlowUncounted = 0;
+    struct FlowPulls {
+        bool on = false;
+        std::size_t count = 0;
+        types::Timestamp since;
+        std::chrono::milliseconds total{0};
+    };
+    FlowPulls mFlowBid;
+    FlowPulls mFlowAsk;
+    std::optional<types::Timestamp> mFirstQuote;
+    types::Timestamp mLastQuote;
 };
 
 }  // namespace kestrel::strategy

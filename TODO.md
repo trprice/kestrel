@@ -238,6 +238,35 @@ the header of the code concerned.
   the 5 bps the fills lose within a second, which come from jumps the touch
   does not foretell. Using an extreme imbalance only to pull the threatened
   quote, rather than to move both, is untested.
+- Pulling the quote recent trades run against (`flow_pull_imbalance`,
+  `flow_window_ms`) helped at tight spreads but not at the best setting.
+  With 6 / 0 requoting and 130 / 600 ms latency, vs hold in USDT and the
+  1 s markout in bps, Oct 30 / Oct 19:
+
+      half-spread, pull        Oct 30              Oct 19
+      2 bps, off            -13.9  -3.47        -4.1  -1.64
+      2 bps, 0.5 / 2 s       -8.0  -3.57        -3.6  -1.06
+      2 bps, 0.2 / 5 s       -9.4  -3.36        -2.4  -0.79
+      4 bps, off             +0.6  -5.04        +1.4  +0.55
+      4 bps, 0.5 / 2 s       +1.7  -4.29        +0.5  +1.18
+      4 bps, 0.2 / 2 s       +2.8  -4.08        +0.1  +1.14
+      6 bps, off             +5.4  -5.08        +2.0  +1.79
+      6 bps, 0.5 / 2 s       +3.1  -5.18        +0.9  +2.06
+      6 bps, 1 / 15 s        +5.5  -5.44        +3.1  +2.18
+
+  (thresholds 0.2, 0.5 and 1 and windows 1, 2, 5 and 15 s were run; these
+  are representative). Each side was pulled 4-18% of the time, and fills
+  fell 15-30%. At 2 and 4 bps the markout improved by up to 1 bps and the
+  loss at 2 bps shrank on both days; at 6 bps the markout did not improve
+  on Oct 30 and vs hold fell for most settings, with too few fills (60-145)
+  to tell the 1 / 15 s result from noise. Measured before building it:
+  fills after flow against them did 2-9 bps worse at 1 s than fills after
+  flow with them, but two-thirds of fills had no trade in the 5 s before
+  them, and many warning trades come within 200 ms of the fill (a sweep),
+  too late to cancel. The flow barely predicts the mid (+0.3 to +0.7 bps
+  after a 2 s window of all buying), so leaning the quotes on it was not
+  built. The live runner conflates quotes that queue up, so a burst of
+  trades counts as its last one there; replays see every trade.
 - Fills the venue has reported but `OnFill` has not delivered
   (`mUnconfirmed`) are cleared only by that `OnFill`. If it never comes, the
   room on that side stays held for the rest of the run (logged once after
@@ -424,10 +453,6 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       improve it by a tick) instead of quoting a computed price. Each
       replacement goes to the back of the queue (see Known limitations), and
       on wide-tick pairs queue position is most of the edge.
-- [ ] Lean against recent order flow: raise both quotes, or pull the ask,
-      after mostly aggressive buying in the last N seconds, and the reverse.
-      The quotes carry each trade's taker side (`Quote::last_taker_side`,
-      Binance.US). The momentum filter is a bid-only, price-based version.
 - [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
       the next quote (see Known limitations), so stale quotes are not filled
       after a move the strategy never saw.
@@ -635,6 +660,9 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       market moves towards is replaced on a smaller move than one it moves
       away from
 - [x] Market maker microprice centring (`microprice_weight`), off by default
+- [x] Market maker order-flow pull (`flow_pull_imbalance`,
+      `flow_window_ms`): no quote on the side recent trades run against,
+      off by default
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
