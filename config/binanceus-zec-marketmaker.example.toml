@@ -51,6 +51,9 @@ requote_toward_bps = 0         # ...but one it moved towards at once (TODO.md)
 # vol_multiplier      = 0.4
 # vol_window_ms       = 300000
 # max_half_spread_bps = 0
+# Centre the quotes towards the microprice (0: the mid, 1: the full weighted
+# mid). It did not help in the Oct 2026 replays; see TODO.md.
+# microprice_weight   = 0
 # post_only      = true        # refuse instead of filling as a taker (live)
 
 # Drawdown protection. Every rule is off until its flag is set to true; the

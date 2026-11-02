@@ -222,6 +222,22 @@ the header of the code concerned.
   quoting wider avoids. Run 12's settings with `max_orders_per_minute = 60`
   had 2512 orders refused by the risk gate and 12 fills, so the order limit
   has to allow for it. Two days; retest on more.
+- Centring on the microprice (`microprice_weight`) did not help. With 6 / 0
+  requoting and 130 / 600 ms latency, vs hold in USDT, Oct 30 / Oct 19:
+
+      weight        0               0.25            0.5             1
+      4 bps     +0.6 / +1.4     -2.9 / -2.1     -4.6 / +0.8     -0.4 / +1.1
+      6 bps     +5.4 / +2.0     +1.6 / -0.7     +1.1 / +0.5     -0.3 / +0.5
+
+  and the 1 s markout did not improve. It moved the centre about 1 bps on
+  average and sent 10-15% more orders on Oct 30. The touch imbalance does
+  predict the next move of the mid on ZEC/USDT, but weakly: with under 20%
+  of the touch size on the bid, the next move was up 33% of the time
+  (average -0.33 bps) against the microprice's -1.69 bps; over 80%, up 70%
+  (+0.51 against +2.18); in between, close to even. That is small against
+  the 5 bps the fills lose within a second, which come from jumps the touch
+  does not foretell. Using an extreme imbalance only to pull the threatened
+  quote, rather than to move both, is untested.
 - Fills the venue has reported but `OnFill` has not delivered
   (`mUnconfirmed`) are cleared only by that `OnFill`. If it never comes, the
   room on that side stays held for the rest of the run (logged once after
@@ -403,11 +419,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Centre the quotes on the microprice (the mid weighted by the size at
-      the touch, leaning toward the thin side) instead of the mid, as an
-      option. Quotes already carry `bid_size` / `ask_size`. The cheapest
-      common defence against adverse selection; measure it by the 1 s and
-      10 s markouts.
 - [ ] Keep queue position: leave a resting quote alone while it is still at
       the touch even if its target moved, and optionally join the touch (or
       improve it by a tick) instead of quoting a computed price. Each
@@ -623,6 +634,7 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 - [x] Market maker asymmetric requoting (`requote_toward_bps`): a quote the
       market moves towards is replaced on a smaller move than one it moves
       away from
+- [x] Market maker microprice centring (`microprice_weight`), off by default
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP

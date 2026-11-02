@@ -438,6 +438,8 @@ TEST(Factory, MarketMakerReadsTheTowardsRequoteThreshold) {
     EXPECT_TRUE(make("requote_toward_bps=0\n").has_value());
     EXPECT_FALSE(make("requote_toward_bps=-1\n").has_value());
     EXPECT_FALSE(make("requote_toward_bps='x'\n").has_value());
+    EXPECT_TRUE(make("microprice_weight=0.5\n").has_value());
+    EXPECT_FALSE(make("microprice_weight=2\n").has_value());
 }
 
 TEST(Factory, CreateStrategyRejectsBadInput) {

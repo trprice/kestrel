@@ -1,6 +1,7 @@
 #include "kestrel/strategy/market_maker.hpp"
 
 #include <algorithm>
+#include <tuple>
 
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
@@ -119,6 +120,8 @@ TEST(MarketMakerTest, RejectsBadParameters) {
                  p.vol_window = std::chrono::milliseconds(0);
              },
              [](MarketMakerParams& p) { p.max_half_spread_bps = D("-1"); },
+             [](MarketMakerParams& p) { p.microprice_weight = D("-0.1"); },
+             [](MarketMakerParams& p) { p.microprice_weight = D("1.1"); },
              [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); }}) {
         auto p = Params();
         change(p);
@@ -153,6 +156,37 @@ TEST(MarketMakerTest, RoundsTheBidDownAndTheAskUp) {
     ASSERT_EQ(m.Orders().size(), 2u);
     EXPECT_EQ(m.Orders()[0].limit_price, D("99.90"));
     EXPECT_EQ(m.Orders()[1].limit_price, D("100.11"));
+}
+
+TEST(MarketMakerTest, CentresOnTheMicropriceByItsWeight) {
+    // Mid 100.00; 1 bid against 3 offered puts the microprice at
+    // (99.90 * 3 + 100.10 * 1) / 4 = 99.95, towards the thin bid.
+    auto quote = QuoteOf("99.90", "100.10");
+    quote.bid_size = D("1");
+    quote.ask_size = D("3");
+    for (const auto& [weight, bid, ask] :
+         std::vector<std::tuple<const char*, const char*, const char*>>{
+             {"1", "99.85", "100.05"},     // centre 99.95, +-0.10
+             {"0.5", "99.87", "100.08"},   // centre 99.975
+             {"0", "99.90", "100.10"}}) {  // the mid
+        auto p = Params();
+        p.microprice_weight = D(weight);
+        Maker m("1", p);
+        m.strategy.OnQuote(m.context, quote);
+        ASSERT_EQ(m.Orders().size(), 2u) << weight;
+        EXPECT_EQ(m.Orders()[0].limit_price, D(bid)) << weight;
+        EXPECT_EQ(m.Orders()[1].limit_price, D(ask)) << weight;
+    }
+}
+
+TEST(MarketMakerTest, UsesTheMidWhenTheQuoteHasNoSizes) {
+    auto p = Params();
+    p.microprice_weight = D("1");
+    Maker m("1", p);
+    m.Quote("99.90", "100.10");
+    ASSERT_EQ(m.Orders().size(), 2u);
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.90"));
+    EXPECT_EQ(m.Orders()[1].limit_price, D("100.10"));
 }
 
 TEST(MarketMakerTest, LeavesAQuoteAloneUntilTheTargetMovesEnough) {

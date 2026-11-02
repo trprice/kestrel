@@ -370,6 +370,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     auto vol_window = p.Millis("vol_window_ms", params.vol_window);
     auto max_half_spread =
         p.Number("max_half_spread_bps", params.max_half_spread_bps);
+    auto microprice = p.Number("microprice_weight", params.microprice_weight);
     auto skew = p.Number("skew_bps", params.skew_bps);
     auto requote = p.Number("requote_bps", params.requote_bps);
     auto requote_toward =
@@ -384,6 +385,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!vol_multiplier) return std::unexpected(vol_multiplier.error());
     if (!vol_window) return std::unexpected(vol_window.error());
     if (!max_half_spread) return std::unexpected(max_half_spread.error());
+    if (!microprice) return std::unexpected(microprice.error());
     if (!skew) return std::unexpected(skew.error());
     if (!requote) return std::unexpected(requote.error());
     if (!requote_toward) return std::unexpected(requote_toward.error());
@@ -400,6 +402,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.vol_multiplier = *vol_multiplier;
     params.vol_window = *vol_window;
     params.max_half_spread_bps = *max_half_spread;
+    params.microprice_weight = *microprice;
     params.skew_bps = *skew;
     params.requote_bps = *requote;
     params.requote_toward_bps = *requote_toward;

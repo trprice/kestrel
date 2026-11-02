@@ -84,6 +84,15 @@ struct MarketMakerParams {
     types::Decimal vol_multiplier{0, 0};
     std::chrono::milliseconds vol_window{std::chrono::minutes(5)};
     types::Decimal max_half_spread_bps{0, 0};
+    // Centre the quotes between the mid and the microprice, the mid weighted
+    // by the size at the touch: (bid * ask_size + ask * bid_size) /
+    // (bid_size + ask_size). It sits nearer the side with less size, the side
+    // a few orders can clear, so the quotes lean towards where the price is
+    // likelier to go next. The centre is mid + microprice_weight * (microprice
+    // - mid): zero (the default) is the mid, one the full microprice, which
+    // tends to overstate the next move. A quote without both sizes uses the
+    // mid.
+    types::Decimal microprice_weight{0, 0};
     // How far the position may stray from where it started, in base units,
     // either way. Past it the side that would add to the position stops
     // quoting.
@@ -114,10 +123,11 @@ struct MarketMakerParams {
     MarketMakerProtection protection;
 };
 
-// Quotes a bid and an ask around a reservation price: the mid, shifted away
-// from the side the position is heavy on. Spot only, so the ask is quoted
-// only while there is base asset to sell, and the strategy starts from
-// whatever the venue holds of the base asset.
+// Quotes a bid and an ask around a reservation price: the mid (or a point
+// towards the microprice, with microprice_weight), shifted away from the side
+// the position is heavy on. Spot only, so the ask is quoted only while there
+// is base asset to sell, and the strategy starts from whatever the venue
+// holds of the base asset.
 //
 // Quotes never cross the book: a bid is held to one tick under the best ask,
 // an ask to one tick over the best bid. Nothing is quoted while the book is
@@ -145,8 +155,9 @@ class MarketMaker : public Strategy {
     // skew_bps, requote_bps, requote_toward_bps, max_quote_age and
     // vol_multiplier are not negative; with vol_multiplier set, vol_window
     // must be positive, and a max_half_spread_bps that is set at least
-    // half_spread_bps. Each enabled protection rule's amounts must be
-    // positive (the filters' and the durations may be zero).
+    // half_spread_bps; microprice_weight is from 0 to 1. Each enabled
+    // protection rule's amounts must be positive (the filters' and the
+    // durations may be zero).
     explicit MarketMaker(MarketMakerParams params);
 
     std::string_view Name() const override { return "market_maker"; }
@@ -186,6 +197,8 @@ class MarketMaker : public Strategy {
     // quote, in basis points.
     types::Decimal HalfSpreadBps(types::Timestamp now,
                                  const types::Decimal& mid);
+    // The point the quotes are centred on, before the inventory skew.
+    types::Decimal Centre(const types::Quote& quote, const types::Decimal& mid);
 
     // Protection. All run on the quote's mid and the book.
     struct Pause {
@@ -268,6 +281,9 @@ class MarketMaker : public Strategy {
     std::size_t mHalfWidened = 0;
     double mHalfSum = 0;
     types::Decimal mHalfMax;
+    // For the log at the end: how far the microprice moved the centre.
+    std::size_t mCentreCount = 0;
+    double mCentreShiftSum = 0;  // absolute, in bps
 };
 
 }  // namespace kestrel::strategy

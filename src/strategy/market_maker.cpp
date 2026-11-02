@@ -65,6 +65,10 @@ MarketMaker::MarketMaker(MarketMakerParams params)
         mParams.vol_window <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("vol_window must be positive");
     }
+    if (mParams.microprice_weight.IsNegative() ||
+        mParams.microprice_weight > Decimal::FromInt(1)) {
+        throw std::invalid_argument("microprice_weight must be from 0 to 1");
+    }
     if (mParams.max_half_spread_bps.Sign() > 0 &&
         mParams.max_half_spread_bps < mParams.half_spread_bps) {
         throw std::invalid_argument(
@@ -157,7 +161,8 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     Decimal lean = Decimal::Divide(mInventory - mStart, mParams.max_inventory,
                                    kScale, Rounding::kNearest);
     lean = std::clamp(lean, Decimal::FromInt(-1), Decimal::FromInt(1));
-    const Decimal reservation = mid - Bps(mid, mParams.skew_bps * lean);
+    const Decimal reservation =
+        Centre(quote, mid) - Bps(mid, mParams.skew_bps * lean);
     const Decimal half = Bps(mid, HalfSpreadBps(context.Now(), mid));
 
     Decimal bid = (reservation - half).RoundToIncrement(tick, Rounding::kDown);
@@ -184,6 +189,22 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     Manage(context, mAsk, Side::kSell,
            pause.ask ? std::nullopt : std::optional(ask), Size(ask_room),
            ask_room, away, toward);
+}
+
+Decimal MarketMaker::Centre(const types::Quote& quote, const Decimal& mid) {
+    if (mParams.microprice_weight.IsZero() || !quote.bid_size ||
+        !quote.ask_size || quote.bid_size->Sign() <= 0 ||
+        quote.ask_size->Sign() <= 0) {
+        return mid;
+    }
+    const Decimal micro = Decimal::Divide(
+        *quote.bid * *quote.ask_size + *quote.ask * *quote.bid_size,
+        *quote.bid_size + *quote.ask_size, kScale, Rounding::kNearest);
+    const Decimal centre = (mid + mParams.microprice_weight * (micro - mid))
+                               .Rescale(kScale, Rounding::kNearest);
+    ++mCentreCount;
+    mCentreShiftSum += std::abs(ToDouble(centre) / ToDouble(mid) - 1.0) * 1e4;
+    return centre;
 }
 
 Decimal MarketMaker::HalfSpreadBps(types::Timestamp now, const Decimal& mid) {
@@ -582,6 +603,12 @@ void MarketMaker::OnStop(Context& context) {
             mHalfMax.Normalized().ToString(),
             100.0 * static_cast<double>(mHalfWidened) /
                 static_cast<double>(mHalfCount));
+    }
+    if (mCentreCount > 0) {
+        spdlog::info(
+            "market_maker: the microprice moved the centre {:.2f} bps from "
+            "the mid on average",
+            mCentreShiftSum / static_cast<double>(mCentreCount));
     }
     if (mWouldTake > 0) {
         spdlog::info(
