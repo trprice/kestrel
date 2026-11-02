@@ -96,6 +96,14 @@ struct MarketMakerParams {
     // least this many basis points (and at least one tick), since each
     // replacement goes to the back of the queue.
     types::Decimal requote_bps{1, 0};
+    // The same, for a market that has moved towards the resting quote: a bid
+    // whose target is now below it, an ask whose target is above it. That is
+    // the quote the market is about to fill at a stale price, and with order
+    // latency it can be filled while its cancel is on the way, so it is worth
+    // replacing sooner than a quote the market has moved away from, which only
+    // costs queue position to replace. Zero replaces it as soon as the target
+    // is a tick past it. Unset: requote_bps.
+    std::optional<types::Decimal> requote_toward_bps;
     // Replace a quote older than this even if its price is still right;
     // zero never does.
     std::chrono::milliseconds max_quote_age{0};
@@ -134,11 +142,11 @@ class MarketMaker : public Strategy {
    public:
     // Throws std::invalid_argument unless quantity, half_spread_bps and
     // max_inventory are positive (max_inventory at least quantity) and
-    // skew_bps, requote_bps, max_quote_age and vol_multiplier are not
-    // negative; with vol_multiplier set, vol_window must be positive, and a
-    // max_half_spread_bps that is set at least half_spread_bps. Each enabled
-    // protection rule's amounts must be positive (the filters' and the
-    // durations may be zero).
+    // skew_bps, requote_bps, requote_toward_bps, max_quote_age and
+    // vol_multiplier are not negative; with vol_multiplier set, vol_window
+    // must be positive, and a max_half_spread_bps that is set at least
+    // half_spread_bps. Each enabled protection rule's amounts must be
+    // positive (the filters' and the durations may be zero).
     explicit MarketMaker(MarketMakerParams params);
 
     std::string_view Name() const override { return "market_maker"; }
@@ -164,10 +172,13 @@ class MarketMaker : public Strategy {
     };
 
     // Brings `quote` to `price` / `size` (no price or size: nothing quoted).
+    // A resting quote is replaced once its target is `toward` or more on the
+    // side the market came from (below a bid, above an ask), or `away` or
+    // more on the other.
     void Manage(Context& context, Resting& quote, types::Side side,
                 const std::optional<types::Decimal>& price,
                 const types::Decimal& size, const types::Decimal& room,
-                const types::Decimal& threshold);
+                const types::Decimal& away, const types::Decimal& toward);
     // Cancels a resting quote; false if it cannot be replaced yet.
     bool Pull(Context& context, Resting& quote);
     types::Decimal Size(const types::Decimal& room) const;

@@ -49,9 +49,12 @@ MarketMaker::MarketMaker(MarketMakerParams params)
             "max_inventory must be at least one quote's quantity");
     }
     if (mParams.skew_bps.IsNegative() || mParams.requote_bps.IsNegative() ||
+        (mParams.requote_toward_bps &&
+         mParams.requote_toward_bps->IsNegative()) ||
         mParams.max_quote_age < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument(
-            "skew_bps, requote_bps and max_quote_age cannot be negative");
+            "skew_bps, requote_bps, requote_toward_bps and max_quote_age "
+            "cannot be negative");
     }
     if (mParams.vol_multiplier.IsNegative() ||
         mParams.max_half_spread_bps.IsNegative()) {
@@ -171,13 +174,16 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
         mInventory - std::max(Decimal(), mStart - mParams.max_inventory) -
         UnconfirmedFills(Side::kSell, now);
 
-    const Decimal threshold = std::max(Bps(mid, mParams.requote_bps), tick);
+    const Decimal away = std::max(Bps(mid, mParams.requote_bps), tick);
+    const Decimal toward = std::max(
+        Bps(mid, mParams.requote_toward_bps.value_or(mParams.requote_bps)),
+        tick);
     Manage(context, mBid, Side::kBuy,
            bid.Sign() > 0 && !pause.bid ? std::optional(bid) : std::nullopt,
-           Size(bid_room), bid_room, threshold);
+           Size(bid_room), bid_room, away, toward);
     Manage(context, mAsk, Side::kSell,
            pause.ask ? std::nullopt : std::optional(ask), Size(ask_room),
-           ask_room, threshold);
+           ask_room, away, toward);
 }
 
 Decimal MarketMaker::HalfSpreadBps(types::Timestamp now, const Decimal& mid) {
@@ -380,7 +386,7 @@ bool MarketMaker::Pull(Context& context, Resting& quote) {
 void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                          const std::optional<Decimal>& price,
                          const Decimal& size, const Decimal& room,
-                         const Decimal& threshold) {
+                         const Decimal& away, const Decimal& toward) {
     const bool wanted = price && size.Sign() > 0;
     // What the new quote replaces, and why, for the log.
     std::string replaced;
@@ -388,16 +394,26 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
         const bool fresh =
             mParams.max_quote_age == std::chrono::milliseconds::zero() ||
             context.Now() - quote.placed < mParams.max_quote_age;
-        const bool moved = wanted && (*price - quote.price).Abs() >= threshold;
+        // How far the market has moved towards the resting quote: positive
+        // when the target is below a bid or above an ask, negative when it
+        // has moved away.
+        const Decimal closer = wanted
+                                   ? (side == Side::kBuy ? quote.price - *price
+                                                         : *price - quote.price)
+                                   : Decimal();
+        const bool moved_toward = closer.Sign() > 0 && closer >= toward;
+        const bool moved_away = closer.Sign() < 0 && -closer >= away;
+        const bool moved = wanted && (moved_toward || moved_away);
         const bool keep = wanted && !quote.cancel_raced && fresh &&
                           quote.Remaining() <= room && !moved;
         if (keep) {
             return;
         }
-        const char* why = !wanted                     ? "not wanted"
-                          : moved                     ? "price moved"
-                          : !fresh                    ? "too old"
-                                                      : "over the room left";
+        const char* why = !wanted        ? "not wanted"
+                          : moved_toward ? "market moved to it"
+                          : moved_away   ? "market moved away"
+                          : !fresh       ? "too old"
+                                         : "over the room left";
         const std::string old_id = quote.order_id;
         const std::string old_price = quote.price.ToString();
         if (!Pull(context, quote)) {

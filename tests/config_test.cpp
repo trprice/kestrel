@@ -424,6 +424,22 @@ TEST(Factory, MarketMakerVolatilityScalingIsOptIn) {
     EXPECT_FALSE(make("max_half_spread_bps=1\n").has_value());  // under 2
 }
 
+TEST(Factory, MarketMakerReadsTheTowardsRequoteThreshold) {
+    const std::string base =
+        "[strategy]\nsymbol='BTC/USD'\nquantity='0.05'\n"
+        "half_spread_bps=2\nmax_inventory='0.5'\nrequote_bps=3\n";
+    auto make = [&](const std::string& extra) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(base + extra), NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("market_maker", *cfg);
+    };
+    EXPECT_TRUE(make("").has_value());
+    EXPECT_TRUE(make("requote_toward_bps=0\n").has_value());
+    EXPECT_FALSE(make("requote_toward_bps=-1\n").has_value());
+    EXPECT_FALSE(make("requote_toward_bps='x'\n").has_value());
+}
+
 TEST(Factory, CreateStrategyRejectsBadInput) {
     auto make = [](const char* strategy_table) {
         auto cfg = config::BinanceUSConfiguration::Parse(

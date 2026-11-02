@@ -134,6 +134,7 @@ are errors, and the symbol must be listed in `[general] symbols`.
 | `max_inventory` | required; how far the position may stray from where it started, either way |
 | `skew_bps` | how far the reservation price leans when the position is `max_inventory` away (default 0) |
 | `requote_bps` | how far the target must move before a resting quote is replaced (default 1) |
+| `requote_toward_bps` | the same when the market has moved towards the quote (the target below a resting bid, above a resting ask), which is the quote about to be filled at a stale price; 0 replaces it on a tick's move (default: `requote_bps`) |
 | `max_quote_age_ms` | replace a quote older than this even if its price is right (0, the default: never) |
 | `post_only` | quote with post-only orders, which the venue refuses instead of filling as a taker; recommended live (default `false`) |
 

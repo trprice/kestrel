@@ -372,6 +372,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
         p.Number("max_half_spread_bps", params.max_half_spread_bps);
     auto skew = p.Number("skew_bps", params.skew_bps);
     auto requote = p.Number("requote_bps", params.requote_bps);
+    auto requote_toward =
+        p.Number("requote_toward_bps", requote ? *requote : params.requote_bps);
     auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
     auto post_only = p.Flag("post_only", params.post_only);
     auto protection = ReadProtection(p, params.protection);
@@ -384,6 +386,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!max_half_spread) return std::unexpected(max_half_spread.error());
     if (!skew) return std::unexpected(skew.error());
     if (!requote) return std::unexpected(requote.error());
+    if (!requote_toward) return std::unexpected(requote_toward.error());
     if (!max_age) return std::unexpected(max_age.error());
     if (!post_only) return std::unexpected(post_only.error());
     if (!protection) return std::unexpected(protection.error());
@@ -399,6 +402,7 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.max_half_spread_bps = *max_half_spread;
     params.skew_bps = *skew;
     params.requote_bps = *requote;
+    params.requote_toward_bps = *requote_toward;
     params.max_quote_age = *max_age;
     params.post_only = *post_only;
     try {

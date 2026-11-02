@@ -109,6 +109,7 @@ TEST(MarketMakerTest, RejectsBadParameters) {
              [](MarketMakerParams& p) { p.max_inventory = D("0.1"); },
              [](MarketMakerParams& p) { p.skew_bps = D("-1"); },
              [](MarketMakerParams& p) { p.requote_bps = D("-1"); },
+             [](MarketMakerParams& p) { p.requote_toward_bps = D("-1"); },
              [](MarketMakerParams& p) {
                  p.max_quote_age = std::chrono::milliseconds(-1);
              },
@@ -169,6 +170,35 @@ TEST(MarketMakerTest, LeavesAQuoteAloneUntilTheTargetMovesEnough) {
     ASSERT_EQ(m.Orders().size(), 4u);
     EXPECT_EQ(m.Orders()[2].limit_price, D("99.99"));  // 100.10 - 0.1001
     EXPECT_EQ(m.Orders()[3].limit_price, D("100.21"));
+}
+
+TEST(MarketMakerTest, ReplacesAQuoteTheMarketMovesTowardsSooner) {
+    auto p = Params();  // requote_bps 5
+    p.requote_toward_bps = D("0");
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);  // 99.90 / 100.10
+
+    // Mid 100.03: the bid's target (99.92) moved 0.02 away from it, under
+    // 5 bps, so it stays; the ask's (100.14) moved towards it, so it goes.
+    m.Quote("100.02", "100.04");
+    EXPECT_EQ(m.context.venue.cancelled, std::vector<std::string>{"order-2"});
+    ASSERT_EQ(m.Orders().size(), 3u);
+    EXPECT_EQ(m.Orders()[2].side, Side::kSell);
+    EXPECT_EQ(m.Orders()[2].limit_price, D("100.14"));
+
+    // Back down to mid 100.01: now the bid's target (99.90) is still at it,
+    // and the ask's (100.11) moved 0.03 away, under 5 bps: nothing changes.
+    m.Quote("100.00", "100.02");
+    EXPECT_EQ(m.Orders().size(), 3u);
+
+    // Mid 99.995: the bid's target falls a tick below it (99.89), and goes;
+    // the ask's (100.10) is 0.04 away, under 5 bps, and stays.
+    m.Quote("99.99", "100.00");
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-2", "order-1"}));
+    ASSERT_EQ(m.Orders().size(), 4u);
+    EXPECT_EQ(m.Orders()[3].limit_price, D("99.89"));
 }
 
 TEST(MarketMakerTest, ReplacesAQuoteOlderThanTheMaximumAge) {

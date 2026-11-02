@@ -202,6 +202,26 @@ the header of the code concerned.
   fills under `limit_fill_model = "conservative"`. The ZEC/USDT example
   replaces a quote on about every other update (29.5k placements for 51k
   quotes).
+- `requote_toward_bps = 0` (replace a quote as soon as the market moves a
+  tick towards it) with a wide `requote_bps` did best in the ZEC/USDT
+  replays with 130 / 600 ms latency. Vs hold in USDT, Oct 30 / Oct 19:
+
+      half-spread, requote_bps   symmetric        toward 0
+      4 bps, 1                   -2.0 /  +0.7     -2.6 / +1.6
+      4 bps, 6                  -49.2 / -12.3     +0.6 / +1.4
+      6 bps, 1                   +4.6 /  -0.6     +4.4 / -1.7
+      6 bps, 6                  -17.2 /  -2.6     +5.4 / +2.0
+      2 bps, 6                 -109.1 / -24.5    -13.9 / -4.1
+
+  It removes the loss from leaving a quote in the market's path (Oct 30 at
+  4 bps, requote 6: 8542 fills down to 402), and 6 / 6 / 0 sent fewer
+  orders than the old 1 bps symmetric (59k against 102k on Oct 30, about
+  41 a minute). The 1 s markout of the fills left did not improve (still -4
+  to -5 bps on Oct 30): with 130 ms to cancel, a quote the market reaches
+  in one jump is still filled, which only pulling on a faster signal or
+  quoting wider avoids. Run 12's settings with `max_orders_per_minute = 60`
+  had 2512 orders refused by the risk gate and 12 fills, so the order limit
+  has to allow for it. Two days; retest on more.
 - Fills the venue has reported but `OnFill` has not delivered
   (`mUnconfirmed`) are cleared only by that `OnFill`. If it never comes, the
   room on that side stays held for the rest of the run (logged once after
@@ -388,12 +408,6 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       option. Quotes already carry `bid_size` / `ask_size`. The cheapest
       common defence against adverse selection; measure it by the 1 s and
       10 s markouts.
-- [ ] Requote asymmetrically: cancel at once when the market moves toward a
-      resting quote, and only lazily when it moves away. With 130 ms of order
-      latency, most fills on the ZEC/USDT days were quotes the market had
-      moved onto while their cancel was in flight, and a wider `requote_bps`
-      (3 or 6 against 1) lost more, since it leaves quotes in place as the
-      market moves through them.
 - [ ] Keep queue position: leave a resting quote alone while it is still at
       the touch even if its target moved, and optionally join the touch (or
       improve it by a tick) instead of quoting a computed price. Each
@@ -606,6 +620,9 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       to vs hold plus quote-asset fees)
 - [x] Market maker volatility scaling of the spread (`vol_multiplier`,
       `vol_window_ms`, `max_half_spread_bps`), off by default
+- [x] Market maker asymmetric requoting (`requote_toward_bps`): a quote the
+      market moves towards is replaced on a smaller move than one it moves
+      away from
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
