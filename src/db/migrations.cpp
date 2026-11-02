@@ -149,6 +149,9 @@ SELECT create_hypertable('market_trades', 'trade_time',
 CREATE INDEX market_trades_venue_symbol_time
     ON market_trades (venue, symbol, trade_time);
 )sql"},
+        {8, "record the taker side of the last trade in quotes", R"sql(
+ALTER TABLE quotes ADD COLUMN last_taker_side TEXT;
+)sql"},
     };
     return kMigrations;
 }

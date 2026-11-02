@@ -68,6 +68,7 @@ TEST_F(QuoteStoreTest, RoundTripsQuotesIncludingMissingFields) {
     full.exchange_time = types::FromEpochMillis(1'700'000'000'000);
     full.last = D("100.15");
     full.last_size = D("0.25");
+    full.last_taker_side = types::Side::kSell;
     const std::vector<types::Quote> quotes = {MakeQuote(0), full};
     auto saved = store.Save(quotes);
     ASSERT_OK(saved);
@@ -83,6 +84,8 @@ TEST_F(QuoteStoreTest, RoundTripsQuotesIncludingMissingFields) {
     EXPECT_EQ((*loaded)[1].last, D("100.15"));
     EXPECT_EQ((*loaded)[1].last_size, D("0.25"));
     EXPECT_EQ((*loaded)[1].exchange_time, full.exchange_time);
+    EXPECT_FALSE((*loaded)[0].last_taker_side.has_value());
+    EXPECT_EQ((*loaded)[1].last_taker_side, types::Side::kSell);
 }
 
 TEST_F(QuoteStoreTest, WriterFlushesBufferedQuotesOnDestruction) {

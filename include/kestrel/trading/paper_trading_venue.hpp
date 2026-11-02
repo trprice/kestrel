@@ -31,14 +31,20 @@ enum class LimitFillModel {
     //   - a trade prints through the limit (below a buy's, above a sell's):
     //     filled in full, since every order at a better price filled first;
     //   - trades print at the limit price: they first use up the orders queued
-    //     ahead of ours, and only what is left fills us.
+    //     ahead of ours, and only what is left fills us. When the quote says
+    //     which side took liquidity (last_taker_side), only trades against our
+    //     side count: a seller hitting the bid for a buy, a buyer lifting the
+    //     ask for a sell. A trade the other way at our price was a taker on
+    //     our side meeting an order across from us, as when the book has
+    //     moved onto our quote, and fills neither us nor the queue ahead.
     // The queue ahead is the size shown at our price when we join it, and only
     // trades shrink it: a smaller displayed size may be cancels behind or in
     // front of us, so it is ignored. If that size is not known (the quote has
     // none, or our price is behind the best), trades at the limit price never
     // fill us until the price becomes the touch and shows a size. Trades are
-    // read off the quote's last/last_size/exchange_time changing; with no
-    // last_size a trade is known only by its price. A touch equal to the limit
+    // read off the quote's last/last_size/last_taker_side/exchange_time
+    // changing; with no last_size a trade is known only by its price. A touch
+    // equal to the limit
     // does not fill (kCross would).
     kConservative,
 };
@@ -69,9 +75,10 @@ struct PaperOptions {
     // order being cancelled is acknowledged as kCancelled at once but can
     // still fill until the cancel arrives, so fills may follow the
     // acknowledgement; GetOpenOrders no longer lists it, so it does not count
-    // against a risk gate's max_open_orders. A backtest replays quotes at the times they were
-    // received, after the market data's own delay, so set this to the whole
-    // round trip (the one-way trip to the venue plus that delay), not half.
+    // against a risk gate's max_open_orders. A backtest replays quotes at the
+    // times they were received, after the market data's own delay, so set this
+    // to the whole round trip (the one-way trip to the venue plus that delay),
+    // not half.
     std::chrono::milliseconds order_latency{0};
     // From a fill or a change of an order's state to its push through
     // StreamExecutions. Queries (GetOrder, GetFills, GetOpenOrders,
@@ -156,6 +163,7 @@ class PaperTradingVenue : public TradingVenue {
     struct Trade {
         types::Decimal price;
         std::optional<types::Decimal> size;
+        std::optional<types::Side> taker_side;
     };
 
     // Hands the updates queued by Notice() to the listeners. Must be called

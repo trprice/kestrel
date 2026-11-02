@@ -769,6 +769,61 @@ TEST(PaperConservative, SellsMirrorBuys) {
     EXPECT_EQ(fills->at(0).side, Side::kSell);
 }
 
+TEST(PaperConservative, ATradeAtTheLimitCountsOnlyIfItTookFromOurSide) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "1", "2"));  // 1 ahead of us
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+
+    // A buyer lifting an ask at our price (the book has come down onto our
+    // bid) neither fills us nor moves the queue ahead.
+    auto lifted = QT("49000.0", "49010.0", "1", "2", "49000.0", "5", 10);
+    lifted.last_taker_side = Side::kBuy;
+    venue->OnQuote(lifted);
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    // The same price, size and time, now a seller hitting the bid: a new
+    // trade, which clears the 1 ahead and fills us.
+    auto hit = lifted;
+    hit.last_taker_side = Side::kSell;
+    venue->OnQuote(hit);
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("1.1"));
+}
+
+TEST(PaperConservative, ATradeThroughTheLimitFillsWhicheverSideTook) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49000.0", "49010.0", "2", "2"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0")));
+    // A buyer took an ask under our bid: that ask would have met our bid
+    // first, as when the ask itself is through the limit.
+    auto q = QT("48990.0", "49010.0", "2", "2", "48999.0", "0.001", 10);
+    q.last_taker_side = Side::kBuy;
+    venue->OnQuote(q);
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+}
+
+TEST(PaperConservative, ASellCountsOnlyBuyersAtItsLimit) {
+    ConservativeFixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0", "2", "1"));
+    ASSERT_OK(venue->PlaceOrder(
+        Order(Side::kSell, OrderType::kLimit, "0.1", "50000.0")));
+
+    auto hit = QT("49990.0", "50000.0", "2", "1", "50000.0", "5", 10);
+    hit.last_taker_side = Side::kSell;
+    venue->OnQuote(hit);
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0"));
+
+    auto lifted = QT("49990.0", "50000.0", "2", "1", "50000.0", "1.04", 20);
+    lifted.last_taker_side = Side::kBuy;
+    venue->OnQuote(lifted);
+    EXPECT_EQ(Only(*venue).filled_quantity, D("0.04"));
+}
+
 TEST(PaperCross, KeepsFillingOnATouchEqualToTheLimit) {
     Fixture f;  // the default model
     auto venue = f.Make();

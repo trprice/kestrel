@@ -29,6 +29,7 @@ void Quote::MergeFrom(const Quote& update) {
     }
     if (update.last) {
         last = update.last;
+        last_taker_side = update.last_taker_side;
     }
     if (update.last_size) {
         last_size = update.last_size;

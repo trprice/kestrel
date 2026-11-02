@@ -297,4 +297,20 @@ TEST(QuoteMerge, OverlaysOnlyPresentFields) {
     EXPECT_EQ(base.received_time, types::FromEpochSeconds(5));
 }
 
+TEST(QuoteMerge, ATradeReplacesTheTakerSideEvenWithNone) {
+    types::Quote base;
+    base.last = D("1");
+    base.last_taker_side = types::Side::kSell;
+
+    types::Quote book;
+    book.bid = D("1");
+    base.MergeFrom(book);  // no trade: the side stays
+    EXPECT_EQ(base.last_taker_side, types::Side::kSell);
+
+    types::Quote trade;
+    trade.last = D("2");
+    base.MergeFrom(trade);  // a trade with no side clears it
+    EXPECT_FALSE(base.last_taker_side);
+}
+
 }  // namespace

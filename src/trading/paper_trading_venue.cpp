@@ -37,6 +37,13 @@ std::optional<Decimal> ReferencePrice(const types::Quote& q, Side side) {
     return q.bid ? q.bid : q.last;
 }
 
+// Whether a trade whose taker was `taker` took liquidity from resting orders on
+// `side`: a seller hitting bids, a buyer lifting asks. A trade with no side
+// might have.
+bool TakesFrom(const std::optional<Side>& taker, Side side) {
+    return !taker || *taker != side;
+}
+
 std::optional<Decimal> TouchSize(const types::Quote& q, Side side) {
     return side == Side::kBuy ? q.ask_size : q.bid_size;
 }
@@ -281,7 +288,8 @@ std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::EvaluateQueued(
     if (trade) {
         if (buy ? trade->price < limit : trade->price > limit) {
             fillable = order.Remaining();
-        } else if (trade->price == limit && trade->size && order.queue_ahead) {
+        } else if (trade->price == limit && trade->size && order.queue_ahead &&
+                   TakesFrom(trade->taker_side, order.status.side)) {
             const Decimal used = std::min(*order.queue_ahead, *trade->size);
             *order.queue_ahead -= used;
             fillable = std::min(order.Remaining(), *trade->size - used);
@@ -484,17 +492,19 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     // whole quote (its strings would be allocated for every update).
     const auto before_last = latest.last;
     const auto before_last_size = latest.last_size;
+    const auto before_taker_side = latest.last_taker_side;
     const auto before_time = latest.exchange_time;
     latest.MergeFrom(quote);
 
     // Streams repeat the last trade on every book update, so a trade is new
-    // only if its price, size or time changed. The first quote for a symbol
-    // has nothing to compare with.
+    // only if its price, size, side or time changed. The first quote for a
+    // symbol has nothing to compare with.
     std::optional<Trade> trade;
     if (seen_before && latest.last &&
         (before_last != latest.last || before_last_size != latest.last_size ||
+         before_taker_side != latest.last_taker_side ||
          before_time != latest.exchange_time)) {
-        trade = Trade{*latest.last, latest.last_size};
+        trade = Trade{*latest.last, latest.last_size, latest.last_taker_side};
     }
 
     ExpireDayOrders();

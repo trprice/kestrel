@@ -248,11 +248,18 @@ the header of the code concerned.
   default) is optimistic for quoting strategies. `conservative` models queue
   position from trades, so it needs stored quotes carrying `last`/`last_size`
   (Binance.US does; Kraken's ticker has no trade size, so only price-through
-  fills happen there). It assumes our order joins at the back of the displayed
-  size, ignores order and cancel latency, takes no account of our own orders
-  moving the market, and cannot see trades that print at our price while a
-  better-priced level still stands. Identical back-to-back trades (same price,
-  size and exchange time) look like one.
+  fills happen there). A trade at our price counts only if its taker was on
+  the other side (`last_taker_side`; quotes stored before 2026-11-02 had it
+  filled in from `market_trades`). It assumes our order joins at the back of
+  the displayed size, takes no account of our own orders moving the market,
+  and cannot see trades that print at our price while a better-priced level
+  still stands. Identical back-to-back trades (same price, size, side and
+  exchange time) look like one.
+- Counting only trades from the other side at our price changed little: on
+  the Oct 19, Oct 30 and run 12 replays at 2, 4 and 6 bps, with and without
+  latency, at most 50 fills of 1172 went (Oct 30, 2 bps, no latency) and vs
+  hold moved by under 0.4 USDT. Most fills come from the opposite touch or
+  trades through our price, not from trades at it.
 - Orders fill at the close of the bar that triggered them, plus slippage and
   fees. Resting limit and stop orders can only trigger at closes, never on an
   intrabar high or low.
@@ -394,8 +401,8 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       on wide-tick pairs queue position is most of the edge.
 - [ ] Lean against recent order flow: raise both quotes, or pull the ask,
       after mostly aggressive buying in the last N seconds, and the reverse.
-      Needs the aggressor side in the live quote stream (under Backtesting
-      and research). The momentum filter is a bid-only, price-based version.
+      The quotes carry each trade's taker side (`Quote::last_taker_side`,
+      Binance.US). The momentum filter is a bid-only, price-based version.
 - [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
       the next quote (see Known limitations), so stale quotes are not filled
       after a move the strategy never saw.
@@ -432,11 +439,6 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       price. Market making pays where the spread is wide for how fast the
       price moves (ZEC/USDT: about 1.5 bps of half-spread against 11 bps a
       minute), so the pair matters more than tuning.
-- [ ] Record the aggressor side of trades (Binance `m` flag) so trades can be
-      attributed to the right side of the book. Done for the stored trade
-      history (`market_trades.taker_side`); the live quote stream still
-      merges a trade into the quote without its side. Needed by the market
-      maker's order-flow item and for queue modelling.
 - [ ] Benchmark comparison against buy-and-hold: the backtest summary's "vs
       hold" covers holding the starting balances; comparing against other
       benchmarks (an index, a basket) is not done
@@ -618,6 +620,10 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building
       `ReplayDataSource` by hand
+- [x] The aggressor side of trades: `market_trades.taker_side` for the trade
+      history, and `Quote::last_taker_side` in the live quote stream (the
+      Binance.US `m` flag), stored in `quotes`, and used by the conservative
+      fill model
 
 ### Operations
 - [x] Store the account's own trade history: `account_fills`, synced

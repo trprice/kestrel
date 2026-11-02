@@ -6,18 +6,21 @@
 
 namespace kestrel::db {
 
+using types::ErrorCategory;
+using types::MakeError;
 using types::Result;
 
 namespace {
 
-constexpr std::size_t kColumns = 11;
+constexpr std::size_t kColumns = 12;
 // PostgreSQL allows 65535 bind parameters per statement.
 constexpr std::size_t kRowsPerInsert = 1000;
 
 std::string InsertSql(std::size_t rows) {
     std::string sql =
         "INSERT INTO quotes (venue, symbol, seq, received_time, exchange_time, "
-        "bid, bid_size, ask, ask_size, last, last_size) VALUES ";
+        "bid, bid_size, ask, ask_size, last, last_size, last_taker_side) "
+        "VALUES ";
     for (std::size_t r = 0; r < rows; ++r) {
         sql += r ? ", (" : "(";
         for (std::size_t c = 0; c < kColumns; ++c) {
@@ -65,6 +68,10 @@ Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
             params.emplace_back(Text(q.ask_size));
             params.emplace_back(Text(q.last));
             params.emplace_back(Text(q.last_size));
+            params.emplace_back(q.last_taker_side
+                                    ? std::optional<std::string>(
+                                          types::ToString(*q.last_taker_side))
+                                    : std::nullopt);
         }
         auto result = mDatabase->Query(InsertSql(batch.size()), params);
         if (!result) {
@@ -82,7 +89,8 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
     auto rows = mDatabase->Query(
         "SELECT seq, (extract(epoch FROM received_time) * 1000)::bigint, "
         "(extract(epoch FROM exchange_time) * 1000)::bigint, bid, bid_size, "
-        "ask, ask_size, last, last_size FROM quotes WHERE venue = $1 AND "
+        "ask, ask_size, last, last_size, last_taker_side FROM quotes WHERE "
+        "venue = $1 AND "
         "symbol = $2 AND received_time >= $3 AND received_time < $4 "
         "ORDER BY seq",
         {venue, symbol, types::FormatIso8601(start),
@@ -107,6 +115,15 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
         q.ask_size = ParseOptional(row[6]);
         q.last = ParseOptional(row[7]);
         q.last_size = ParseOptional(row[8]);
+        if (row[9]) {
+            if (*row[9] != "buy" && *row[9] != "sell") {
+                return MakeError(
+                    ErrorCategory::kParse,
+                    "quotes: bad last_taker_side '" + *row[9] + "'");
+            }
+            q.last_taker_side =
+                *row[9] == "buy" ? types::Side::kBuy : types::Side::kSell;
+        }
         quotes.push_back(std::move(q));
     }
     return quotes;

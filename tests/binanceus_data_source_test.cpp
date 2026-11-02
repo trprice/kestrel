@@ -325,6 +325,32 @@ TEST(BinanceUSStreamMerger, BookAndTradeAccumulate) {
     EXPECT_EQ(*q2[0].last_size, D("0.25"));
     EXPECT_EQ(*q2[0].bid, D("100.10"));  // retained from the book update
     EXPECT_EQ(*q2[0].exchange_time, types::FromEpochMillis(1700000000123));
+    EXPECT_FALSE(q2[0].last_taker_side);  // no "m"
+}
+
+TEST(BinanceUSStreamMerger, ReadsTheTakerSideOfEachTrade) {
+    data::BinanceUSStreamMerger merger;
+    auto parse = [](const char* s) { return *util::ParseJson(s); };
+    // "m": the buyer was the maker, so a seller hit the bid.
+    auto sold = merger.Apply(
+        parse(R"({"stream":"btcusd@trade","data":{"s":"BTCUSD","p":"100.10",
+            "q":"0.25","T":1,"m":true}})"),
+        {});
+    ASSERT_EQ(sold.size(), 1u);
+    EXPECT_EQ(sold[0].last_taker_side, types::Side::kSell);
+
+    // A book update keeps the last trade's side.
+    auto book = merger.Apply(
+        parse(R"({"stream":"btcusd@bookTicker","data":{"s":"BTCUSD",
+            "b":"100.10","B":"1","a":"100.20","A":"1"}})"),
+        {});
+    EXPECT_EQ(book.at(0).last_taker_side, types::Side::kSell);
+
+    auto bought = merger.Apply(
+        parse(R"({"stream":"btcusd@trade","data":{"s":"BTCUSD","p":"100.20",
+            "q":"0.25","T":2,"m":false}})"),
+        {});
+    EXPECT_EQ(bought.at(0).last_taker_side, types::Side::kBuy);
 }
 
 TEST(BinanceUSStreamMerger, IgnoresUnknownMessages) {

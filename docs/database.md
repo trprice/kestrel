@@ -50,7 +50,22 @@ once, when it closes. Bars closed while the socket was down are not replayed;
 backfill with `bars --store`.
 
 `stream <seconds> --store` writes every streamed quote to the `quotes`
-hypertable, with the merged bid/ask/last. `QuoteWriter` buffers on the
+hypertable, with the merged bid/ask/last and, from Binance.US, the side that
+took liquidity in the last trade (`last_taker_side`, `buy` or `sell`; NULL
+from Kraken, whose ticker does not say). Quotes stored before that column
+existed can take it from the trade history, by the last trade's time and
+price, once `trades --store` covers their range:
+
+```sql
+UPDATE quotes q SET last_taker_side = t.side
+FROM (SELECT venue, symbol, trade_time, price, min(taker_side) AS side
+      FROM market_trades GROUP BY 1, 2, 3, 4
+      HAVING count(DISTINCT taker_side) = 1) t
+WHERE q.last_taker_side IS NULL AND q.venue = t.venue AND q.symbol = t.symbol
+  AND q.exchange_time = t.trade_time AND q.last = t.price;
+```
+
+`QuoteWriter` buffers on the
 WebSocket thread and a background thread inserts in batches every 500 ms; a
 failed batch is retried, with at most 100,000 quotes buffered. Each quote gets
 a `seq`, counted per venue and symbol by `QuoteWriter` and continued from the

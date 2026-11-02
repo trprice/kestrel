@@ -173,6 +173,7 @@ std::vector<types::Quote> QuotesFromTrades(
         q.ask = ask;
         q.last = trade.price;
         q.last_size = trade.quantity;
+        q.last_taker_side = trade.taker_side;
         quotes.push_back(std::move(q));
     }
     return quotes;

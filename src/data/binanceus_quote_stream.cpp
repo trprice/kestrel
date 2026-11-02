@@ -71,6 +71,12 @@ std::vector<types::Quote> BinanceUSStreamMerger::Apply(
     } else {
         ReadDecimal(*data, "p", update.last);
         ReadDecimal(*data, "q", update.last_size);
+        // "m": the buyer was the maker, so the seller took liquidity.
+        if (const auto m = data->find("m");
+            m != data->end() && m->is_boolean()) {
+            update.last_taker_side =
+                m->get<bool>() ? types::Side::kSell : types::Side::kBuy;
+        }
         if (const auto t = data->find("T");
             t != data->end() && t->is_number_integer()) {
             update.exchange_time =

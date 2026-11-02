@@ -36,10 +36,16 @@ struct Quote {
     std::optional<Decimal> ask_size;
     std::optional<Decimal> last;
     std::optional<Decimal> last_size;
+    // The side that took liquidity in the last trade: a buyer lifting the ask,
+    // or a seller hitting the bid. Unset when the provider does not say
+    // (Kraken's ticker).
+    std::optional<Side> last_taker_side;
 
     // Overlays every field `update` actually carries onto this quote, so
     // partial updates accumulate into the latest known state. received_time and
-    // exchange_time always follow the update.
+    // exchange_time always follow the update. An update that carries a trade
+    // (last) also replaces last_taker_side, even with nothing, so one trade's
+    // side never sticks to the next.
     void MergeFrom(const Quote& update);
 };
 

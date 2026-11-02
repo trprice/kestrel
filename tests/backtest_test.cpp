@@ -183,6 +183,7 @@ TEST(QuotesFromTradesTest, EachTradeSetsTheSideItTookAndIsTheLastTrade) {
         EXPECT_EQ(quotes[i].seq, static_cast<std::int64_t>(i) + 1);
         EXPECT_EQ(quotes[i].last, trades[i].price);
         EXPECT_EQ(quotes[i].last_size, trades[i].quantity);
+        EXPECT_EQ(quotes[i].last_taker_side, trades[i].taker_side);
         EXPECT_EQ(quotes[i].exchange_time, trades[i].time);
         EXPECT_EQ(quotes[i].received_time, trades[i].time);
     }
