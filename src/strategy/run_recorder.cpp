@@ -102,7 +102,7 @@ void RunRecorder::Snapshot(types::Timestamp now) {
     std::vector<trading::PnlRow> rows;
     std::set<types::Symbol> seen;
     for (const types::Position& p : mPnl.Positions()) {
-        trading::PnlRow row;
+        trading::PnlRow& row = rows.emplace_back();
         row.symbol = p.symbol;
         row.quantity = p.quantity;
         row.average_price = p.average_price;
@@ -112,7 +112,6 @@ void RunRecorder::Snapshot(types::Timestamp now) {
             row.unrealized = (mark->second - p.average_price) * p.quantity;
         }
         seen.insert(p.symbol);
-        rows.push_back(std::move(row));
     }
     // A symbol with a price but no fills yet still gets a row: it shows the
     // run is alive and priced.
