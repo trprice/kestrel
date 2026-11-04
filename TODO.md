@@ -24,27 +24,32 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 
 Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
 renews them and `SchwabApi` sends requests within the market-data rate limit.
-The factory builds `SchwabDataSource` on `SchwabApi` (in paper mode too), and
-the timeframe and symbol mappings are written. `GetBars`, `StreamQuotes` and
-`GetSymbolInfo` still return `kNotImplemented`; the header's TODO lists the
-endpoints.
+`GetBars` and `GetSymbolInfo` work (see `SchwabDataSource` in
+`include/kestrel/data/schwab_data_source.hpp`); `StreamQuotes` and
+`StreamBars` still return `kNotImplemented`.
+
+What the live API showed (Nov 2026, SPY), beyond Schwab's docs:
+`/pricehistory` answers in whole days, whatever times are asked for; one
+request took 30 days of 1-minute bars and 33 years of daily ones; 1-minute
+bars go back about 48 days, 5-minute about 200, 30-minute about 260 (older
+days come back empty, not as an error, as does an unknown symbol);
+`needExtendedHoursData` defaults to true, and extended hours include the
+overnight session (20:00 to 04:00 ET); daily, weekly and monthly bars are
+stamped midnight US Central; share classes are `BRK/B` (`BRK.B` comes back
+empty).
 
 #### Next steps
-- [ ] Get app keys and check authorization against the live API: run
-      `authorize`, let a renewal happen, and confirm which error bodies
-      Schwab sends for an expired or revoked refresh token
-      (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp` looks for
-      `invalid_grant` or "refresh token") and whether renewals rotate the
-      refresh token.
-- [ ] `GetBars` on `GET /pricehistory`: page long ranges, drop the forming
-      candle, and decide on extended-hours bars (`needExtendedHoursData`).
-      Re-verify the timeframe list (1m 5m 10m 15m 30m 1d 1w 1M, from memory)
-      against Schwab's docs.
-- [ ] `GetSymbolInfo` from the fixed US equity rules (tick 0.01, or 0.0001
-      under $1; lot 1; minimum 1). The tick depends on the price, which
-      `SymbolInfo` cannot express yet.
-- [ ] Confirm how Schwab spells share classes (BRK.B vs BRK/B) for
-      `ToSchwabSymbol` / `FromSchwabSymbol`.
+- [ ] Confirm which error body Schwab sends for an expired or revoked
+      refresh token (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp`
+      looks for `invalid_grant` or "refresh token"). Renewal works live
+      (Nov 4 2026), and Schwab kept the same refresh token: renewals do not
+      rotate it, so the 7 days still run from `authorize`.
+- [ ] `GetSymbolInfo`'s tick is 0.01 for every symbol: sub-dollar stocks
+      quote in 0.0001, which `SymbolInfo` cannot express (one tick per
+      symbol). It does not check that the symbol exists.
+- [ ] `bars` and other commands that build the paper venue fail on Schwab in
+      paper mode until `StreamQuotes` exists, as the paper venue subscribes
+      to quotes at startup.
 - [ ] `StreamQuotes` on the streamer: `streamerInfo` from
       `GET /trader/v1/userPreference`, WebSocket LOGIN with the access token,
       SUBS to LEVELONE_EQUITIES, deltas merged into full quotes, and a
@@ -56,12 +61,10 @@ endpoints.
       weekend as a gap (one wasted `GetBars` call each), a quiet feed outside
       the session must not look like a dead one to any future stale-feed
       check, and a strategy needs to know when the market is closed.
-- [ ] Tests for `SchwabDataSource` on canned responses (bars, error bodies,
-      streamer messages), like `kraken_data_source_test.cpp` and
-      `binanceus_data_source_test.cpp`.
-- [ ] Docs: a `config/schwab.example.toml`, and update docs/design.md and
-      docs/configuration.md, which call the data source a stub and say there
-      is no Schwab example file.
+- [ ] Tests for the streamer messages, alongside
+      `schwab_data_source_test.cpp` (bars and symbol info have them).
+- [ ] Docs: a `config/schwab.example.toml` (docs/configuration.md says
+      there is none).
 - [ ] Then the trading venue (see Venues under Projects). Its header's TODO
       predates `SchwabAuth` and `SchwabApi` and should be rewritten to build
       on them.
@@ -73,11 +76,12 @@ live; `run` refuses live mode on any other provider until its trading venue
 is implemented (`HasLiveVenue` in `factory.cpp`).
 
 ### Stubs
-- [ ] The Schwab data source, and the Kraken and Schwab trading venues,
-      return `kNotImplemented`; each header has a TODO listing the endpoints
-      and auth needed. The timeframe mappings, symbol mapping and Schwab's
-      authorization (`authorize`, token renewal, `SchwabApi`) are real. See
-      Schwab data source under In progress, and Venues under Projects.
+- [ ] The Schwab data source's streams (`StreamQuotes`, `StreamBars`), and
+      the Kraken and Schwab trading venues, return `kNotImplemented`; each
+      header has a TODO listing the endpoints and auth needed. Schwab's bars,
+      symbol info and authorization (`authorize`, token renewal, `SchwabApi`)
+      are real. See Schwab data source under In progress, and Venues under
+      Projects.
 
 ### Not started
 - [ ] Indicators, more strategies, agent access (see Strategies under
@@ -368,7 +372,9 @@ the header of the code concerned.
   request, not that it can be paid for.
 - The latency rollups cover HTTP round trips only, and a window that fails to
   write is dropped, not retried.
-- The Schwab data source is a stub.
+- The Schwab data source has bars and symbol info but no quote or bar
+  stream, so on Schwab only live-mode `bars` works for now (see Schwab data
+  source under In progress).
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
 - `run` refuses live mode on a provider whose venue is a stub
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
@@ -673,6 +679,10 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       pushed fills and order changes as events and drops to a 30 s backstop
       poll, and the paper venue pushes. `MarketMaker` counts fills the venue
       has reported but `OnFill` has not delivered against its inventory room.
+- [x] Schwab `GetBars` on `/pricehistory` (10-day pages of minute bars,
+      trimmed to the range, daily and longer at 00:00 UTC of their date,
+      `[schwab] extended_hours`) and `GetSymbolInfo` from US equity rules;
+      share classes map `BRK.B` to Schwab's `BRK/B`
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

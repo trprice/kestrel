@@ -134,11 +134,15 @@ Result<std::string> ToSchwabSymbol(std::string_view symbol) {
             ErrorCategory::kUnsupported,
             "Schwab does not trade crypto pairs: " + std::string(symbol));
     }
-    return std::string(symbol);
+    std::string native(symbol);
+    std::ranges::replace(native, '.', '/');
+    return native;
 }
 
 Result<Symbol> FromSchwabSymbol(std::string_view native) {
-    return types::NormalizeSymbol(native);
+    std::string dotted(native);
+    std::ranges::replace(dotted, '/', '.');
+    return types::NormalizeSymbol(dotted);
 }
 
 }  // namespace kestrel::data

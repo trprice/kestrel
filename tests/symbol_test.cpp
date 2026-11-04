@@ -64,6 +64,9 @@ TEST(BinanceUSSymbols, RoundTrip) {
 TEST(SchwabSymbols, EquitiesOnly) {
     EXPECT_EQ(*data::ToSchwabSymbol("AAPL"), "AAPL");
     EXPECT_EQ(*data::FromSchwabSymbol("aapl"), "AAPL");
+    // A share class: a dot here, a slash at Schwab.
+    EXPECT_EQ(*data::ToSchwabSymbol("BRK.B"), "BRK/B");
+    EXPECT_EQ(*data::FromSchwabSymbol("BRK/B"), "BRK.B");
     auto crypto = data::ToSchwabSymbol("BTC/USD");
     ASSERT_FALSE(crypto.has_value());
     EXPECT_EQ(crypto.error().category, types::ErrorCategory::kUnsupported);

@@ -109,9 +109,12 @@ Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
     if (auto loaded = auth->Load(); !loaded) {
         return std::unexpected(loaded.error());
     }
+    data::SchwabDataSource::Options options;
+    options.extended_hours = cfg.ExtendedHours();
     return std::make_shared<data::SchwabDataSource>(
         std::make_shared<data::SchwabApi>(auth, http,
-                                          data::SchwabApi::Options{}));
+                                          data::SchwabApi::Options{}),
+        std::move(options));
 }
 
 Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {

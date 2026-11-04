@@ -243,19 +243,25 @@ class SchwabConfiguration : public Configuration {
     const std::optional<SchwabCredentials>& Credentials() const {
         return mCredentials;
     }
+    // [schwab] extended_hours: intraday bars outside the regular session
+    // (pre-market, after hours and overnight) too. Default false.
+    bool ExtendedHours() const { return mExtendedHours; }
 
    private:
     SchwabConfiguration(CommonSettings c, std::string redirect,
                         std::filesystem::path token_file,
-                        std::optional<SchwabCredentials> cr)
+                        std::optional<SchwabCredentials> cr,
+                        bool extended_hours)
         : Configuration(std::move(c)),
           mRedirectUri(std::move(redirect)),
           mTokenFile(std::move(token_file)),
-          mCredentials(std::move(cr)) {}
+          mCredentials(std::move(cr)),
+          mExtendedHours(extended_hours) {}
     friend class ConfigParser;
     std::string mRedirectUri;
     std::filesystem::path mTokenFile;
     std::optional<SchwabCredentials> mCredentials;
+    bool mExtendedHours = false;
 };
 
 // Reads [general] provider from the file and returns the matching subclass.

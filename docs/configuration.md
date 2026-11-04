@@ -65,7 +65,9 @@ once it has expired or Schwab refuses it.
 `[kraken]` and `[binanceus]` take `rest_url` and `ws_url` (defaults: the
 production endpoints). `[schwab]` takes `redirect_uri` (default
 `https://127.0.0.1:8182`), which must match the app's callback URL in the
-Schwab developer portal exactly, and `token_file`.
+Schwab developer portal exactly, `token_file`, and `extended_hours` (default
+`false`): intraday bars from outside the regular session too (pre-market,
+after hours and the overnight session).
 
 ## `[paper]`
 

@@ -25,9 +25,9 @@ types::Result<types::Symbol> FromBinanceUSSymbol(std::string_view native);
 
 // --- Schwab
 // ------------------------------------------------------------------- Equities
-// only; native tickers match the normalized form.
-// TODO: confirm how Schwab spells share classes (BRK.B vs BRK/B) against the
-// live API before enabling those symbols; options/futures are not mapped.
+// only; native tickers match the normalized form, except that a share class is
+// written with a dot here and a slash at Schwab: "BRK.B" is "BRK/B" (Schwab
+// answers "BRK.B" with no bars). Options and futures are not mapped.
 types::Result<std::string> ToSchwabSymbol(std::string_view symbol);
 types::Result<types::Symbol> FromSchwabSymbol(std::string_view native);
 

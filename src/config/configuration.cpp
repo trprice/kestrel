@@ -793,10 +793,18 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (token_file.is_relative()) {
         token_file = options.base_dir / token_file;
     }
+    bool extended_hours = false;
+    if (const auto* node = section ? section->get("extended_hours") : nullptr) {
+        if (!node->is_boolean()) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "[schwab] extended_hours must be true or false");
+        }
+        extended_hours = node->value_or(false);
+    }
     return SchwabConfiguration(
         std::move(*common),
         ConfigParser::Str(section, "redirect_uri", "https://127.0.0.1:8182"),
-        std::move(token_file), std::move(*creds));
+        std::move(token_file), std::move(*creds), extended_hours);
 }
 
 Result<SchwabConfiguration> SchwabConfiguration::Load(

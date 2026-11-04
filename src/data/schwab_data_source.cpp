@@ -1,9 +1,44 @@
 #include "kestrel/data/schwab_data_source.hpp"
 
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
+
+#include "kestrel/data/symbols.hpp"
+#include "kestrel/util/json.hpp"
+
 namespace kestrel::data {
 
 using types::ErrorCategory;
 using types::MakeError;
+
+namespace {
+
+using namespace std::chrono;
+
+// How much one price-history request covers. Schwab answers whole days, and
+// takes ten days of minute bars and decades of daily ones in one request.
+constexpr days kMinuteWindow{10};
+constexpr days kLongWindow{20 * 365};
+// Each request reaches a day further either side, as Schwab's days are not
+// UTC days; the bars are trimmed to the range afterwards.
+constexpr days kPad{1};
+// An intraday range whose first bar comes later than this after its start
+// began before Schwab's history (no market closes this long).
+constexpr days kHistoryGap{7};
+
+// When a bar that opens at `open` closes.
+types::Timestamp BarEnd(types::Timestamp open, types::Timeframe tf) {
+    if (const auto length = types::FixedDuration(tf)) {
+        return open + *length;
+    }
+    // Monthly: the first of the next month.
+    const year_month_day day{floor<days>(open)};
+    const auto next = day.year() / day.month() / 1d + months(1);
+    return sys_days{next};
+}
+
+}  // namespace
 
 types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe tf) {
     using types::Timeframe;
@@ -32,13 +67,116 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe tf) {
 }
 
 types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
-    const types::Symbol&, types::Timeframe tf, types::Timestamp,
-    types::Timestamp) {
-    if (auto f = SchwabFrequencyFor(tf); !f) {
-        return std::unexpected(f.error());
+    const types::Symbol& symbol, types::Timeframe tf, types::Timestamp start,
+    types::Timestamp end) {
+    auto frequency = SchwabFrequencyFor(tf);
+    if (!frequency) {
+        return std::unexpected(frequency.error());
     }
-    return MakeError(ErrorCategory::kNotImplemented,
-                     "SchwabDataSource::GetBars is not implemented yet");
+    auto native = ToSchwabSymbol(symbol);
+    if (!native) {
+        return std::unexpected(native.error());
+    }
+    if (end < start) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "GetBars: end precedes start");
+    }
+    const bool intraday = frequency->frequency_type == "minute";
+    const auto window = intraday ? kMinuteWindow : kLongWindow;
+    const types::Timestamp now = mOptions.clock();
+
+    std::vector<types::Bar> bars;
+    for (types::Timestamp since = start; since < end;) {
+        const types::Timestamp until = std::min<types::Timestamp>(
+            end, since + duration_cast<milliseconds>(window));
+        net::HttpRequest request;
+        request.url = mOptions.base_url + "/pricehistory";
+        request.query = {
+            {"symbol", *native},
+            // Minute bars come only with periodType=day; daily, weekly and
+            // monthly all come with year.
+            {"periodType", intraday ? "day" : "year"},
+            {"frequencyType", std::string(frequency->frequency_type)},
+            {"frequency", std::to_string(frequency->frequency)},
+            {"startDate", std::to_string(types::ToEpochMillis(since - kPad))},
+            {"endDate", std::to_string(types::ToEpochMillis(until + kPad))}};
+        if (intraday) {
+            // Schwab's default is true.
+            request.query["needExtendedHoursData"] =
+                mOptions.extended_hours ? "true" : "false";
+        }
+        auto response = mApi->Send(std::move(request));
+        if (!response) {
+            auto error = response.error();
+            error.message =
+                "schwab pricehistory " + *native + ": " + error.message;
+            return std::unexpected(std::move(error));
+        }
+        auto json = util::ParseJson(response->body);
+        if (!json) {
+            return std::unexpected(json.error());
+        }
+        const auto candles = json->find("candles");
+        if (!json->is_object() || candles == json->end() ||
+            !candles->is_array()) {
+            return MakeError(ErrorCategory::kParse,
+                             "schwab pricehistory: no candles array");
+        }
+        for (const auto& candle : *candles) {
+            const auto datetime = candle.find("datetime");
+            if (!candle.is_object() || datetime == candle.end() ||
+                !datetime->is_number_integer()) {
+                return MakeError(ErrorCategory::kParse,
+                                 "schwab pricehistory: malformed candle");
+            }
+            types::Bar bar;
+            bar.open_time =
+                types::FromEpochMillis(datetime->get<std::int64_t>());
+            if (!intraday) {
+                bar.open_time = floor<days>(bar.open_time);
+            }
+            for (auto [field, out] : {std::pair{"open", &bar.open},
+                                      {"high", &bar.high},
+                                      {"low", &bar.low},
+                                      {"close", &bar.close},
+                                      {"volume", &bar.volume}}) {
+                const auto value = candle.find(field);
+                if (value == candle.end()) {
+                    return MakeError(ErrorCategory::kParse,
+                                     std::string("schwab pricehistory: "
+                                                 "candle without ") +
+                                         field);
+                }
+                auto decimal = util::JsonDecimal(*value);
+                if (!decimal) {
+                    return std::unexpected(decimal.error());
+                }
+                *out = *decimal;
+            }
+            if (bar.open_time >= start && bar.open_time < end &&
+                BarEnd(bar.open_time, tf) <= now) {
+                bars.push_back(bar);
+            }
+        }
+        since = until;
+    }
+    // The padded requests overlap.
+    std::ranges::sort(bars, {}, &types::Bar::open_time);
+    const auto dupes = std::ranges::unique(bars, {}, &types::Bar::open_time);
+    bars.erase(dupes.begin(), dupes.end());
+
+    if (intraday && start + kHistoryGap < std::min(end, now) &&
+        (bars.empty() || bars.front().open_time > start + kHistoryGap)) {
+        spdlog::warn(
+            "schwab: {} {} bars start {} although {} was asked for; Schwab "
+            "keeps a limited intraday history (about 48 days of 1-minute "
+            "bars)",
+            *native, types::ToString(tf),
+            bars.empty() ? std::string("nowhere")
+                         : types::FormatIso8601(bars.front().open_time),
+            types::FormatIso8601(start));
+    }
+    return bars;
 }
 
 types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
@@ -48,9 +186,17 @@ types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
 }
 
 types::Result<types::SymbolInfo> SchwabDataSource::GetSymbolInfo(
-    const types::Symbol&) {
-    return MakeError(ErrorCategory::kNotImplemented,
-                     "SchwabDataSource::GetSymbolInfo is not implemented yet");
+    const types::Symbol& symbol) {
+    auto normalized = types::NormalizeSymbol(symbol);
+    if (!normalized) {
+        return std::unexpected(normalized.error());
+    }
+    if (auto native = ToSchwabSymbol(*normalized); !native) {
+        return std::unexpected(native.error());
+    }
+    return types::SymbolInfo{*normalized, types::Decimal(1, 2),
+                             types::Decimal::FromInt(1),
+                             types::Decimal::FromInt(1), types::Decimal()};
 }
 
 }  // namespace kestrel::data

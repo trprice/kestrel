@@ -197,6 +197,16 @@ TEST(Config, SchwabSettings) {
     ASSERT_OK(cfg);
     EXPECT_EQ(cfg->GetSymbols().front(), "AAPL");
     EXPECT_EQ(cfg->TokenFile().filename(), "tok.json");
+    EXPECT_FALSE(cfg->ExtendedHours());
+
+    const std::string base = "[general]\nprovider='schwab'\nsymbols=['SPY']\n";
+    auto extended = config::SchwabConfiguration::Parse(
+        base + "[schwab]\nextended_hours=true\n", NoEnv());
+    ASSERT_OK(extended);
+    EXPECT_TRUE(extended->ExtendedHours());
+    EXPECT_FALSE(config::SchwabConfiguration::Parse(
+                     base + "[schwab]\nextended_hours='yes'\n", NoEnv())
+                     .has_value());
 }
 
 TEST(Config, LoadConfigurationDispatchesOnProvider) {
