@@ -45,7 +45,7 @@ class FakeDataSource : public data::DataSource {
         if (s != "BTC/USD") {
             return types::MakeError(ErrorCategory::kNotFound, "unknown " + s);
         }
-        return types::SymbolInfo{s, D("0.1"), D("0.00000001"), D("0.0001")};
+        return types::SymbolInfo{s, D("0.1"), D("0.00000001"), D("0.0001"), {}};
     }
 
     data::QuoteCallback callback;

@@ -39,7 +39,7 @@ class CountingSource : public ReplayDataSource {
    public:
     CountingSource() {
         AddBars(kSymbol, Timeframe::kH1, Bars(0, 7, "1"));
-        SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001")});
+        SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
     }
     std::string_view Name() const override { return kVenue; }
     types::Result<std::vector<types::Bar>> GetBars(

@@ -28,7 +28,7 @@ TEST(Hmac, Rfc4231Vectors) {
 }
 
 TEST(Base64, RoundTrip) {
-    for (const std::string s : std::vector<std::string>{
+    for (const std::string& s : std::vector<std::string>{
              "", "f", "fo", "foo", "foob", std::string("\x00\xff\x10", 3)}) {
         auto decoded = util::Base64Decode(util::Base64Encode(s));
         ASSERT_OK(decoded);

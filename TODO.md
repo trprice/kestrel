@@ -24,18 +24,9 @@ Done (Nov 5 2026): Schwab `GetBars` retries, idempotent quote saves,
 database timeouts, and unknown config keys rejected everywhere. See Done.
 
 ### 3. Quick hygiene
-- [ ] `URL_HASH` on the `nlohmann_json` download
-      (`cmake/KestrelDependencies.cmake`); `.dockerignore` the `build-*/`
-      directories (several GB sent with every image build).
-- [ ] `scripts/setup_database.sh` passes the generated password with
-      `psql -v`, so it shows in the process list, contrary to its comment:
-      send it on stdin.
-- [ ] Warning flags on `kestrel_app` and the tests too (only the library has
-      `-Wall -Wextra -Wpedantic`), then fix what they find.
-- [ ] Schwab token file: a unique temporary name and an fsync before the
-      rename (`src/config/schwab_token_store.cpp`), so `authorize` and a
-      running renewal cannot clobber each other and a power loss cannot leave
-      it empty.
+Done (Nov 5 2026): the json download pinned by its hash, a smaller Docker
+context, the setup script's password off the process list, warnings on
+every target (errors in CI), and a safer token file save. See Done.
 
 ### 4. Robustness, when convenient
 - [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
@@ -773,6 +764,17 @@ the header of the code concerned.
 - [x] Binance.US order statuses with an unknown side, type or time in force
       fail with kParse instead of being read as a buy, a limit order or GTC
       (a missing time in force, as on market orders, is still GTC)
+
+### Build and operations hygiene
+- [x] `nlohmann_json`'s release tarball pinned with `URL_HASH`;
+      `.dockerignore` leaves out the `build-*/` directories (about 2 GB)
+- [x] `setup_database.sh` sends the password to psql on stdin (a `\set`
+      line) instead of `psql -v`, which put it in the process list
+- [x] `-Wall -Wextra -Wpedantic` on `kestrel_app` and the tests too, with
+      their warnings fixed; `KESTREL_WERROR`, on in CI
+- [x] The Schwab token file is written to a temporary file unique to the
+      process and call, created 0600, synced, renamed over the file, and the
+      directory synced
 
 ### Recording and configuration
 - [x] Schwab `GetBars` retries each page on a timeout, 429 or 5xx

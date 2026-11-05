@@ -12,6 +12,7 @@ endif()
 
 option(KESTREL_BUILD_APP "Build the kestrel_app executable" ON)
 option(KESTREL_BUILD_TESTS "Build the kestrel_tests target" ON)
+option(KESTREL_WERROR "Treat compiler warnings as errors (CI turns it on)" OFF)
 
 # Sanitizers: -DKESTREL_SANITIZE=address | undefined | address,undefined |
 # thread. Applied to everything built here, dependencies fetched with
@@ -115,9 +116,16 @@ target_link_libraries(kestrel PUBLIC
   OpenSSL::Crypto
   OpenSSL::SSL
   PostgreSQL::PostgreSQL)
-target_compile_options(kestrel PRIVATE
+# The same warnings for the library, kestrel_app and the tests.
+set(KESTREL_WARNINGS
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wpedantic>
   $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+if(KESTREL_WERROR)
+  list(APPEND KESTREL_WARNINGS
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Werror>
+    $<$<CXX_COMPILER_ID:MSVC>:/WX>)
+endif()
+target_compile_options(kestrel PRIVATE ${KESTREL_WARNINGS})
 
 if(KESTREL_BUILD_APP)
   add_executable(kestrel_app
@@ -136,6 +144,7 @@ if(KESTREL_BUILD_APP)
   )
   target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
+  target_compile_options(kestrel_app PRIVATE ${KESTREL_WARNINGS})
 
   # How the command line refuses bad input: the exit code and the message.
   # 105 (bad value) and 106 (missing argument) are CLI11's own usage-error
@@ -220,6 +229,7 @@ if(KESTREL_BUILD_TESTS)
     tests/config_test.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)
+  target_compile_options(kestrel_tests PRIVATE ${KESTREL_WARNINGS})
   target_include_directories(kestrel_tests PRIVATE tests)
   target_compile_definitions(kestrel_tests PRIVATE
     KESTREL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")

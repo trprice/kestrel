@@ -37,7 +37,7 @@ std::vector<types::Bar> Series(const std::vector<const char*>& closes) {
 std::shared_ptr<ReplayDataSource> Data(const std::vector<const char*>& closes) {
     auto data = std::make_shared<ReplayDataSource>();
     data->AddBars(kSymbol, Timeframe::kH1, Series(closes));
-    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001")});
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
     return data;
 }
 

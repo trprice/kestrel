@@ -32,7 +32,10 @@ cpr was found); see [TODO.md](../TODO.md).
 ## Targets and options
 
 Targets: `kestrel` (library), `kestrel_app`, `kestrel_tests`.
-Options: `-DKESTREL_BUILD_APP=OFF`, `-DKESTREL_BUILD_TESTS=OFF`.
+Options: `-DKESTREL_BUILD_APP=OFF`, `-DKESTREL_BUILD_TESTS=OFF`, and
+`-DKESTREL_WERROR=ON` to make warnings errors. All three targets build with
+`-Wall -Wextra -Wpedantic` and none warns; CI builds with `KESTREL_WERROR`
+on, so a new warning fails it.
 
 ## Sanitizers
 

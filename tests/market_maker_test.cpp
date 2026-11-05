@@ -35,7 +35,8 @@ class FakeContext : public strategy::Context {
     types::Timestamp Now() const override { return now; }
     trading::TradingVenue& Venue() override { return venue; }
     types::Result<types::SymbolInfo> SymbolInfo(const types::Symbol&) override {
-        return types::SymbolInfo{kSymbol, D("0.01"), D("0.001"), D("0.001")};
+        return types::SymbolInfo{
+            kSymbol, D("0.01"), D("0.001"), D("0.001"), {}};
     }
     std::span<const types::Bar> Bars(const types::Symbol&,
                                      types::Timeframe) const override {

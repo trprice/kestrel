@@ -127,7 +127,7 @@ class PaperReconciliationTest : public ::testing::Test {
    protected:
     PaperReconciliationTest() {
         data->SetSymbolInfo(
-            {"BTC/USD", D("0.01"), D("0.00000001"), D("0.0001")});
+            {"BTC/USD", D("0.01"), D("0.00000001"), D("0.0001"), {}});
         trading::PaperOptions options;  // default fees and slippage
         options.initial_balances = {{"USD", D("200000")}};
         venue = std::make_unique<trading::PaperTradingVenue>(

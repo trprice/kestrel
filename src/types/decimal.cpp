@@ -12,7 +12,7 @@
 namespace kestrel::types {
 namespace {
 
-using i128 = __int128;
+__extension__ using i128 = __int128;  // a GCC and Clang extension, on purpose
 constexpr std::int64_t kI64Max = std::numeric_limits<std::int64_t>::max();
 constexpr std::int64_t kI64Min = std::numeric_limits<std::int64_t>::min();
 

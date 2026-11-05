@@ -1,4 +1,5 @@
 build/
+build-*/
 .git/
 .cache/
 config/kestrel.toml

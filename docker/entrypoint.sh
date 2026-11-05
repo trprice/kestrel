@@ -6,7 +6,8 @@ set -euo pipefail
 pg_ctlcluster "$PG_VERSION" main start
 trap 'pg_ctlcluster "$PG_VERSION" main stop' EXIT
 
-cmake -S /src -B /build -G Ninja
+# Warnings are errors here, so none creep in.
+cmake -S /src -B /build -G Ninja -DKESTREL_WERROR=ON
 # Parallel C++23 compiles can exhaust a container's memory; override with KESTREL_JOBS.
 cmake --build /build -j "${KESTREL_JOBS:-2}"
 

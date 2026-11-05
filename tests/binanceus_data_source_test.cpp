@@ -125,7 +125,8 @@ TEST(BinanceUSGetBars, RejectsUnsupportedTimeframeWithoutCallingOut) {
 TEST(BinanceUSGetBars, RetriesRateLimits) {
     Fixture f;
     f.http->PushError(
-        types::Error{types::ErrorCategory::kRateLimit, "slow down", 429});
+        types::MakeError(types::ErrorCategory::kRateLimit, "slow down", 429)
+            .error());
     f.http->Push(Klines({kBase}));
     auto src = f.MakeSource();
     auto bars = src.GetBars("BTC/USD", types::Timeframe::kH1,
@@ -138,9 +139,11 @@ TEST(BinanceUSGetBars, RetriesRateLimits) {
 
 TEST(BinanceUSGetBars, InvalidSymbolIsNotFoundAndNotRetried) {
     Fixture f;
-    f.http->PushError(types::Error{
-        types::ErrorCategory::kRejected,
-        "HTTP 400: {\"code\":-1121,\"msg\":\"Invalid symbol.\"}", 400});
+    f.http->PushError(
+        types::MakeError(
+            types::ErrorCategory::kRejected,
+            "HTTP 400: {\"code\":-1121,\"msg\":\"Invalid symbol.\"}", 400)
+            .error());
     auto src = f.MakeSource();
     auto bars = src.GetBars("FOO/USD", types::Timeframe::kH1,
                             types::FromEpochMillis(kBase),

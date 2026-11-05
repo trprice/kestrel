@@ -69,18 +69,30 @@ if [[ -z $role_exists && -z $password ]]; then
     generated=1
 fi
 
+if [[ $password == *$'\n'* || $password == *$'\r'* ]]; then
+    echo "KESTREL_DATABASE_PASSWORD must be one line" >&2
+    exit 2
+fi
+
+# Runs `sql`, which refers to the password as :'pw'. The password reaches psql
+# only on stdin, as a \set line (printf is a shell builtin, so it is in no
+# process's arguments), and :'pw' quotes it as an SQL literal, so it is never
+# spliced into SQL by the shell. Inside psql's single quotes a backslash and a
+# quote are the only special characters: double them.
+with_password() {
+    local escaped=${password//\\/\\\\}
+    escaped=${escaped//\'/\'\'}
+    printf '%s\n' "\\set pw '$escaped'" "$1" | admin -d postgres -q
+}
+
 if [[ -z $role_exists ]]; then
     echo "Creating role $db_user..."
-    # The password goes to psql on stdin as a variable so it never appears in
-    # a process list or gets spliced into SQL by the shell.
-    printf '%s\n' "CREATE ROLE $db_user LOGIN PASSWORD :'pw';" |
-        admin -d postgres -v "pw=$password" -q
+    with_password "CREATE ROLE $db_user LOGIN PASSWORD :'pw';"
 else
     echo "Role $db_user already exists."
     if [[ -n $password ]]; then
         echo "Updating its password from KESTREL_DATABASE_PASSWORD..."
-        printf '%s\n' "ALTER ROLE $db_user PASSWORD :'pw';" |
-            admin -d postgres -v "pw=$password" -q
+        with_password "ALTER ROLE $db_user PASSWORD :'pw';"
     fi
 fi
 

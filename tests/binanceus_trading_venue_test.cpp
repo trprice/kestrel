@@ -624,7 +624,7 @@ TEST(BinanceUSOrders, AnUnansweredOrderIsLookedUpNotSentAgain) {
     auto venue = f.Venue();
     f.http->PushError(
         "/api/v3/order",
-        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
     f.http->Push("/api/v3/order", Order("ZECUSDT", 77, "NEW", "LIMIT", "BUY",
                                         "700.00", "0.010", "0", "0"));
     auto ack = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
@@ -644,8 +644,9 @@ TEST(BinanceUSOrders, AnUnansweredOrderIsLookedUpNotSentAgain) {
 TEST(BinanceUSOrders, AnUnansweredOrderThatCannotBeFoundIsAnError) {
     Fixture f;
     auto venue = f.Venue();
-    f.http->PushError("/api/v3/order",
-                      types::Error{types::ErrorCategory::kServer, "HTTP 503"});
+    f.http->PushError(
+        "/api/v3/order",
+        types::MakeError(types::ErrorCategory::kServer, "HTTP 503").error());
     for (int i = 0; i < 2; ++i) {
         f.http->PushStatus(
             "/api/v3/order", 400,
@@ -779,12 +780,12 @@ TEST(BinanceUSOrders, AFailedLookupAfterAnUnansweredOrderSaysSo) {
     auto venue = f.Venue();
     f.http->PushError(
         "/api/v3/order",
-        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
     // The lookup is a read, so it is retried; every attempt fails.
     for (int i = 0; i < 5; ++i) {
         f.http->PushError(
             "/api/v3/order",
-            types::Error{types::ErrorCategory::kNetwork, "reset"});
+            types::MakeError(types::ErrorCategory::kNetwork, "reset").error());
     }
     auto placed = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
     ASSERT_FALSE(placed.has_value());
@@ -806,7 +807,7 @@ TEST(BinanceUSOrders, AnUnansweredCancelOfAnOrderStillOpenIsAnError) {
     ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
     f.http->PushError(
         "/api/v3/order",
-        types::Error{types::ErrorCategory::kTimeout, "timed out"});
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
     f.http->Push("/api/v3/order", Order("ZECUSDT", 42, "NEW", "LIMIT", "BUY",
                                         "700.00", "0.010", "0", "0"));
     auto outcome = venue->CancelOrder("42");

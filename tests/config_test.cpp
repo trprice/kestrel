@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 #include "kestrel/backtest/replay_data_source.hpp"
 #include "kestrel/config/configuration.hpp"
@@ -959,6 +960,61 @@ TEST(SchwabTokenStore, SaveLoadRoundTripAndPermissions) {
                   (std::filesystem::perms::group_all |
                    std::filesystem::perms::others_all),
               std::filesystem::perms::none);
+    std::filesystem::remove_all(dir);
+}
+
+// Each save writes its own temporary file and renames it over the token
+// file, so concurrent saves (`authorize` while `run` renews) leave one whole
+// file, and nothing behind.
+TEST(SchwabTokenStore, ConcurrentSavesLeaveOneWholeFile) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-token-race-test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const config::SchwabTokenStore store(dir / "tokens.json");
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 8; ++i) {
+        threads.emplace_back([&store, i] {
+            for (int k = 0; k < 50; ++k) {
+                const std::string token(
+                    static_cast<std::size_t>(100 + (i * 50 + k) % 300), 'a');
+                EXPECT_TRUE(store
+                                .Save({token, "refresh-" + std::to_string(i),
+                                       types::FromEpochSeconds(1'700'000'000),
+                                       types::FromEpochSeconds(1'700'600'000)})
+                                .has_value());
+            }
+        });
+    }
+    for (auto& t : threads) {
+        t.join();
+    }
+    auto loaded = store.Load();
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->refresh_token.rfind("refresh-", 0), 0u);
+    int files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        (void)entry;
+        ++files;
+    }
+    EXPECT_EQ(files, 1);  // no temporary file left behind
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SchwabTokenStore, AFailedSaveLeavesNoTemporaryFile) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-token-fail-test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir / "tokens.json");  // a directory
+    const config::SchwabTokenStore store(dir / "tokens.json");
+    EXPECT_FALSE(store.Save(
+        {"a", "r", types::FromEpochSeconds(1), types::FromEpochSeconds(2)}));
+    int files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        (void)entry;
+        ++files;
+    }
+    EXPECT_EQ(files, 1);  // only the directory in the way
     std::filesystem::remove_all(dir);
 }
 
