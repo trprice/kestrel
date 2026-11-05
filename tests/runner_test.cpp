@@ -83,10 +83,15 @@ class FakeDataSource : public data::DataSource {
     }
 
     void Close(int hour) { bar_callback(kSymbol, Timeframe::kH1, BarAt(hour)); }
+    std::shared_ptr<const types::MarketHours> Hours() const override {
+        return hours;
+    }
 
     bool fail_get_bars = false;
     bool fail_stream_bars = false;
     std::vector<types::Bar> history;
+    std::shared_ptr<const types::MarketHours> hours =
+        types::MarketHours::AlwaysOpen();
     std::vector<std::pair<types::Timestamp, types::Timestamp>> get_bars_ranges;
     data::BarCallback bar_callback;
     data::QuoteCallback quote_callback;
@@ -251,6 +256,34 @@ TEST_F(RunnerTest, BackfillsBarsMissedWhileDisconnected) {
     ASSERT_EQ(data->get_bars_ranges.size(), 2u);  // warmup, then the gap
     EXPECT_EQ(data->get_bars_ranges[1].first, Hour(5));
     EXPECT_EQ(data->get_bars_ranges[1].second, Hour(8));
+}
+
+// A market open from 00:00 to 06:00 UTC on 1970-01-01 only.
+class MorningCalendar : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        if (date != std::chrono::year_month_day{std::chrono::sys_days{}}) {
+            return std::nullopt;
+        }
+        return types::TradingDay{Hour(0), Hour(0), Hour(6), Hour(6)};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+TEST_F(RunnerTest, DoesNotBackfillAGapThatIsAllClosedTime) {
+    data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<MorningCalendar>(), false);
+    Start();
+    data->Close(5);
+    data->Close(8);  // hours 6 and 7: the market was closed
+    Finish();
+    EXPECT_EQ(strategy->bars,
+              (std::vector<types::Timestamp>{Hour(5), Hour(8)}));
+    EXPECT_EQ(data->get_bars_ranges.size(), 1u);  // the warmup only
 }
 
 TEST_F(RunnerTest, StillDeliversTheBarWhenBackfillFails) {
@@ -871,6 +904,300 @@ TEST_F(RunnerTest, FailsAndClosesStreamsWhenWarmupFails) {
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().category, ErrorCategory::kNetwork);
     EXPECT_FALSE(strategy->stopped);  // never started
+}
+
+// A market open from 01:00 to 06:00 UTC every day.
+class DailyCalendar : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        const types::Timestamp day{std::chrono::sys_days{date}};
+        return types::TradingDay{
+            day + std::chrono::hours(1), day + std::chrono::hours(1),
+            day + std::chrono::hours(6), day + std::chrono::hours(6)};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+// Records the session hooks and what the context said at each.
+class SessionStrategy : public strategy::Strategy {
+   public:
+    std::string_view Name() const override { return "session"; }
+    Requirements Needs() const override {
+        Requirements r;
+        r.symbols = {kSymbol};
+        r.quotes = true;
+        return r;
+    }
+    void OnStart(strategy::Context& context) override {
+        hooks.push_back("start");
+        open_at_start = context.MarketOpen();
+        session_at_start = context.CurrentOrNextSession();
+        order_at_start = Place(context);
+    }
+    void OnSessionOpen(strategy::Context& context) override {
+        hooks.push_back("open");
+        times.push_back(context.Now());
+        order_at_open = Place(context);
+        if (on_open) {
+            on_open();
+        }
+    }
+    void OnSessionClosing(strategy::Context& context,
+                          types::Timestamp close) override {
+        hooks.push_back("closing");
+        times.push_back(context.Now());
+        closes.push_back(close);
+    }
+
+    std::function<void()> on_open;  // after an open is recorded
+    std::vector<std::string> hooks;
+    std::vector<types::Timestamp> times;
+    std::vector<types::Timestamp> closes;
+    bool open_at_start = false;
+    std::optional<types::MarketHours::Session> session_at_start;
+    types::Result<types::OrderAcknowledgement> order_at_start =
+        types::MakeError(ErrorCategory::kInternal, "not placed");
+    types::Result<types::OrderAcknowledgement> order_at_open =
+        types::MakeError(ErrorCategory::kInternal, "not placed");
+
+   private:
+    static types::Result<types::OrderAcknowledgement> Place(
+        strategy::Context& context) {
+        types::OrderRequest request;
+        request.symbol = kSymbol;
+        request.type = types::OrderType::kLimit;
+        request.quantity = types::Decimal::FromInt(1);
+        request.limit_price = types::Decimal::FromInt(10);
+        return context.Venue().PlaceOrder(request);
+    }
+};
+
+class RunnerSessionTest : public ::testing::Test {
+   protected:
+    RunnerSessionTest() {
+        data->hours = std::make_shared<types::MarketHours>(
+            std::make_shared<DailyCalendar>(), false);
+        auto owner = std::make_unique<SessionStrategy>();
+        strategy = owner.get();
+        strategy_owner = std::move(owner);
+    }
+    void Build() {
+        options.fill_poll_interval = std::chrono::milliseconds(0);
+        runner = std::make_unique<strategy::Runner>(
+            data, venue, std::move(strategy_owner), options,
+            [this] { return now; });
+    }
+    // Moves the clock to the next session event and drains.
+    types::Timestamp Advance() {
+        const auto due = runner->NextSessionEvent();
+        EXPECT_TRUE(due.has_value());
+        now = *due;
+        runner->Drain();
+        return now;
+    }
+
+    std::shared_ptr<FakeDataSource> data = std::make_shared<FakeDataSource>();
+    std::shared_ptr<RecordingVenue> venue = std::make_shared<RecordingVenue>();
+    std::unique_ptr<strategy::Strategy> strategy_owner;
+    SessionStrategy* strategy = nullptr;
+    strategy::RunnerOptions options;
+    std::unique_ptr<strategy::Runner> runner;
+    types::Timestamp now = Hour(0);  // before the day's 01:00 open
+};
+
+TEST_F(RunnerSessionTest,
+       HooksAtTheOpenAndBeforeTheCloseAndOrdersOnlyWhenOpen) {
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_FALSE(strategy->open_at_start);
+    ASSERT_TRUE(strategy->session_at_start);
+    EXPECT_EQ(strategy->session_at_start->start, Hour(1));
+    EXPECT_EQ(strategy->session_at_start->end, Hour(6));
+    // Closed: refused before the venue.
+    ASSERT_FALSE(strategy->order_at_start);
+    EXPECT_EQ(strategy->order_at_start.error().category,
+              ErrorCategory::kRejected);
+    EXPECT_NE(strategy->order_at_start.error().message.find("market closed"),
+              std::string::npos);
+    EXPECT_EQ(venue->attempts, 0);
+
+    EXPECT_EQ(Advance(), Hour(1));  // the open
+    EXPECT_TRUE(strategy->order_at_open.has_value());
+    EXPECT_EQ(venue->attempts, 1);
+    EXPECT_EQ(Advance(), Hour(6) - std::chrono::minutes(5));  // closing
+    EXPECT_EQ(Advance(), Hour(6));  // over: the next day's is found
+    EXPECT_EQ(Advance(), Hour(25));
+    EXPECT_EQ(strategy->hooks,
+              (std::vector<std::string>{"start", "open", "closing", "open"}));
+    EXPECT_EQ(strategy->closes, std::vector<types::Timestamp>{Hour(6)});
+    // Cancels pass while closed.
+    now = Hour(7);
+    EXPECT_TRUE(venue->CancelAll().has_value());
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, StartingInASessionCallsNoOpenButTheClosingIfDue) {
+    now = Hour(3);  // mid-session: no OnSessionOpen for it
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(strategy->open_at_start);
+    EXPECT_TRUE(strategy->order_at_start.has_value());
+    EXPECT_EQ(Advance(), Hour(6) - std::chrono::minutes(5));
+    EXPECT_EQ(strategy->hooks, (std::vector<std::string>{"start", "closing"}));
+    runner->End();
+
+    // Started inside the closing window: OnSessionClosing right after
+    // OnStart.
+    auto owner = std::make_unique<SessionStrategy>();
+    strategy = owner.get();
+    strategy_owner = std::move(owner);
+    now = Hour(6) - std::chrono::minutes(2);
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(strategy->hooks, (std::vector<std::string>{"start", "closing"}));
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, AZeroLeadStillCallsTheClosingJustBeforeTheClose) {
+    options.session_closing_lead = std::chrono::milliseconds(0);
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(Advance(), Hour(1));
+    EXPECT_EQ(Advance(), Hour(6) - std::chrono::milliseconds(1));
+    EXPECT_EQ(strategy->hooks,
+              (std::vector<std::string>{"start", "open", "closing"}));
+    runner->End();
+}
+
+// Run() wakes for a session event by itself, with no other event to wake it:
+// a session opens 200 ms after the start, by a clock that runs.
+TEST_F(RunnerSessionTest, RunWakesForTheNextSessionHook) {
+    const auto started = std::chrono::steady_clock::now();
+    const types::Timestamp base = Hour(0);
+    class SoonCalendar : public types::TradingCalendar {
+       public:
+        explicit SoonCalendar(types::Timestamp open) : mOpen(open) {}
+        std::optional<types::TradingDay> On(
+            std::chrono::year_month_day date) const override {
+            if (date != DateAt(mOpen)) {
+                return std::nullopt;
+            }
+            return types::TradingDay{mOpen, mOpen,
+                                     mOpen + std::chrono::hours(1),
+                                     mOpen + std::chrono::hours(1)};
+        }
+        std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+            return std::chrono::year_month_day{
+                std::chrono::floor<std::chrono::days>(t)};
+        }
+
+       private:
+        types::Timestamp mOpen;
+    };
+    data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<SoonCalendar>(base + std::chrono::milliseconds(200)),
+        false);
+    options.fill_poll_interval = std::chrono::milliseconds(0);
+    std::promise<void> opened;
+    auto owner = std::make_unique<SessionStrategy>();
+    strategy = owner.get();
+    strategy->on_open = [&opened] { opened.set_value(); };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(owner), options, [base, started] {
+            return base +
+                   std::chrono::duration_cast<types::Timestamp::duration>(
+                       std::chrono::steady_clock::now() - started);
+        });
+    std::thread thread([this] { (void)runner->Run(); });
+    const bool woke = opened.get_future().wait_for(std::chrono::seconds(5)) ==
+                      std::future_status::ready;
+    runner->Stop();
+    thread.join();
+    EXPECT_TRUE(woke);
+    EXPECT_EQ(strategy->hooks, (std::vector<std::string>{"start", "open"}));
+}
+
+// Like DailyCalendar, but day 0's hours can change while the runner runs, as
+// when Schwab's answer lands after the rules': open later, close earlier, or
+// not trade at all.
+class ChangingCalendar : public DailyCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        auto day = DailyCalendar::On(date);
+        if (date == std::chrono::year_month_day{std::chrono::sys_days{}}) {
+            if (closed) {
+                return std::nullopt;
+            }
+            day->open = day->pre_open = open;
+            day->close = day->post_close = close;
+        }
+        return day;
+    }
+    types::Timestamp open = Hour(1);
+    types::Timestamp close = Hour(6);
+    bool closed = false;
+};
+
+TEST_F(RunnerSessionTest, ARestrictionLearnedAfterStartingMovesTheHooks) {
+    auto calendar = std::make_shared<ChangingCalendar>();
+    data->hours = std::make_shared<types::MarketHours>(calendar, false);
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(runner->NextSessionEvent(), Hour(1));
+    // A delayed open, learned before it: the open hook moves to it.
+    calendar->open = Hour(2);
+    runner->Drain();
+    EXPECT_EQ(Advance(), Hour(2));
+    // An early close learned in the session: the closing hook comes before
+    // it, not before the old close.
+    calendar->close = Hour(3);
+    now = Hour(2) + std::chrono::minutes(30);
+    runner->Drain();
+    EXPECT_EQ(Advance(), Hour(3) - std::chrono::minutes(5));
+    EXPECT_EQ(strategy->closes, std::vector<types::Timestamp>{Hour(3)});
+    runner->End();
+
+    // A day that turns out closed: no hooks for it, the next day's instead.
+    auto owner = std::make_unique<SessionStrategy>();
+    strategy = owner.get();
+    strategy_owner = std::move(owner);
+    calendar->open = Hour(1);
+    calendar->close = Hour(6);
+    now = Hour(0);
+    Build();
+    ASSERT_OK(runner->Begin());
+    calendar->closed = true;
+    runner->Drain();
+    EXPECT_EQ(runner->NextSessionEvent(), Hour(25));
+    EXPECT_EQ(strategy->hooks, std::vector<std::string>{"start"});
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, ASessionSleptThroughGetsNoHooks) {
+    Build();
+    ASSERT_OK(runner->Begin());
+    now = Hour(27);  // the next day's session, mid-way
+    runner->Drain();
+    // Day 0 is over without hooks; day 1's open is called on reaching it.
+    EXPECT_EQ(strategy->hooks, (std::vector<std::string>{"start", "open"}));
+    EXPECT_EQ(strategy->times, std::vector<types::Timestamp>{Hour(27)});
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, AMarketThatNeverClosesHasNoSessions) {
+    data->hours = types::MarketHours::AlwaysOpen();
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(strategy->open_at_start);
+    EXPECT_FALSE(strategy->session_at_start);
+    EXPECT_TRUE(strategy->order_at_start.has_value());
+    EXPECT_FALSE(runner->NextSessionEvent());
+    runner->End();
 }
 
 }  // namespace

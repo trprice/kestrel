@@ -86,7 +86,9 @@ struct PaperOptions {
     std::chrono::milliseconds report_latency{0};
 };
 
-// Simulated venue that works with any DataSource. It decides fills from live
+// Simulated venue that works with any DataSource. Nothing fills while the
+// data source's market is closed (DataSource::Hours): orders rest until it
+// opens, as at a broker, a market order included. It decides fills from live
 // quotes:
 //   market  fills at ask*(1+slippage) (buy) or bid*(1-slippage) (sell), taker
 //           fee
@@ -206,6 +208,8 @@ class PaperTradingVenue : public TradingVenue {
                 const std::string& asset, const types::Decimal& delta);
 
     std::shared_ptr<data::DataSource> mDataSource;
+    // The data source's market hours: nothing fills while it is closed.
+    std::shared_ptr<const types::MarketHours> mHours;
     const PaperOptions mOptions;
     const std::function<types::Timestamp()> mClock;
 

@@ -81,9 +81,26 @@ Result<Timestamp> ParseIso8601(std::string_view text) {
         }
         for (int i = digits; i < 3; ++i) millis *= 10;
     }
+    // "Z", or an offset from UTC: +HH:MM or +HHMM (or -).
     const std::string_view rest = text.substr(pos);
-    if (rest != "Z" && rest != "+00:00" && rest != "+0000") {
-        return bad();
+    int offset_minutes = 0;
+    if (rest != "Z") {
+        if (rest.size() != 5 && rest.size() != 6) {
+            return bad();
+        }
+        if (rest[0] != '+' && rest[0] != '-') {
+            return bad();
+        }
+        std::size_t at = 1;
+        int oh = 0;
+        int om = 0;
+        if (!ReadInt(rest, at, 2, oh) ||
+            (rest.size() == 6 && !Expect(rest, at, ':')) ||
+            !ReadInt(rest, at, 2, om) || at != rest.size() || oh > 23 ||
+            om > 59) {
+            return bad();
+        }
+        offset_minutes = (rest[0] == '-' ? -1 : 1) * (oh * 60 + om);
     }
 
     using namespace std::chrono;
@@ -93,9 +110,10 @@ Result<Timestamp> ParseIso8601(std::string_view text) {
         return bad();
     }
     const sys_days days{ymd};
+    // The local time minus its offset is UTC.
     return Timestamp(duration_cast<milliseconds>(days.time_since_epoch()) +
                      hours(h) + minutes(mi) + seconds(sec) +
-                     milliseconds(millis));
+                     milliseconds(millis) - minutes(offset_minutes));
 }
 
 std::string FormatIso8601(Timestamp t) {

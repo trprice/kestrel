@@ -1,15 +1,85 @@
 #pragma once
 
+#include <condition_variable>
+#include <deque>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
 #include <string>
+#include <thread>
 
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_streamer.hpp"
+#include "kestrel/types/market_hours.hpp"
 #include "kestrel/util/retry.hpp"
 
 namespace kestrel::data {
+
+// The US equity calendar (types::UsEquityCalendar) with Schwab's word on the
+// days it answers for: GET /markets?markets=equity&date=..., which accepts a
+// date up to 7 days back and a year ahead. Each date from 6 days back to 364
+// ahead that the rules open is asked about once, on a background thread, and
+// the answer remembered; until it is in (and outside that window, and while
+// Schwab cannot be asked: a failure is retried after 10 minutes), the rules
+// answer. So no caller ever waits on Schwab.
+//
+// Schwab can only restrict a day: close it, or move its opens later and its
+// closes earlier (an unscheduled closure or a delayed open), each time taken
+// from whichever is more restrictive; a difference is logged once. It cannot
+// open a day the rules close, so those are never asked about: Schwab fills in
+// a year's holidays late (in Nov 2026 every 2027 holiday read as a normal
+// day). Thread-safe. Destroying it waits for a request already under way
+// (up to the HTTP timeout), so a shutdown can take that long.
+class SchwabCalendar : public types::TradingCalendar {
+   public:
+    SchwabCalendar(std::shared_ptr<SchwabApi> api, std::string base_url,
+                   std::function<types::Timestamp()> clock = types::Now);
+    ~SchwabCalendar() override;
+
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override;
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override;
+
+    // Waits until every date asked about so far has been answered (or has
+    // failed). For tests.
+    void WaitForRequests() const;
+
+    // A /markets answer for equities: the day's sessions, or nullopt when
+    // Schwab says it is closed. kParse if the answer has neither, or a time
+    // in it is malformed (a pre- or after-market session that is absent is
+    // taken as none).
+    static types::Result<std::optional<types::TradingDay>> ParseMarketHours(
+        std::string_view body);
+
+   private:
+    // Asks Schwab about one date; not under mMutex.
+    types::Result<std::optional<types::TradingDay>> Ask(
+        std::chrono::year_month_day date) const;
+    // The background thread: answers the queued dates.
+    void Work();
+
+    const std::shared_ptr<SchwabApi> mApi;
+    const std::string mBaseUrl;
+    const std::function<types::Timestamp()> mClock;
+    const types::UsEquityCalendar mRules;
+
+    mutable std::mutex mMutex;              // guards the members below
+    mutable std::condition_variable mWake;  // a date queued, or stopping
+    mutable std::condition_variable mIdle;  // the queue drained
+    mutable std::map<std::chrono::year_month_day,
+                     std::optional<types::TradingDay>>
+        mDays;  // answered
+    mutable std::deque<std::chrono::year_month_day> mQueue;
+    mutable std::set<std::chrono::year_month_day> mQueued;  // or being asked
+    mutable types::Timestamp mRetryAt{};  // after a failed request
+    bool mStopping = false;
+
+    std::thread mWorker;  // last: started once the members above exist
+};
 
 // Schwab price-history parameters for a timeframe.
 struct SchwabFrequency {
@@ -54,8 +124,14 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 // whose last minute had none closes with the next trade. The first longer
 // bar after a (re)connect is not given if minutes of it were missed; the
 // runner backfills it with GetBars. Unless extended_hours is set, as for
-// GetBars, only bars in the regular session (09:30 to 16:00 New York time)
-// are given. An unknown symbol gets no bars and no error.
+// GetBars, only bars in the regular session (by the calendar below, so an
+// early close ends at 13:00) are given. An unknown symbol gets no bars and no
+// error.
+//
+// Hours: the US equity market's, from SchwabCalendar: the regular session,
+// or with extended_hours also 07:00 to 09:30 and the close to 20:00 (Schwab's
+// pre- and after-market). The overnight session's bars come with
+// extended_hours, but it does not count as open: orders are refused then.
 class SchwabDataSource : public DataSource {
    public:
     struct Options {
@@ -89,6 +165,9 @@ class SchwabDataSource : public DataSource {
         BarCallback callback) override;
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) override;
+    std::shared_ptr<const types::MarketHours> Hours() const override {
+        return mHours;
+    }
 
    private:
     // The symbols as Schwab keys.
@@ -98,6 +177,9 @@ class SchwabDataSource : public DataSource {
     std::shared_ptr<SchwabApi> mApi;
     Options mOptions;
     std::shared_ptr<SchwabStreamer> mStreamer;
+    std::shared_ptr<const types::MarketHours> mHours;
+    // The regular session alone, for the bar stream's filter.
+    std::shared_ptr<const types::MarketHours> mRegular;
 };
 
 }  // namespace kestrel::data

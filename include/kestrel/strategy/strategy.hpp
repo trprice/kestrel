@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
@@ -8,6 +9,7 @@
 #include "kestrel/trading/trading_venue.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/market.hpp"
+#include "kestrel/types/market_hours.hpp"
 #include "kestrel/types/symbol.hpp"
 #include "kestrel/types/time.hpp"
 #include "kestrel/types/timeframe.hpp"
@@ -46,6 +48,18 @@ class Context {
     // oldest first. The span is invalidated by the next bar for that series.
     virtual std::span<const types::Bar> Bars(
         const types::Symbol& symbol, types::Timeframe timeframe) const = 0;
+
+    // Whether the market can be traded now: the data source's hours
+    // (DataSource::Hours), the regular session or the extended hours too. While
+    // it is closed, orders are refused. Always true on a venue that never
+    // closes.
+    virtual bool MarketOpen() const { return true; }
+    // The session open now, or else the next one, as [start, end). Nullopt on
+    // a venue that never closes.
+    virtual std::optional<types::MarketHours::Session> CurrentOrNextSession()
+        const {
+        return std::nullopt;
+    }
 };
 
 // All hooks run on the runner's single strategy thread, one at a time, so a
@@ -86,6 +100,15 @@ class Strategy {
     // not ordered relative to each other. An acknowledgement that is already
     // closed produces no update: the strategy sees it in PlaceOrder's result.
     virtual void OnOrderUpdate(Context&, const types::OrderStatus&) {}
+    // On a market that closes (see Context::MarketOpen), when a session opens.
+    // Not called for a session already open when the runner starts.
+    virtual void OnSessionOpen(Context&) {}
+    // RunnerOptions::session_closing_lead (5 minutes) before a session closes
+    // at `close`, while orders are still accepted: the time to flatten, say.
+    // Called right after OnStart if the runner starts in that window.
+    virtual void OnSessionClosing(Context&, types::Timestamp close) {
+        (void)close;
+    }
     // After the last event, when the runner stops.
     virtual void OnStop(Context&) {}
 };

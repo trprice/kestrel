@@ -51,6 +51,10 @@ struct RunnerOptions {
     std::chrono::milliseconds latency_interval{0};
     // Where the figures come from; null means the HTTP statistics.
     std::function<std::vector<types::EndpointLatency>()> latency_source;
+    // How long before a session closes Strategy::OnSessionClosing is called.
+    // Must be positive: at the close itself orders are already refused, so a
+    // lead under 1 ms is taken as 1 ms.
+    std::chrono::milliseconds session_closing_lead{std::chrono::minutes(5)};
 };
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events
@@ -95,6 +99,14 @@ struct RunnerOptions {
 // arrived, and a slow strategy cannot fall behind on quotes. Intermediate
 // quotes are skipped. Bars are never dropped, so the queue still grows if bars
 // outpace the strategy.
+//
+// On a market that closes (the data source's Hours), the strategy trades
+// through a trading::SessionGatedVenue, which refuses orders while it is
+// closed; Context::MarketOpen and CurrentOrNextSession say when it trades;
+// and OnSessionOpen and OnSessionClosing are called as sessions open and
+// near their close (Run() wakes for them; a Drain-driven run gets them when
+// the driver advances its clock to NextSessionEvent()). The gap backfill
+// skips a gap that is all closed time.
 class Runner : private Context {
    public:
     // How far behind the newest fill seen the IDs of older ones are kept, to
@@ -141,6 +153,10 @@ class Runner : private Context {
     types::Result<void> Begin();
     bool Drain();
     void End();
+    // When the next session hook is due (or the session ends), for a driver
+    // that advances a clock: set the clock to it and Drain(). Nullopt on a
+    // market that never closes, or before Begin().
+    std::optional<types::Timestamp> NextSessionEvent() const;
 
    private:
     struct BarEvent {
@@ -211,6 +227,17 @@ class Runner : private Context {
     void StopPoller();
     // Runs a strategy hook, logging instead of propagating an exception.
     void Guarded(const char* hook, const std::function<void()>& call);
+    // Calls the session hooks that are due at `now`, moving to the next
+    // session once one has ended. StartSessions does the first check.
+    void StartSessions(types::Timestamp now);
+    void CheckSession(types::Timestamp now);
+    // Adopts a restriction the calendar learned of since mSession was read.
+    void RefreshSession(types::Timestamp now);
+    // options.session_closing_lead, at least 1 ms.
+    std::chrono::milliseconds Lead() const {
+        return std::max(mOptions.session_closing_lead,
+                        std::chrono::milliseconds(1));
+    }
 
     // Context
     types::Timestamp Now() const override { return mClock(); }
@@ -221,8 +248,20 @@ class Runner : private Context {
     }
     std::span<const types::Bar> Bars(const types::Symbol& symbol,
                                      types::Timeframe timeframe) const override;
+    bool MarketOpen() const override { return mHours->IsOpen(mClock()); }
+    std::optional<types::MarketHours::Session> CurrentOrNextSession()
+        const override {
+        return mHours->CurrentOrNext(mClock());
+    }
 
     std::shared_ptr<data::DataSource> mData;
+    std::shared_ptr<const types::MarketHours> mHours;
+    // The session hooks (Run() thread only): the session open at the last
+    // check, or the next one, and which of its hooks have been called. The
+    // open counts as called for a session already open at Begin().
+    std::optional<types::MarketHours::Session> mSession;
+    bool mOpenCalled = false;
+    bool mClosingCalled = false;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
     std::shared_ptr<OrderTracker> mTracker;
     std::unique_ptr<RunRecorder> mRecorder;  // null without options.trade_log

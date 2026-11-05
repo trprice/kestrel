@@ -69,8 +69,18 @@ TEST(Time, Iso8601RoundTripAndFractions) {
     EXPECT_EQ(
         types::ToEpochMillis(*types::ParseIso8601("2024-02-29T12:34:56.5Z")),
         1709210096500);
-    for (const char* bad : {"", "2023-09-25", "2023-13-01T00:00:00Z",
-                            "2023-09-25T10:00:00", "garbage"}) {
+    // Offsets from UTC, as Schwab's /markets writes its times.
+    EXPECT_EQ(*types::ParseIso8601("2026-11-05T09:30:00-05:00"),
+              *types::ParseIso8601("2026-11-05T14:30:00Z"));
+    EXPECT_EQ(*types::ParseIso8601("2026-11-05T20:00:00+0530"),
+              *types::ParseIso8601("2026-11-05T14:30:00Z"));
+    EXPECT_EQ(*types::ParseIso8601("2026-11-05T14:30:00+00:00"),
+              *types::ParseIso8601("2026-11-05T14:30:00Z"));
+    for (const char* bad :
+         {"", "2023-09-25", "2023-13-01T00:00:00Z", "2023-09-25T10:00:00",
+          "garbage", "2026-11-05T09:30:00-5:00", "2026-11-05T09:30:00-05",
+          "2026-11-05T09:30:00-24:00", "2026-11-05T09:30:00*05:00",
+          "2026-11-05T09:30:00-05:00x"}) {
         EXPECT_FALSE(types::ParseIso8601(bad).has_value()) << bad;
     }
 }

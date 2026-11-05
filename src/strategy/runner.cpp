@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "kestrel/strategy/run_recorder.hpp"
+#include "kestrel/trading/session_gated_venue.hpp"
 
 namespace kestrel::strategy {
 
@@ -143,6 +144,7 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
                std::unique_ptr<Strategy> strategy, RunnerOptions options,
                std::function<types::Timestamp()> clock)
     : mData(std::move(data_source)),
+      mHours(mData->Hours()),
       mVenue(std::move(venue)),
       mStrategy(std::move(strategy)),
       mOptions(std::move(options)),
@@ -152,6 +154,10 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
         mGate = std::make_shared<trading::RiskGatedVenue>(
             mVenue, *mOptions.risk, mClock);
         mVenue = mGate;
+    }
+    if (!mHours->IsAlwaysOpen()) {
+        mVenue = std::make_shared<trading::SessionGatedVenue>(mVenue, mHours,
+                                                              mClock);
     }
     mTracker = std::make_shared<OrderTracker>(mVenue);
     mVenue = mTracker;
@@ -333,7 +339,77 @@ types::Result<void> Runner::Begin() {
     }
     mBegun = true;
     Guarded("OnStart", [this] { mStrategy->OnStart(*this); });
+    StartSessions(mClock());
     return {};
+}
+
+void Runner::StartSessions(types::Timestamp now) {
+    if (mHours->IsAlwaysOpen()) {
+        return;
+    }
+    mSession = mHours->CurrentOrNext(now);
+    mOpenCalled = mSession && now >= mSession->start;
+    mClosingCalled = false;
+    CheckSession(now);  // in the closing window already: OnSessionClosing
+}
+
+void Runner::RefreshSession(types::Timestamp now) {
+    if (!mSession || now >= mSession->end) {
+        return;
+    }
+    // The calendar can learn of a restriction after the session was read
+    // (Schwab's answer lands after the rules': an unscheduled early close, a
+    // delayed open, a closed day). Answers only ever restrict, so adopt them.
+    const auto fresh = mHours->CurrentOrNext(now);
+    if (fresh && fresh->start < mSession->end) {
+        // The same session (sessions never overlap), perhaps shorter.
+        if (!mOpenCalled) {
+            mSession->start = std::max(mSession->start, fresh->start);
+        }
+        mSession->end = std::min(mSession->end, fresh->end);
+    } else {
+        // It is gone, or already over: move on below.
+        mSession->end = now;
+    }
+}
+
+void Runner::CheckSession(types::Timestamp now) {
+    RefreshSession(now);
+    while (mSession) {
+        if (now >= mSession->end) {
+            // Over (a session the runner slept through gets no hooks).
+            mSession = mHours->CurrentOrNext(mSession->end);
+            mOpenCalled = false;
+            mClosingCalled = false;
+            continue;
+        }
+        if (!mOpenCalled && now >= mSession->start) {
+            mOpenCalled = true;
+            Guarded("OnSessionOpen",
+                    [this] { mStrategy->OnSessionOpen(*this); });
+        }
+        if (mOpenCalled && !mClosingCalled && now >= mSession->end - Lead()) {
+            mClosingCalled = true;
+            const auto close = mSession->end;
+            Guarded("OnSessionClosing", [this, close] {
+                mStrategy->OnSessionClosing(*this, close);
+            });
+        }
+        return;
+    }
+}
+
+std::optional<types::Timestamp> Runner::NextSessionEvent() const {
+    if (!mSession) {
+        return std::nullopt;
+    }
+    if (!mOpenCalled) {
+        return mSession->start;
+    }
+    if (!mClosingCalled) {
+        return std::max(mSession->start, mSession->end - Lead());
+    }
+    return mSession->end;  // then the next session is found
 }
 
 void Runner::End() {
@@ -372,10 +448,24 @@ types::Result<void> Runner::Run() {
         StartPoller(interval);
     }
     for (bool running = true; running;) {
-        // The deadline only paces the recorder's ticks when nothing arrives.
-        auto event = Pop(polling ? std::optional(
-                                       std::chrono::steady_clock::now() + interval)
-                                 : std::nullopt);
+        // The deadline paces the recorder's ticks when nothing arrives, and
+        // wakes the loop for the next session hook.
+        const auto steady = std::chrono::steady_clock::now();
+        std::optional<SteadyTime> deadline;
+        if (polling) {
+            deadline = steady + interval;
+        }
+        if (const auto due = NextSessionEvent()) {
+            // At least every minute, so a session the calendar shortens
+            // meanwhile is seen (CheckSession re-reads it).
+            const auto wait = std::clamp<types::Timestamp::duration>(
+                *due - mClock(), types::Timestamp::duration::zero(),
+                std::chrono::minutes(1));
+            const SteadyTime at = steady + wait;
+            deadline = deadline ? std::min(*deadline, at) : at;
+        }
+        auto event = Pop(deadline);
+        CheckSession(mClock());
         if (event) {
             running = Handle(*event);
         }
@@ -389,6 +479,7 @@ types::Result<void> Runner::Run() {
 }
 
 bool Runner::Drain() {
+    CheckSession(mClock());
     do {
         while (auto event = TryPop()) {
             if (!Handle(*event)) {
@@ -493,7 +584,10 @@ void Runner::HandleBar(const BarEvent& event) {
     const auto& window = mBars[{event.symbol, event.timeframe}];
     if (step && !window.empty()) {
         const types::Timestamp expected = window.back().open_time + *step;
-        if (event.bar.open_time > expected) {
+        // A gap that is all closed time (a night, a weekend, a holiday) has
+        // no bars to fetch.
+        if (event.bar.open_time > expected &&
+            mHours->AnyOpen(expected, event.bar.open_time)) {
             // Bars that closed while the stream was down are not replayed.
             auto gap = mData->GetBars(event.symbol, event.timeframe, expected,
                                       event.bar.open_time);

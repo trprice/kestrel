@@ -48,8 +48,14 @@ class FakeDataSource : public data::DataSource {
         return types::SymbolInfo{s, D("0.1"), D("0.00000001"), D("0.0001"), {}};
     }
 
+    std::shared_ptr<const types::MarketHours> Hours() const override {
+        return hours;
+    }
+
     data::QuoteCallback callback;
     Sub* mSub = nullptr;
+    std::shared_ptr<const types::MarketHours> hours =
+        types::MarketHours::AlwaysOpen();
 };
 
 types::Quote Q(const char* bid, const char* ask, const char* bid_size = nullptr,
@@ -138,6 +144,34 @@ TEST(PaperMarket, BuyFillsAtAskPlusSlippageWithTakerFee) {
     EXPECT_EQ((*positions)[0].symbol, "BTC/USD");
     EXPECT_EQ((*positions)[0].quantity, D("0.1"));
     EXPECT_EQ((*positions)[0].average_price, D("50025.0"));
+}
+
+// The US equity market: nothing fills while it is closed; orders rest until
+// the open, a market order included.
+TEST(PaperMarket, NothingFillsWhileTheMarketIsClosed) {
+    Fixture f;
+    f.data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), false);
+    // 2023-11-14 22:13 UTC: 17:13 in New York, after the close.
+    ASSERT_EQ(types::FormatIso8601(types::FromEpochSeconds(f.clock_seconds)),
+              "2023-11-14T22:13:20.000Z");
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    auto market =
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1"));
+    ASSERT_OK(market);
+    EXPECT_EQ(market->state, OrderState::kNew);
+    auto limit = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.05", "50010.0"));
+    ASSERT_OK(limit);
+    EXPECT_EQ(limit->state, OrderState::kNew);
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+
+    // The next morning at 10:00 New York time, the first quote fills both.
+    f.clock_seconds = 1'700'060'400;  // 2023-11-15T15:00:00Z
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    EXPECT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 2u);
 }
 
 TEST(PaperMarket, SellFillsAtBidMinusSlippageAndRealizesPnl) {

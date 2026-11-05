@@ -31,6 +31,14 @@ class ReplayDataSource : public data::DataSource {
                    std::vector<types::Quote> quotes);
     void SetSymbolInfo(const types::SymbolInfo& info);
     void SetTime(types::Timestamp now) { mNow = now; }
+    // The hours of the market the data came from (LoadReplayData takes the
+    // provider's); always open until set.
+    void SetHours(std::shared_ptr<const types::MarketHours> hours) {
+        mHours = std::move(hours);
+    }
+    std::shared_ptr<const types::MarketHours> Hours() const override {
+        return mHours;
+    }
 
     // The stored bars of a series, oldest first; empty if there are none.
     const std::vector<types::Bar>& Series(const types::Symbol& symbol,
@@ -82,6 +90,8 @@ class ReplayDataSource : public data::DataSource {
     std::map<types::Symbol, types::SymbolInfo> mInfo;
     std::optional<types::Timestamp> mNow;
     std::map<types::Timeframe, Stream> mStreams;
+    std::shared_ptr<const types::MarketHours> mHours =
+        types::MarketHours::AlwaysOpen();
 };
 
 }  // namespace kestrel::backtest

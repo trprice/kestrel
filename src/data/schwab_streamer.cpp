@@ -284,19 +284,6 @@ std::vector<SchwabKeyedBar> ParseSchwabChartBars(const json& content) {
     return out;
 }
 
-bool InUsRegularSession(types::Timestamp open_time) {
-    using namespace std::chrono;
-    static const time_zone* const kNewYork = locate_zone("America/New_York");
-    const auto local = kNewYork->to_local(floor<seconds>(open_time));
-    const auto day = floor<days>(local);
-    const weekday wd{day};
-    if (wd == Saturday || wd == Sunday) {
-        return false;
-    }
-    const auto time = local - day;
-    return time >= hours(9) + minutes(30) && time < hours(16);
-}
-
 SchwabBarAggregator::SchwabBarAggregator(std::chrono::minutes step)
     : mStep(step) {}
 

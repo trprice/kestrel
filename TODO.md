@@ -116,10 +116,8 @@ forming one; the volume can be fractional (REST truncates it); the bars match
 - [ ] See a login that the streamer refuses for a token Schwab has revoked
       (only an expired one, code 3, is in the document), and a
       `STOP_STREAMING` (code 30), live.
-- [ ] Market hours: the runner's gap backfill sees every overnight and
-      weekend as a gap (one wasted `GetBars` call each), a quiet feed outside
-      the session must not look like a dead one to any future stale-feed
-      check, and a strategy needs to know when the market is closed.
+- [ ] A future stale-feed check must use `DataSource::Hours()`: a quiet feed
+      outside the session is not a dead one.
 - [ ] Docs: a `config/schwab.example.toml` (docs/configuration.md says
       there is none).
 - [ ] Then the trading venue (see Venues under Projects). Its header's TODO
@@ -628,6 +626,18 @@ the header of the code concerned.
   `extended_hours` the regular session is taken as 09:30 to 16:00 New York
   time, so after-hours bars on an early-close day get through. Schwab has no
   hourly bars at all, and daily and longer ones from `GetBars` only.
+- Market hours (US stocks on Schwab): the calendar is Kestrel's rules
+  (holidays, early closes, the unscheduled closures since 2001), checked
+  against Schwab's `/markets` for the days it answers (from a week back to a
+  year ahead), asked in the background: until a date's answer is in (a
+  moment after its first use), the rules hold. Schwab can only restrict a
+  day (close it, open it later, close it earlier), never open one the rules
+  close, since it fills in the next year's holidays late. A closure announced
+  at short notice is known only once Schwab has it. Schwab's overnight session
+  (20:00 to 07:00) does not count as open: with `extended_hours` its bars
+  come, but orders are refused, and a gap in its bars is not backfilled. A bar
+  closing at the session's close arrives after it, so an order on it is
+  refused.
 - Schwab allows one streamer connection per user, so only one process can
   stream from Schwab at a time: when a second one logs in (another
   `kestrel_app`, or thinkorswim), the first stops streaming, logs an error and
@@ -764,6 +774,19 @@ the header of the code concerned.
 - [x] Binance.US order statuses with an unknown side, type or time in force
       fail with kParse instead of being read as a buy, a limit order or GTC
       (a missing time in force, as on market orders, is still GTC)
+
+### Market hours
+- [x] `DataSource::Hours()`: always open for crypto; for Schwab, the US
+      equity calendar (`UsEquityCalendar`, matching NYSE's published 2024 to
+      2027 holidays and early closes, and Schwab's `/markets` for the rest of
+      2026) checked against `/markets` (`SchwabCalendar`). `ParseIso8601`
+      reads UTC offsets.
+- [x] The runner skips gap backfill across closed time, refuses orders while
+      the market is closed (`SessionGatedVenue`), and calls
+      `OnSessionOpen` and `OnSessionClosing`; `Context::MarketOpen` and
+      `CurrentOrNextSession`. Backtests step their clock through the session
+      events. The paper venue fills nothing while closed. The bar stream's
+      regular-session filter uses the calendar (early closes, holidays).
 
 ### Build and operations hygiene
 - [x] `nlohmann_json`'s release tarball pinned with `URL_HASH`;

@@ -29,8 +29,9 @@ inline std::int64_t ToEpochSeconds(Timestamp t) {
         .count();
 }
 
-// Parses "YYYY-MM-DDTHH:MM:SS[.fraction]Z" (also "+00:00"). Fractions finer
-// than a millisecond are truncated.
+// Parses "YYYY-MM-DDTHH:MM:SS[.fraction]Z", or with an offset from UTC
+// instead of the Z ("+00:00", "-05:00", "+0530"), as an instant. Fractions
+// finer than a millisecond are truncated.
 Result<Timestamp> ParseIso8601(std::string_view text);
 // ParseIso8601, or a bare "YYYY-MM-DD" meaning midnight UTC that day.
 Result<Timestamp> ParseTimestamp(std::string_view text);

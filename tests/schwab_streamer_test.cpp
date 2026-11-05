@@ -523,20 +523,6 @@ TEST(SchwabChartBars, ParsedFromALiveMessage) {
     EXPECT_EQ(bar.volume, testing::D("244814.775721"));
 }
 
-TEST(SchwabChartBars, RegularSessionInNewYorkTime) {
-    // EST (UTC-5) in November.
-    EXPECT_FALSE(InUsRegularSession(At("2026-11-05T14:29:00Z")));
-    EXPECT_TRUE(InUsRegularSession(At("2026-11-05T14:30:00Z")));
-    EXPECT_TRUE(InUsRegularSession(At("2026-11-05T20:59:00Z")));
-    EXPECT_FALSE(InUsRegularSession(At("2026-11-05T21:00:00Z")));
-    // EDT (UTC-4) in July.
-    EXPECT_FALSE(InUsRegularSession(At("2026-07-01T13:29:00Z")));
-    EXPECT_TRUE(InUsRegularSession(At("2026-07-01T13:30:00Z")));
-    EXPECT_FALSE(InUsRegularSession(At("2026-07-01T20:00:00Z")));
-    // A Saturday.
-    EXPECT_FALSE(InUsRegularSession(At("2026-11-07T15:00:00Z")));
-}
-
 TEST(SchwabBarAggregator, OneMinuteBarsPassThroughOnce) {
     SchwabBarAggregator one(1min);
     const auto bar = Minute("2026-11-05T15:44:00Z", "1", "2", "1", "2", "5");

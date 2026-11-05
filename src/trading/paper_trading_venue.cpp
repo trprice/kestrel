@@ -85,6 +85,8 @@ PaperTradingVenue::PaperTradingVenue(
     std::shared_ptr<data::DataSource> data_source, PaperOptions options,
     std::function<types::Timestamp()> clock)
     : mDataSource(std::move(data_source)),
+      mHours(mDataSource ? mDataSource->Hours()
+                         : types::MarketHours::AlwaysOpen()),
       mOptions(std::move(options)),
       mClock(std::move(clock)) {
     for (const auto& [asset, amount] : mOptions.initial_balances) {
@@ -201,6 +203,9 @@ void PaperTradingVenue::Close(Order& order, OrderState state,
 
 std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::Evaluate(
     const Order& order, const types::Quote& quote, bool placing) const {
+    if (!mHours->IsOpen(mClock())) {
+        return std::nullopt;  // nothing trades while the market is closed
+    }
     const Side side = order.status.side;
     const auto ref = ReferencePrice(quote, side);
     if (!ref || ref->Sign() <= 0) {

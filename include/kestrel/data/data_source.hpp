@@ -8,6 +8,7 @@
 
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/market.hpp"
+#include "kestrel/types/market_hours.hpp"
 #include "kestrel/types/timeframe.hpp"
 
 namespace kestrel::data {
@@ -90,6 +91,14 @@ class DataSource {
     // Tick size, lot size and minimum order size; fetched once, then cached.
     virtual types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) = 0;
+
+    // When the provider's market can be traded: always, by default (crypto
+    // exchanges never close). Orders are refused while it is closed, the
+    // paper venue fills nothing, and the runner's gap backfill skips closed
+    // time (see strategy::Runner).
+    virtual std::shared_ptr<const types::MarketHours> Hours() const {
+        return types::MarketHours::AlwaysOpen();
+    }
 };
 
 }  // namespace kestrel::data

@@ -89,11 +89,6 @@ struct SchwabKeyedBar {
 // logged and skipped.
 std::vector<SchwabKeyedBar> ParseSchwabChartBars(const nlohmann::json& content);
 
-// Whether a 1-minute bar opening at `open_time` is in the US equity regular
-// session: 09:30 to 16:00 New York time, Monday to Friday. Holidays and early
-// closes are not known (on a holiday there are no bars anyway).
-bool InUsRegularSession(types::Timestamp open_time);
-
 // Builds the bars of one timeframe from one key's closed 1-minute bars, as
 // CHART_EQUITY streams only those. Bars open at multiples of the timeframe
 // from the epoch (so 30-minute bars at :00 and :30).

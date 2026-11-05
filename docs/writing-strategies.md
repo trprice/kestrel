@@ -32,6 +32,8 @@ All hooks are optional except `Name()` and `Needs()`.
 | `OnQuote` | for each quote, if `quotes` is set; quotes are conflated, so you may skip intermediate ones |
 | `OnFill` | once per fill of an order you placed, partial fills included |
 | `OnOrderUpdate` | when an order you placed changes state or fills further, ending with a closed state (filled, cancelled, rejected, expired) |
+| `OnSessionOpen` | on a market that closes (US stocks on Schwab), when a session opens; not for a session already open when the runner starts |
+| `OnSessionClosing` | `RunnerOptions::session_closing_lead` (5 minutes) before a session closes, with the close time, while orders are still accepted: the time to flatten; right after `OnStart` if the runner starts in that window |
 | `OnStop` | once at shutdown, after the streams are closed; `run` does not cancel open orders itself, so cancel the ones you want gone |
 
 Every hook gets a `Context&`, valid only during that call:
@@ -46,6 +48,9 @@ Every hook gets a `Context&`, valid only during that call:
 - `Bars(symbol, timeframe)`: the last closed bars, oldest first, up to
   `warmup_bars`. The span is invalidated by the next bar for that series, so
   do not keep it.
+- `MarketOpen()`: whether the market can be traded now, and
+  `CurrentOrNextSession()`: the session open now, or the next one. Always open
+  (and no session) on a crypto venue.
 
 ```cpp
 class MyStrategy : public strategy::Strategy {
@@ -97,6 +102,14 @@ class MyStrategy : public strategy::Strategy {
   limit, the venue, an order under the symbol's minimum), or succeed with an
   acknowledgement that is already closed (for example an unfillable
   fill-or-kill order). Neither produces a fill, so do not wait for one.
+- **Market hours:** on a market that closes, orders placed while it is closed
+  are refused (kRejected, "market closed: ..."), in paper, live and backtests
+  alike; cancels always go through, and the paper venue fills nothing until
+  the open. The session is the regular one (09:30 to 16:00 New York time for
+  US stocks, 13:00 on an early close), or with `[schwab] extended_hours` also
+  07:00 to 09:30 and 16:00 to 20:00. A bar that closes at the session's close
+  (the 15:30 30-minute bar, at 16:00) arrives after it, so an order it
+  prompts is refused: act on the bar before, or in `OnSessionClosing`.
 - **Fills arrive late:** `OnFill` always comes after the fill, even from a
   venue that pushes executions (an order that fills inside `PlaceOrder` is
   reported on a later event), and a polled venue can lag by

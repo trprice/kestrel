@@ -1,6 +1,7 @@
 #include "kestrel/backtest/backtest.hpp"
 
 #include "kestrel/strategy/sma_crossover.hpp"
+#include "kestrel/types/market_hours.hpp"
 #include "test_helpers.hpp"
 
 namespace {
@@ -313,6 +314,111 @@ TEST(BacktestTest, FailsWithoutSymbolInfo) {
     auto result = RunBacktest(data, Sma(), Options());
     ASSERT_OK(result);
     EXPECT_TRUE(result->fills.empty());
+}
+
+// A market open from 04:30 to 06:30 UTC on 1970-01-01 only.
+class EarlyCalendar : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        if (date != std::chrono::year_month_day{std::chrono::sys_days{}}) {
+            return std::nullopt;
+        }
+        const auto open = Hour(4) + std::chrono::minutes(30);
+        const auto close = Hour(6) + std::chrono::minutes(30);
+        return types::TradingDay{open, open, close, close};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+// Buys on every bar, and notes the session hooks and when they came.
+class SessionBuyer : public strategy::Strategy {
+   public:
+    std::string_view Name() const override { return "session_buyer"; }
+    strategy::Requirements Needs() const override {
+        strategy::Requirements r;
+        r.symbols = {kSymbol};
+        r.bar_timeframes = {Timeframe::kH1};
+        r.warmup_bars = 1;
+        return r;
+    }
+    void OnBar(strategy::Context& context, const types::Symbol&, Timeframe,
+               const types::Bar&) override {
+        types::OrderRequest r;
+        r.symbol = kSymbol;
+        r.side = types::Side::kBuy;
+        r.type = types::OrderType::kMarket;
+        r.quantity = D("0.01");
+        events.push_back(
+            "bar " + types::FormatIso8601(context.Now()) +
+            (context.Venue().PlaceOrder(r) ? " bought" : " refused"));
+    }
+    void OnSessionOpen(strategy::Context& context) override {
+        events.push_back("open " + types::FormatIso8601(context.Now()));
+    }
+    void OnSessionClosing(strategy::Context& context,
+                          types::Timestamp) override {
+        events.push_back("closing " + types::FormatIso8601(context.Now()));
+    }
+    std::vector<std::string>& events;
+    explicit SessionBuyer(std::vector<std::string>& out) : events(out) {}
+};
+
+TEST(BacktestTest, SessionHooksAtTheirReplayTimesAndNoOrdersWhileClosed) {
+    auto data = Data(kCloses);
+    data->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<EarlyCalendar>(), false));
+    std::vector<std::string> events;
+    auto result =
+        RunBacktest(data, std::make_unique<SessionBuyer>(events), Options());
+    ASSERT_OK(result);
+    // Bars close on the hour: 05:00 and 06:00 are in the session, 07:00 and
+    // 08:00 after it.
+    EXPECT_EQ(events, (std::vector<std::string>{
+                          "open 1970-01-01T04:30:00.000Z",
+                          "bar 1970-01-01T05:00:00.000Z bought",
+                          "bar 1970-01-01T06:00:00.000Z bought",
+                          "closing 1970-01-01T06:25:00.000Z",
+                          "bar 1970-01-01T07:00:00.000Z refused",
+                          "bar 1970-01-01T08:00:00.000Z refused"}));
+    EXPECT_EQ(result->fills.size(), 2u);
+}
+
+// A market open from 07:30 to 08:30 UTC on 1970-01-01 only.
+class LateCalendar : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        if (date != std::chrono::year_month_day{std::chrono::sys_days{}}) {
+            return std::nullopt;
+        }
+        const auto open = Hour(7) + std::chrono::minutes(30);
+        const auto close = Hour(8) + std::chrono::minutes(30);
+        return types::TradingDay{open, open, close, close};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+// The last bar closes at 08:00; the closing hook, at 08:25, is still before
+// the backtest's end and must come.
+TEST(BacktestTest, SessionHooksAfterTheLastEventStillCome) {
+    auto data = Data(kCloses);
+    data->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<LateCalendar>(), false));
+    std::vector<std::string> events;
+    auto options = Options();
+    options.end = Hour(9);
+    auto result =
+        RunBacktest(data, std::make_unique<SessionBuyer>(events), options);
+    ASSERT_OK(result);
+    ASSERT_FALSE(events.empty());
+    EXPECT_EQ(events.back(), "closing 1970-01-01T08:25:00.000Z");
 }
 
 class QuoteStrategy : public strategy::Strategy {

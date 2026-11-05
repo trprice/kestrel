@@ -61,6 +61,7 @@ add_library(kestrel
   src/types/symbol.cpp
   src/types/timeframe.cpp
   src/types/market.cpp
+  src/types/market_hours.cpp
   src/util/hmac.cpp
   src/util/json.cpp
   src/util/rate_limiter.cpp
@@ -88,6 +89,7 @@ add_library(kestrel
   src/trading/order_rules.cpp
   src/trading/pnl_tracker.cpp
   src/trading/risk_gate.cpp
+  src/trading/session_gated_venue.cpp
   src/trading/paper_trading_venue.cpp
   src/trading/kraken_trading_venue.cpp
   src/trading/schwab_trading_venue.cpp
@@ -199,6 +201,7 @@ if(KESTREL_BUILD_TESTS)
     tests/decimal_test.cpp
     tests/symbol_test.cpp
     tests/timeframe_test.cpp
+    tests/market_hours_test.cpp
     tests/util_test.cpp
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp

@@ -70,7 +70,11 @@ production endpoints). `[schwab]` takes `redirect_uri` (default
 Schwab developer portal exactly, `token_file`, and `extended_hours` (default
 `false`): intraday bars from outside the regular session too (pre-market,
 after hours and the overnight session), from `GetBars` and from the bar
-stream alike.
+stream alike, and orders in Schwab's extended hours (07:00 to 09:30 and the
+close to 20:00 New York time; not overnight). Without it, orders are refused
+outside the regular session. The trading days, holidays and early closes come
+from Kestrel's US equity calendar, checked against Schwab's `/markets` for the
+coming days.
 
 Schwab allows one streamer connection per user, so when another one logs in
 (another `kestrel_app`, or thinkorswim streaming quotes) Kestrel's quote and

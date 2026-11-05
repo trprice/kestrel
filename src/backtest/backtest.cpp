@@ -45,6 +45,7 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
                          "the end of a backtest must be after its start");
     }
     auto replay = std::make_shared<ReplayDataSource>();
+    replay->SetHours(source.Hours());
     for (const types::Symbol& symbol : needs.symbols) {
         auto info = source.GetSymbolInfo(symbol);
         if (!info) {
@@ -263,7 +264,19 @@ types::Result<BacktestResult> RunBacktest(
         }
     };
 
+    // Session hooks due before `until` run at their own times.
+    const auto run_sessions = [&](types::Timestamp until) {
+        while (const auto due = runner.NextSessionEvent()) {
+            if (*due >= until) {
+                break;
+            }
+            now = std::max(now, *due);
+            data->SetTime(now);
+            runner.Drain();
+        }
+    };
     for (const Replayed& item : timeline) {
+        run_sessions(item.time);
         now = item.time;
         data->SetTime(now);
 
@@ -290,6 +303,8 @@ types::Result<BacktestResult> RunBacktest(
         observe(*item.symbol, needs.quotes ? std::nullopt
                                            : std::optional(item.bar.close));
     }
+    // And those after the last event, up to the end.
+    run_sessions(options.end);
     runner.End();
 
     BacktestResult result;
