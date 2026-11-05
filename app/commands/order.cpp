@@ -6,14 +6,85 @@
 #include "common.hpp"
 #include "kestrel/factory.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
+#include "kestrel/trading/risk_gate.hpp"
 
 namespace kestrel::app {
 
 namespace {
 
+// Passes everything to the Binance.US venue except PlaceOrder, which goes to
+// its test endpoint instead, so `order --test` goes through the risk gate
+// like a real order and places nothing.
+class TestEndpointVenue final : public trading::TradingVenue {
+   public:
+    explicit TestEndpointVenue(
+        std::shared_ptr<trading::BinanceUSTradingVenue> venue)
+        : mVenue(std::move(venue)) {}
+
+    std::string_view Name() const override { return mVenue->Name(); }
+    types::Result<types::OrderAcknowledgement> PlaceOrder(
+        const types::OrderRequest& request) override {
+        if (auto tested = mVenue->TestOrder(request); !tested) {
+            return std::unexpected(tested.error());
+        }
+        return types::OrderAcknowledgement{
+            "", request.client_order_id, types::OrderState::kNew, types::Now()};
+    }
+    types::Result<trading::CancelOutcome> CancelOrder(
+        const std::string& order_id) override {
+        return mVenue->CancelOrder(order_id);
+    }
+    types::Result<std::vector<std::string>> CancelAll() override {
+        return mVenue->CancelAll();
+    }
+    types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override {
+        return mVenue->GetOpenOrders();
+    }
+    types::Result<types::OrderStatus> GetOrder(
+        const std::string& order_id) override {
+        return mVenue->GetOrder(order_id);
+    }
+    types::Result<std::vector<types::Fill>> GetFills(
+        types::Timestamp since) override {
+        return mVenue->GetFills(since);
+    }
+    types::Result<std::vector<types::Position>> GetPositions() override {
+        return mVenue->GetPositions();
+    }
+    types::Result<std::vector<types::Balance>> GetBalances() override {
+        return mVenue->GetBalances();
+    }
+    types::Result<std::unique_ptr<data::Subscription>> StreamExecutions(
+        trading::ExecutionCallback callback) override {
+        return mVenue->StreamExecutions(std::move(callback));
+    }
+
+   private:
+    std::shared_ptr<trading::BinanceUSTradingVenue> mVenue;
+};
+
+// The close of the newest 1-minute bar in the last 15 minutes, to value a
+// market order by.
+std::optional<types::Decimal> RecentPrice(data::DataSource& data,
+                                          const types::Symbol& symbol) {
+    const auto now = types::Now();
+    auto bars = data.GetBars(symbol, types::Timeframe::kM1,
+                             now - std::chrono::minutes(15), now);
+    if (!bars || bars->empty()) {
+        spdlog::warn(
+            "order: no recent 1-minute bar for {} ({}), so a market "
+            "order cannot be valued for the risk limits",
+            symbol, bars ? "none" : bars.error().ToString());
+        return std::nullopt;
+    }
+    return bars->back().close;
+}
+
 // One order by hand, for checking a venue: --test sends it to the venue's test
 // endpoint (nothing is placed), --confirm places it for real. One of the two
-// must be given, so a real order is never sent by accident.
+// must be given, so a real order is never sent by accident. Either way it
+// passes the [risk] limits that apply to one order (ManualOrderLimits) unless
+// --no-risk is given.
 struct OrderArgs {
     std::string side;
     std::string symbol;
@@ -25,6 +96,7 @@ struct OrderArgs {
     bool post_only = false;
     bool test = false;
     bool confirm = false;
+    bool no_risk = false;
 };
 
 class OrderCommand : public Command {
@@ -55,27 +127,51 @@ class OrderCommand : public Command {
             spdlog::error("startup: {}", components.error().ToString());
             return 1;
         }
-        auto& venue = *components->venue;
-
+        std::shared_ptr<trading::TradingVenue> venue =
+            std::move(components->venue);
         if (mArgs.test) {
-            auto* binance =
-                dynamic_cast<trading::BinanceUSTradingVenue*>(&venue);
+            auto binance =
+                std::dynamic_pointer_cast<trading::BinanceUSTradingVenue>(
+                    venue);
             if (!binance) {
                 spdlog::error("order --test: {} has no test endpoint",
-                              venue.Name());
+                              venue->Name());
                 return 2;
             }
-            if (auto tested = binance->TestOrder(*request); !tested) {
+            venue = std::make_shared<TestEndpointVenue>(std::move(binance));
+        }
+
+        const auto limits = ManualOrderLimits(config.GetRiskLimits());
+        if (mArgs.no_risk) {
+            spdlog::warn("order: --no-risk: not checked against [risk]");
+        } else if (!limits) {
+            spdlog::warn(
+                "order: no [risk] limit applies to one order (the allowlist, "
+                "max_order_notional, max_position_notional or "
+                "max_open_orders), so it is not checked");
+        } else {
+            auto gate =
+                std::make_shared<trading::RiskGatedVenue>(venue, *limits);
+            if (request->type == types::OrderType::kMarket) {
+                if (auto price = RecentPrice(*components->data_source,
+                                             request->symbol)) {
+                    gate->NoteReferencePrice(request->symbol, *price);
+                }
+            }
+            venue = std::move(gate);
+        }
+
+        auto ack = venue->PlaceOrder(*request);
+        if (mArgs.test) {
+            if (!ack) {
                 spdlog::error("order --test: refused: {}",
-                              tested.error().ToString());
+                              ack.error().ToString());
                 return 1;
             }
-            std::cout << "test order accepted by " << venue.Name()
+            std::cout << "test order accepted by " << venue->Name()
                       << " (nothing was placed)\n";
             return 0;
         }
-
-        auto ack = venue.PlaceOrder(*request);
         if (!ack) {
             spdlog::error("order: {}", ack.error().ToString());
             return 1;
@@ -217,6 +313,9 @@ void AddOrderCommand(CLI::App& app, CommandSlot& slot) {
     sub->add_flag("--test", args->test,
                   "Send to the venue's test endpoint: checked, not placed");
     sub->add_flag("--confirm", args->confirm, "Place the order for real");
+    sub->add_flag("--no-risk", args->no_risk,
+                  "Skip the [risk] limits (e.g. to exit a position larger "
+                  "than max_order_notional)");
     sub->callback(
         [&slot, args] { slot = std::make_unique<OrderCommand>(*args); });
 }

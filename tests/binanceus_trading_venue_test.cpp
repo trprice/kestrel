@@ -404,6 +404,21 @@ TEST(BinanceUSTradingVenue, FailsTheCallOnAMalformedTrade) {
     EXPECT_EQ(fills.error().category, types::ErrorCategory::kParse);
 }
 
+TEST(BinanceUSTradingVenue, AnUnknownSideOrTypeFailsTheCall) {
+    for (const auto& [type, side] :
+         {std::pair<const char*, const char*>{"LIMIT", "SHORT"},
+          {"OCO", "BUY"},
+          {"", "SELL"}}) {
+        Fixture f;
+        auto venue = f.Venue();
+        f.http->Push("/api/v3/order", Order("ZECUSDT", 31, "NEW", type, side,
+                                            "1290.00", "0.01", "0.0", "0.0"));
+        auto order = venue->GetOrder("31");
+        ASSERT_FALSE(order.has_value()) << type << " " << side;
+        EXPECT_EQ(order.error().category, types::ErrorCategory::kParse);
+    }
+}
+
 TEST(BinanceUSTradingVenue, ReportsNoPositions) {
     Fixture f;
     auto venue = f.Venue();

@@ -54,7 +54,7 @@ for the config file.
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
-| `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] (--test \| --confirm)` | one order on the live venue; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
+| `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] [--no-risk] (--test \| --confirm)` | one order on the live venue, checked against the `[risk]` limits that apply to one order; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
 | `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
 | `authorize [--status]` | Schwab only: authorizes Kestrel to use the account and saves its tokens; `--status` shows when they expire |
 
@@ -199,10 +199,12 @@ share the account's balances. The read-only `account` command is safe to use
 at any time.
 
 Also mind what was on the account before `run` started. Binance.US spot has no
-positions, so `GetPositions` returns nothing and the risk gate's
-`max_position_notional` and the inventory only know about what the strategy
-built up this run. Holdings the account already had are invisible to the gate:
-start from an empty account or sub-account.
+positions, so `GetPositions` returns nothing, and the risk gate counts what it
+has seen fill since the run started instead: `max_position_notional`, and the
+sells let through once a halt or a loss limit blocks entries, only know about
+what the strategy built up this run. Holdings the account already had are
+invisible to the gate (a halted gate will not let them be sold; `order
+--no-risk` can): start from an empty account or sub-account.
 
 If `run` dies without stopping cleanly (a crash, `kill -9`, or a second
 Ctrl-C), its strategy's orders stay open until the next `run` cancels them;
@@ -247,3 +249,13 @@ the symbol's tick and lot and refused before they are sent if they fall under
 its minimum size or value. Every order gets a `kst-...` client order ID unless
 `--client-id` gives one. A placement that times out is never sent again: it
 is looked up by its client order ID instead.
+
+**Risk limits apply to manual orders too.** With `--test` or `--confirm`, the
+order goes through the risk gate with the `[risk]` limits one order can trip:
+`allowed_symbols`, `max_order_notional`, `max_position_notional`,
+`max_open_orders` and `max_price_age`. The loss, drawdown and order-count
+limits are left out, since a process that places one order would only count
+them from its own start. A market order is valued at the newest 1-minute bar's
+close, and is refused if there is none in the last 15 minutes and a notional
+limit is set. `--no-risk` skips the gate, with a warning: for an exit larger
+than `max_order_notional`, say.

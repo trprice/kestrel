@@ -114,8 +114,7 @@ std::optional<Decimal> RiskGatedVenue::Unrealized(types::Timestamp now) const {
     return total;
 }
 
-types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
-    types::Timestamp now) {
+types::Result<void> RiskGatedVenue::CatchUpFills(types::Timestamp now) {
     if (!mCounting) {
         if (auto started = StartLossCount(); !started) {
             return std::unexpected(started.error());
@@ -151,6 +150,14 @@ types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
     });
     if (DayOf(now) != mDay) {
         NewDay(DayOf(now));
+    }
+    return {};
+}
+
+types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
+    types::Timestamp now) {
+    if (auto caught = CatchUpFills(now); !caught) {
+        return std::unexpected(caught.error());
     }
 
     if (mLimits.max_daily_loss) {
@@ -226,6 +233,7 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
     }
 
     std::optional<std::string> blocked;
+    bool caught_up = false;  // the fills are applied to mPnl
     if (mHalted) {
         blocked = "trading is halted";
     } else if (mLimits.max_daily_loss || mLimits.max_consecutive_losses ||
@@ -236,6 +244,7 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
                           checked.error().ToString());
         }
         blocked = *checked;
+        caught_up = true;
     }
     if (mLimits.max_orders_per_day) {
         if (DayOf(now) != mOrderDay) {
@@ -249,17 +258,32 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
     }
 
     // Holdings are needed to tell whether a blocked order reduces a position
-    // and to size positions.
-    std::vector<types::Position> positions;
+    // and to size positions: the venue's, or what the gate has seen fill
+    // since it started counting if that is more. A venue may report none
+    // (Binance.US spot has no positions), and a halted gate must still let
+    // the exit of what it bought through.
+    Decimal held;
     if (blocked || mLimits.max_position_notional) {
         auto fetched = mVenue->GetPositions();
         if (!fetched) {
             return Reject("could not read positions: " +
                           fetched.error().ToString());
         }
-        positions = std::move(*fetched);
+        held = Held(*fetched, request.symbol);
+        auto caught = caught_up ? types::Result<void>{} : CatchUpFills(now);
+        if (caught) {
+            held = std::max(held, mPnl.Held(request.symbol));
+        } else if (!blocked) {
+            return Reject("could not read fills: " + caught.error().ToString());
+        } else {
+            // Only an exit can pass now: the venue's position alone is safe
+            // to sell against, and refusing would keep the position open.
+            spdlog::warn(
+                "risk: could not read fills, so only the venue's "
+                "position counts as held: {}",
+                caught.error().ToString());
+        }
     }
-    const Decimal held = Held(positions, request.symbol);
     const bool reduces =
         request.side == Side::kSell && request.quantity <= held;
     if (blocked && !reduces) {

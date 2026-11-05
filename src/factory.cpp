@@ -506,6 +506,24 @@ Result<std::optional<trading::RiskLimits>> ResolveRiskLimits(
     return cfg.GetRiskLimits(strategy);
 }
 
+std::optional<trading::RiskLimits> ManualOrderLimits(
+    const std::optional<trading::RiskLimits>& limits) {
+    if (!limits) {
+        return std::nullopt;
+    }
+    trading::RiskLimits manual;
+    manual.allowed_symbols = limits->allowed_symbols;
+    manual.max_order_notional = limits->max_order_notional;
+    manual.max_position_notional = limits->max_position_notional;
+    manual.max_open_orders = limits->max_open_orders;
+    manual.max_price_age = limits->max_price_age;
+    if (manual.allowed_symbols.empty() && !manual.max_order_notional &&
+        !manual.max_position_notional && !manual.max_open_orders) {
+        return std::nullopt;
+    }
+    return manual;
+}
+
 Result<void> ValidateForRun(const config::Configuration& cfg,
                             const std::optional<trading::RiskLimits>& limits) {
     if (cfg.GetMode() != config::Mode::kLive) {

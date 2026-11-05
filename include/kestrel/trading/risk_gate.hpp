@@ -77,7 +77,10 @@ struct RiskLimits {
 //
 // An order that reduces a position (a sell of no more than is held) is the
 // only kind allowed while trading is halted or a loss, drawdown or order-count
-// limit is hit.
+// limit is hit. What is held is the venue's position, or what the gate has
+// seen fill since its loss count started if that is more: a venue that
+// reports no positions (Binance.US spot) still has its exits let through, and
+// max_position_notional counts what was bought since then.
 //
 // Thread-safe. Orders are checked and placed one at a time, so two concurrent
 // orders cannot together exceed a limit; that means the venue call is made
@@ -150,9 +153,11 @@ class RiskGatedVenue : public TradingVenue {
 
     // All require mMutex.
     types::Result<void> StartLossCount();
-    // Brings the P&L up to date with the venue's fills and returns why the
-    // daily loss, consecutive loss or drawdown limit blocks trading, if one
-    // does.
+    // Starts the loss count if needed and applies the venue's fills since
+    // the last call to mPnl.
+    types::Result<void> CatchUpFills(types::Timestamp now);
+    // CatchUpFills, then why the daily loss, consecutive loss or drawdown
+    // limit blocks trading, if one does.
     types::Result<std::optional<std::string>> CheckLosses(types::Timestamp now);
     // The unrealized P&L of everything held, or nullopt if a held symbol has
     // no usable reference price.

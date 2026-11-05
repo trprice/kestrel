@@ -137,15 +137,30 @@ std::string OptionalText(const json& object, const char* key) {
     return {};
 }
 
-types::OrderType OrderTypeFrom(const std::string& type) {
+// Unknown values are errors, not guesses: an order read wrong would
+// mislead the runner's order tracking.
+Result<types::Side> SideFrom(const std::string& side) {
+    if (side == "BUY") {
+        return types::Side::kBuy;
+    }
+    if (side == "SELL") {
+        return types::Side::kSell;
+    }
+    return std::unexpected(Malformed("unknown order side \"" + side + "\""));
+}
+
+Result<types::OrderType> OrderTypeFrom(const std::string& type) {
     if (type == "MARKET") {
         return types::OrderType::kMarket;
+    }
+    if (type == "LIMIT" || type == "LIMIT_MAKER") {
+        return types::OrderType::kLimit;
     }
     if (type == "STOP_LOSS" || type == "STOP_LOSS_LIMIT" ||
         type == "TAKE_PROFIT" || type == "TAKE_PROFIT_LIMIT") {
         return types::OrderType::kStop;
     }
-    return types::OrderType::kLimit;  // LIMIT, LIMIT_MAKER
+    return std::unexpected(Malformed("unknown order type \"" + type + "\""));
 }
 
 types::TimeInForce TimeInForceFrom(const std::string& tif) {
@@ -201,13 +216,25 @@ Result<types::OrderStatus> ParseOrder(const json& order) {
     if (!symbol) {
         return std::unexpected(symbol.error());
     }
+    auto parsed_side = SideFrom(*side);
+    if (!parsed_side) {
+        return std::unexpected(parsed_side.error());
+    }
+    auto type = TextMember(order, "type");
+    if (!type) {
+        return std::unexpected(type.error());
+    }
+    auto parsed_type = OrderTypeFrom(*type);
+    if (!parsed_type) {
+        return std::unexpected(parsed_type.error());
+    }
 
     types::OrderStatus out;
     out.order_id = std::to_string(*id);
     out.client_order_id = OptionalText(order, "clientOrderId");
     out.symbol = *symbol;
-    out.side = *side == "SELL" ? types::Side::kSell : types::Side::kBuy;
-    out.type = OrderTypeFrom(OptionalText(order, "type"));
+    out.side = *parsed_side;
+    out.type = *parsed_type;
     out.time_in_force = TimeInForceFrom(OptionalText(order, "timeInForce"));
     out.quantity = *quantity;
     out.filled_quantity = *filled;

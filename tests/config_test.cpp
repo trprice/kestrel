@@ -365,6 +365,32 @@ TEST(Factory, ResolveRiskLimitsRefusesAnUnknownStrategySection) {
     EXPECT_EQ((*resolved)->max_open_orders, 1u);
 }
 
+TEST(Factory, ManualOrdersKeepOnlyTheLimitsOneOrderCanTrip) {
+    EXPECT_FALSE(ManualOrderLimits(std::nullopt));
+    trading::RiskLimits losses;
+    losses.max_daily_loss = types::Decimal::FromInt(100);
+    losses.max_orders_per_minute = 5;
+    EXPECT_FALSE(ManualOrderLimits(losses));  // none applies to one order
+
+    trading::RiskLimits all = losses;
+    all.allowed_symbols = {"BTC/USDT"};
+    all.max_order_notional = types::Decimal::FromInt(50);
+    all.max_position_notional = types::Decimal::FromInt(500);
+    all.max_open_orders = 3;
+    all.max_drawdown = types::Decimal::FromInt(10);
+    all.max_price_age = std::chrono::milliseconds(5000);
+    const auto manual = ManualOrderLimits(all);
+    ASSERT_TRUE(manual);
+    EXPECT_EQ(manual->allowed_symbols, all.allowed_symbols);
+    EXPECT_EQ(manual->max_order_notional, all.max_order_notional);
+    EXPECT_EQ(manual->max_position_notional, all.max_position_notional);
+    EXPECT_EQ(manual->max_open_orders, all.max_open_orders);
+    EXPECT_EQ(manual->max_price_age, all.max_price_age);
+    EXPECT_FALSE(manual->max_daily_loss);
+    EXPECT_FALSE(manual->max_orders_per_minute);
+    EXPECT_FALSE(manual->max_drawdown);
+}
+
 TEST(Config, EmptyOrMissingRiskMeansNoLimits) {
     auto none = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
     ASSERT_OK(none);

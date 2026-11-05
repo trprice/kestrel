@@ -429,6 +429,61 @@ TEST_F(RiskGateTest, HaltCancelsEverythingAndStopsNewPositions) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
 }
 
+// Binance.US spot reports no positions: the gate's own count of what filled
+// since it started tells what can be sold.
+TEST_F(RiskGateTest, AHaltLetsAnExitThroughOnAVenueWithoutPositions) {
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("f1", Side::kBuy, "2", "100", now)};
+    ASSERT_OK(gate->Halt("test"));
+
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ExpectRejected(Market(Side::kSell, "2.5"));  // more than was bought
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "2")));
+}
+
+TEST_F(RiskGateTest, ALossLimitLetsAnExitThroughOnAVenueWithoutPositions) {
+    limits.max_daily_loss = D("50");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("f1", Side::kBuy, "2", "100", now),
+                    FillOf("f2", Side::kSell, "1", "40", now)};  // -60
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+}
+
+TEST_F(RiskGateTest, PositionNotionalCountsWhatFilledOnAVenueWithoutPositions) {
+    limits.max_position_notional = D("150");
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("f1", Side::kBuy, "1", "100", now)};
+    ExpectRejected(Market(Side::kBuy, "1"));  // 2 held would be 200
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "0.5")));
+}
+
+TEST_F(RiskGateTest, WithoutFillsAHaltStillLetsTheVenuesPositionOut) {
+    venue->positions = {PositionOf("3")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    ASSERT_OK(gate->Halt("test"));
+    venue->fail_fills = true;
+    ExpectRejected(Market(Side::kSell, "3.5"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "3")));
+}
+
+TEST_F(RiskGateTest, WithoutFillsPositionNotionalFailsClosed) {
+    limits.max_position_notional = D("1000");
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("1"));
+    ASSERT_OK(gate->ResetDailyBaseline());
+    venue->fail_fills = true;
+    ExpectRejected(Market(Side::kBuy, "1"));
+}
+
 // A venue whose PlaceOrder waits for the test, and which notes how many
 // orders had landed at each CancelAll.
 class SlowVenue : public RecordingVenue {

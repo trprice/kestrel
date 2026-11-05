@@ -1,5 +1,80 @@
 # Kestrel TODO
 
+The strategy, risk and backtest code runs on Binance.US, in paper mode and
+live; `run` refuses live mode on any other provider until its trading venue
+is implemented (`HasLiveVenue` in `factory.cpp`). The Kraken and Schwab
+trading venues are stubs (see Venues under Projects); Schwab's market data is
+real (see Schwab data source under In progress).
+
+Order of this file: Priorities, In progress, Projects (each by priority), then
+the reference sections, Known limitations and Done.
+
+## Priorities
+
+From a code review (Nov 5 2026), each claim checked against the code. Work
+the groups in order.
+
+### 1. Live-money safety (before a live Binance.US run)
+Done (Nov 5 2026): the risk gate's holdings on a venue without positions,
+the risk limits on `order`, and Binance.US order statuses that fail closed.
+See Done.
+
+### 2. The Schwab and recording path in use now
+- [ ] Retry Schwab `GetBars` with `util::Retry`, as the other providers do
+      (`src/data/schwab_data_source.cpp`): one 429 or timeout on a page
+      aborts a backtest download or the runner's warmup and gap backfill.
+- [ ] `QuoteStore::Save`: `ON CONFLICT (venue, symbol, received_time, seq)
+      DO NOTHING`, as the other stores have. A save of more than 1000 quotes
+      is several inserts; if a later one fails, `QuoteWriter::Flush` retries
+      them all, the saved ones violate the unique constraint every time, and
+      the buffer ends up dropping quotes.
+- [ ] Database timeouts: `connect_timeout`, TCP keepalives and a
+      `statement_timeout` (`src/db/database.cpp`). A dead connection can hang
+      the stream thread that writes bars (`BarStore::MakeStreamSink`) or
+      numbers quotes (`QuoteWriter::Push`'s first `LastSeq`).
+- [ ] Unknown keys are errors in every config section, not only `[risk]`,
+      `[recording]`, `[http]` and `[strategy]`: a misspelled `token_file` in
+      `[schwab]` falls back to the default, a misspelled `slippage_bps`
+      changes a backtest silently.
+
+### 3. Quick hygiene
+- [ ] `URL_HASH` on the `nlohmann_json` download
+      (`cmake/KestrelDependencies.cmake`); `.dockerignore` the `build-*/`
+      directories (several GB sent with every image build).
+- [ ] `scripts/setup_database.sh` passes the generated password with
+      `psql -v`, so it shows in the process list, contrary to its comment:
+      send it on stdin.
+- [ ] Warning flags on `kestrel_app` and the tests too (only the library has
+      `-Wall -Wextra -Wpedantic`), then fix what they find.
+- [ ] Schwab token file: a unique temporary name and an fsync before the
+      rename (`src/config/schwab_token_store.cpp`), so `authorize` and a
+      running renewal cannot clobber each other and a power loss cannot leave
+      it empty.
+
+### 4. Robustness, when convenient
+- [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
+      listeners' lock. The `ExecutionCallback` contract forbids calling back
+      into the venue, so nothing deadlocks today; calling them outside the
+      lock would make a contract breach harmless.
+- [ ] Refuse a `limit_price` on a `kStop` (stop-market) request instead of
+      ignoring it.
+- [ ] Quote `seq` is numbered per process: two recorders of one symbol
+      interleave. Check the stored maximum at each flush, or number in SQL.
+- [ ] Push an instant fill-or-kill expiry in the paper venue to
+      `StreamExecutions` listeners (the acknowledgement already says it).
+- [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
+- [ ] Database rows that do not parse: `std::stoll`/`stod` throw and
+      `sql::ParseDecimal` reads zero; return kParse instead.
+- [ ] The backtest summary keeps every mark of the run; only the markout
+      horizons' tail is needed.
+
+### 5. Before the Kraken or Schwab trading venue lands
+- [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
+      whether `Authorization` goes to another host.
+- [ ] Keep `BinanceUSApi`'s rule: a request that is not idempotent is never
+      retried (`util::Retry` itself retries a timeout).
+- [ ] A stop-limit order type, if a venue needs one.
+
 ## In progress
 
 ### Strategy system and risk gate
@@ -72,22 +147,206 @@ forming one; the volume can be fractional (REST truncates it); the bars match
       on them. Pushed executions (ACCT_ACTIVITY) would also have to share
       `SchwabStreamer`'s connection.
 
-## Status
+## Projects
 
-The strategy, risk and backtest code runs on Binance.US, in paper mode and
-live; `run` refuses live mode on any other provider until its trading venue
-is implemented (`HasLiveVenue` in `factory.cpp`).
+Sections in priority order: safety first, then what is in use.
 
-### Stubs
-- [ ] The Kraken and Schwab trading venues return `kNotImplemented`; each
-      header has a TODO listing the endpoints and auth needed. Schwab's
-      market data (bars, symbol info, the quote and bar streams) and
-      authorization (`authorize`, token renewal, `SchwabApi`) are real. See
-      Schwab data source under In progress, and Venues under Projects.
+### Risk
+- [ ] Portfolio-level limits (total exposure across symbols, concentration)
+- [ ] Drawdown that is measured continuously (the `max_drawdown` limit is
+      sampled at order attempts only), and a version that halts and closes
+      the position instead of only blocking entries
+- [ ] Stop-loss support: a per-position loss limit (`max_loss_per_position`)
+      and a risk-per-trade percentage need orders that carry a stop, which
+      `SmaCrossover` does not place
+- [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
+      reports that use them
 
-### Not started
-- [ ] Indicators, more strategies, agent access (see Strategies under
-      Projects)
+### Venues
+Each stub's header has a TODO comment listing the endpoints and auth it needs.
+- [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
+      history, signed with the existing HMAC helper. Data source is already
+      done.
+- [ ] **Schwab trading venue.** Orders, open orders, fills, positions and
+      balances on the Trader API, after the data source (see Schwab data
+      source under In progress). It can reuse `SchwabAuth` and `SchwabApi`,
+      which already handle tokens, renewal and retrying once after a 401;
+      order placement has its own rate limit.
+- [ ] **Binance.US trading venue.** The data source is done. The venue is
+      reads checked against the live API on 2026-10-28 with `kestrel_app
+      account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
+      STOP_LOSS; `kst-` client order IDs; never resent, looked up by client
+      ID after a timeout or 5xx), `CancelOrder` (-2011 looked up to tell
+      filled from closed), `CancelAll`, an order-rate limit (9/s, 10 burst,
+      against Binance's 100 per 10 s), and the minimum order value
+      (`SymbolInfo::min_notional`, also enforced by the paper venue). The test
+      endpoint accepted limit buy, market buy and limit sell requests on
+      2026-10-29 and refused a price under the band (-1013 PERCENT_PRICE).
+      A real round trip on 2026-10-29 (limit buy 0.002 ZEC at 700, 46%
+      under the market, order 412845258) checked the rest: the RESULT reply,
+      the open order and 1.40 USDT locked, a cancel from a fresh process
+      (symbol found by lookup), the balance released with no fill, and a
+      second cancel answered -2011 and reported as already closed.
+      Leftover orders: `Runner::Begin` now cancels every order open on the
+      configured symbols before `OnStart`, and refuses to start if it cannot
+      (Kestrel assumes it alone controls the account's orders while it runs).
+      `HasLiveVenue` is now true for Binance.US, so `run` trades live on it.
+      Exchange info advertises 6000
+      request weight a minute, not 1200; the client now keeps to 2400 (it
+      was 960).
+- [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
+      until a fill shows in `GetFills`, and the venue's clock against ours.
+      Needs order placement first; store it beside `venue_latency`.
+- [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
+      the API key (no new credentials), keepalive about every 30 minutes,
+      `executionReport` to fills and order states, a REST catch-up after a
+      reconnect, and the event time against ours for the fill-visibility
+      latency. Check the current Binance.US docs first: Binance.com has been
+      moving from listen keys to a WebSocket API subscription. Until it lands
+      the venue is polled, and polling `GetFills` (weight 10) and
+      `GetOpenOrders` (weight 3) every second uses about 780 of the 2400
+      weight per minute the client keeps to, per symbol, so a live run on
+      several symbols needs a longer `fill_poll_interval`.
+- [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
+      provider's docs (Schwab's is a step under In progress). The lists in the code
+      and docs/design.md came from memory.
+
+### Operations
+- [ ] Record quotes continuously: `stream --store` under systemd (a loop
+      that restarts it) on the server, for several pairs, so backtests are not
+      drawn from 32 hours of one pair. Mind the retention item below.
+- [ ] **Data retention for the database** (from the 10 minute paper run,
+      2026-10-28; nothing is configured yet, no compression or retention
+      policy exists on either hypertable). `quotes` is the only table that
+      grows fast: about 6,400 to 12,000 rows an hour for one symbol, roughly
+      520 bytes a row with its indexes, so 80 to 150 MB a day (29 to 55 GB a
+      year) per symbol. The disk had 23 GB free, so one symbol fills it in
+      about 5 to 9 months and each extra symbol shortens that. Proposed policy,
+      as a migration:
+      - `quotes`: compress chunks older than 7 days (segment by venue and
+        symbol, order by `received_time`) and drop chunks older than 90 days.
+        The expected 10x compression is a typical figure, not measured here;
+        try it on the existing chunks first. Backtests mostly need recent
+        quotes. Decide whether 90 days is enough before dropping anything, and
+        make the ages configurable or at least documented.
+      - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever. They are small
+        (1-minute bars for 15 symbols grow about 1.7 GB a year; a day of P&L
+        snapshots is about 360 kB).
+      - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
+      - Add a check that warns at startup when the disk is nearly full.
+- [ ] Use `account_fills` for the cost basis of what the account holds at the
+      start of a run, so selling a starting holding realizes a real profit or
+      loss instead of the whole sale price (the 8 hour run's phantom
+      position). Needs a rule for holdings older than the stored history
+      (transfers in, buys before the first sync).
+- [ ] Sync `account_fills` at the start of a live run, and now and then during
+      it, instead of only from the `account` command, and compare a run's
+      `fills` against it afterwards to catch fills the runner missed.
+- [ ] Tell Kestrel's fills in `account_fills` from manual or other programs'
+      ones. Binance.US orders already get a `kst-<tag>-<n>` client order ID
+      (the tag is random per process), but `myTrades` does not return client
+      order IDs, so `account_fills.client_order_id` is always empty. Record
+      the exchange order ID of every order Kestrel places, with its run (and
+      make the tag the run ID), so `account_fills` can be joined on
+      `order_id`. Older history can be backfilled once by looking each order
+      up (weight 4 each, about 800 for the 197 orders stored so far). The
+      startup cancel does not need this: it clears every open order on the
+      configured symbols by design (see docs/running.md, "One trader per
+      account").
+- [ ] Persist orders and strategy decisions to the database (fills and P&L
+      snapshots are recorded with `[recording]`; see `RunRecorder`). Store
+      Kestrel's own orders with their final state, not the venue's whole order
+      history: a market maker cancels most of what it places (about 125k
+      orders a day at the paper run's pace), which would outgrow `quotes`.
+- [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
+      stays down
+- [ ] Health checks: stale-data detection, stream reconnect counts, clock-skew
+      warning
+- [ ] Structured logging, with a per-strategy log context
+- [ ] Run several strategies in one process, sharing data subscriptions
+- [ ] Dry-run mode for live data: real quotes and the paper venue, with a switch
+      to the live venue only when explicitly enabled
+
+### Backtesting and research
+- [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
+      30 min) has stored quotes for its window (see Known limitations under
+      Backtesting for the result); runs 7 to 11 have only public trades, which
+      `--quotes-from-trades` replays without sizes. Keep `stream --store`
+      running during live runs, and compare each against its replay.
+- [ ] Parameter sweeps and walk-forward testing: `backtest --sweep
+      half_spread_bps=2,3,4,6` replaying the loaded quotes once per value and
+      printing one table (summary and markouts), then tuning on one day and
+      testing on the next. The sweeps so far were shell loops.
+- [ ] A pair scanner: rank a venue's pairs by the market spread against the
+      one-minute volatility, trade rate, maker fee and tick size against the
+      price. Market making pays where the spread is wide for how fast the
+      price moves (ZEC/USDT: about 1.5 bps of half-spread against 11 bps a
+      minute), so the pair matters more than tuning.
+- [ ] Benchmark comparison against buy-and-hold: the backtest summary's "vs
+      hold" covers holding the starting balances; comparing against other
+      benchmarks (an index, a basket) is not done
+
+### Strategies
+- [ ] Agent access (out of scope so far). What it should look
+      like isn't defined yet; decide that before building it.
+- [ ] Indicators library (SMA/EMA, RSI, ATR, Bollinger, MACD) as small
+      reusable pieces so strategies do not each reimplement them
+- [ ] EMA crossover and RSI mean-reversion
+- [ ] Breakout / Donchian channel with an ATR stop
+- [ ] Grid trading and dollar-cost averaging
+- [ ] Multi-symbol strategies (pairs trading, momentum rotation across a basket)
+- [ ] Position sizing helpers: fixed fractional, volatility-targeted
+
+#### Market maker
+Roughly in order of expected value. The backtest markouts show where the P&L comes
+from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
+fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
+made +0.77 USDT in the five minutes after their fills but +9.99 by the end
+(inventory riding the price). Check a change's markouts, not only "vs hold".
+- [ ] Keep queue position: leave a resting quote alone while it is still at
+      the touch even if its target moved, and optionally join the touch (or
+      improve it by a tick) instead of quoting a computed price. Each
+      replacement goes to the back of the queue (see Known limitations), and
+      on wide-tick pairs queue position is most of the edge.
+- [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
+      the next quote (see Known limitations), so stale quotes are not filled
+      after a move the strategy never saw.
+- [ ] Stronger inventory control: a skew that grows faster than linearly
+      with the position (Avellaneda-Stoikov style) and with how long the
+      position has been held. The current skew is linear in the position.
+- [ ] Quote several levels a side with smaller sizes, for pairs that swing
+      enough to fill them.
+- [ ] Persist the halt state and protection P&L, so a restart does not reset
+      the loss and drawdown caps (see Known limitations).
+- [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
+      timeout (a few backstop polls), ask the venue: `GetOrder` for its real
+      filled quantity (correcting a size assumed from the acknowledgement),
+      and if the missing fill is older than the runner's duplicate check it
+      will never be delivered, so resync the inventory from `GetBalances` and
+      clear the entry. Reading `GetFills` from the strategy alone is not
+      enough: it cannot tell a fill that is still on its way to `OnFill` from
+      one that was lost, and counting it would count it twice when it lands.
+      The cleaner long-term fix may be in the runner (report fills it drops,
+      or let a strategy ask whether a fill ID was delivered).
+
+### Engineering
+- [ ] Building components in the factory starts the paper venue's quote
+      stream as a side effect, so `bars` and `run` open a WebSocket whether or
+      not they need it (`stream`, `stream-bars` and `backtest` already avoid
+      this by building only the data source); make starting the venue explicit
+- [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
+      (build on a machine with no system cpr or libcurl). It is written but has
+      only ever used the system cpr.
+- [ ] CI: it builds and runs the tests on every push; add a clang-tidy job
+      (`.clang-tidy`; the whole tree takes about 12 minutes on 4 cores, so
+      perhaps changed files only) and the ASan/UBSan and TSan builds. TSan is
+      worth having, since the runner and venues are multithreaded.
+- [ ] The database tests share fixture rows, so they cannot run in parallel
+      (`ctest -j` fails them); give each test its own venue name or schema
+- [ ] Sanitize the Docker image's build as well, and run TSan against a long
+      paper run (`kestrel_app run`), which the unit tests do not cover
+- [ ] Integration tests against venue sandboxes or recorded responses
+- [ ] Shorting and margin in the paper venue and the P&L tracker
 
 ## Known limitations
 
@@ -139,6 +398,14 @@ the header of the code concerned.
   mid). `max_price_age` is unset by default, so a price never goes stale.
 - Spot only: a sell larger than the holding is treated as not reducing a
   position, and shorting is not modelled.
+- What is held is the venue's position, or what the gate has seen fill since
+  its loss count started if that is more. On a venue that reports no
+  positions (Binance.US spot), holdings from before the run are invisible:
+  `max_position_notional` does not count them, and a halted gate will not let
+  them be sold. If the fills cannot be read, an exit is checked against the
+  venue's position alone, and an entry is refused.
+- With a loss, drawdown or consecutive-loss limit set, an order is refused,
+  exits included, while the venue's fills cannot be read.
 - Checks and the venue call run under one lock, so concurrent orders are
   serialized (intended), and a slow venue call delays other orders.
 - `Halt()` cancels at once, then waits for any order already inside
@@ -363,8 +630,8 @@ the header of the code concerned.
 ### Venues and data
 - Kraken and Schwab trading venues are stubs that return `kNotImplemented`.
 - The Binance.US venue runs live under `run`, polled for fills (no user-data
-  stream yet). Its `GetPositions` returns nothing, so the risk gate's
-  `max_position_notional` does not see holdings the account already had.
+  stream yet). Its `GetPositions` returns nothing, so the risk gate counts
+  only what filled since the run started (see Risk gate above).
 - A Binance.US placement that times out and cannot be found afterwards is
   reported as an error, but the order may still appear later; it would then
   rest on the account untracked by the runner until the next `run` cancels
@@ -397,205 +664,6 @@ the header of the code concerned.
   stops delivering, or a feed gone stale. The health-check item under
   Operations covers monitoring; a stale-feed watchdog that pauses (or halts)
   the strategy is a trading-safety feature and belongs with the risk work.
-
-## Projects
-
-### Venues
-Each stub's header has a TODO comment listing the endpoints and auth it needs.
-- [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
-      history, signed with the existing HMAC helper. Data source is already
-      done.
-- [ ] **Schwab trading venue.** Orders, open orders, fills, positions and
-      balances on the Trader API, after the data source (see Schwab data
-      source under In progress). It can reuse `SchwabAuth` and `SchwabApi`,
-      which already handle tokens, renewal and retrying once after a 401;
-      order placement has its own rate limit.
-- [ ] **Binance.US trading venue.** The data source is done. The venue is
-      reads checked against the live API on 2026-10-28 with `kestrel_app
-      account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
-      STOP_LOSS; `kst-` client order IDs; never resent, looked up by client
-      ID after a timeout or 5xx), `CancelOrder` (-2011 looked up to tell
-      filled from closed), `CancelAll`, an order-rate limit (9/s, 10 burst,
-      against Binance's 100 per 10 s), and the minimum order value
-      (`SymbolInfo::min_notional`, also enforced by the paper venue). The test
-      endpoint accepted limit buy, market buy and limit sell requests on
-      2026-10-29 and refused a price under the band (-1013 PERCENT_PRICE).
-      A real round trip on 2026-10-29 (limit buy 0.002 ZEC at 700, 46%
-      under the market, order 412845258) checked the rest: the RESULT reply,
-      the open order and 1.40 USDT locked, a cancel from a fresh process
-      (symbol found by lookup), the balance released with no fill, and a
-      second cancel answered -2011 and reported as already closed.
-      Leftover orders: `Runner::Begin` now cancels every order open on the
-      configured symbols before `OnStart`, and refuses to start if it cannot
-      (Kestrel assumes it alone controls the account's orders while it runs).
-      `HasLiveVenue` is now true for Binance.US, so `run` trades live on it.
-      Exchange info advertises 6000
-      request weight a minute, not 1200; the client now keeps to 2400 (it
-      was 960).
-- [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
-      until a fill shows in `GetFills`, and the venue's clock against ours.
-      Needs order placement first; store it beside `venue_latency`.
-- [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
-      the API key (no new credentials), keepalive about every 30 minutes,
-      `executionReport` to fills and order states, a REST catch-up after a
-      reconnect, and the event time against ours for the fill-visibility
-      latency. Check the current Binance.US docs first: Binance.com has been
-      moving from listen keys to a WebSocket API subscription. Until it lands
-      the venue is polled, and polling `GetFills` (weight 10) and
-      `GetOpenOrders` (weight 3) every second uses about 780 of the 2400
-      weight per minute the client keeps to, per symbol, so a live run on
-      several symbols needs a longer `fill_poll_interval`.
-- [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
-      provider's docs (Schwab's is a step under In progress). The lists in the code
-      and docs/design.md came from memory.
-
-### Strategies
-- [ ] Agent access (out of scope so far). What it should look
-      like isn't defined yet; decide that before building it.
-- [ ] Indicators library (SMA/EMA, RSI, ATR, Bollinger, MACD) as small
-      reusable pieces so strategies do not each reimplement them
-- [ ] EMA crossover and RSI mean-reversion
-- [ ] Breakout / Donchian channel with an ATR stop
-- [ ] Grid trading and dollar-cost averaging
-- [ ] Multi-symbol strategies (pairs trading, momentum rotation across a basket)
-- [ ] Position sizing helpers: fixed fractional, volatility-targeted
-
-#### Market maker
-Roughly in order of expected value. The backtest markouts show where the P&L comes
-from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
-fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
-made +0.77 USDT in the five minutes after their fills but +9.99 by the end
-(inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Keep queue position: leave a resting quote alone while it is still at
-      the touch even if its target moved, and optionally join the touch (or
-      improve it by a tick) instead of quoting a computed price. Each
-      replacement goes to the back of the queue (see Known limitations), and
-      on wide-tick pairs queue position is most of the edge.
-- [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
-      the next quote (see Known limitations), so stale quotes are not filled
-      after a move the strategy never saw.
-- [ ] Stronger inventory control: a skew that grows faster than linearly
-      with the position (Avellaneda-Stoikov style) and with how long the
-      position has been held. The current skew is linear in the position.
-- [ ] Quote several levels a side with smaller sizes, for pairs that swing
-      enough to fill them.
-- [ ] Persist the halt state and protection P&L, so a restart does not reset
-      the loss and drawdown caps (see Known limitations).
-- [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
-      timeout (a few backstop polls), ask the venue: `GetOrder` for its real
-      filled quantity (correcting a size assumed from the acknowledgement),
-      and if the missing fill is older than the runner's duplicate check it
-      will never be delivered, so resync the inventory from `GetBalances` and
-      clear the entry. Reading `GetFills` from the strategy alone is not
-      enough: it cannot tell a fill that is still on its way to `OnFill` from
-      one that was lost, and counting it would count it twice when it lands.
-      The cleaner long-term fix may be in the runner (report fills it drops,
-      or let a strategy ask whether a fill ID was delivered).
-
-### Backtesting and research
-- [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
-      30 min) has stored quotes for its window (see Known limitations under
-      Backtesting for the result); runs 7 to 11 have only public trades, which
-      `--quotes-from-trades` replays without sizes. Keep `stream --store`
-      running during live runs, and compare each against its replay.
-- [ ] Parameter sweeps and walk-forward testing: `backtest --sweep
-      half_spread_bps=2,3,4,6` replaying the loaded quotes once per value and
-      printing one table (summary and markouts), then tuning on one day and
-      testing on the next. The sweeps so far were shell loops.
-- [ ] A pair scanner: rank a venue's pairs by the market spread against the
-      one-minute volatility, trade rate, maker fee and tick size against the
-      price. Market making pays where the spread is wide for how fast the
-      price moves (ZEC/USDT: about 1.5 bps of half-spread against 11 bps a
-      minute), so the pair matters more than tuning.
-- [ ] Benchmark comparison against buy-and-hold: the backtest summary's "vs
-      hold" covers holding the starting balances; comparing against other
-      benchmarks (an index, a basket) is not done
-
-### Risk
-- [ ] Portfolio-level limits (total exposure across symbols, concentration)
-- [ ] Drawdown that is measured continuously (the `max_drawdown` limit is
-      sampled at order attempts only), and a version that halts and closes
-      the position instead of only blocking entries
-- [ ] Stop-loss support: a per-position loss limit (`max_loss_per_position`)
-      and a risk-per-trade percentage need orders that carry a stop, which
-      `SmaCrossover` does not place
-- [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
-      reports that use them
-
-### Operations
-- [ ] Record quotes continuously: `stream --store` under systemd (a loop
-      that restarts it) on the server, for several pairs, so backtests are not
-      drawn from 32 hours of one pair. Mind the retention item below.
-- [ ] **Data retention for the database** (from the 10 minute paper run,
-      2026-10-28; nothing is configured yet, no compression or retention
-      policy exists on either hypertable). `quotes` is the only table that
-      grows fast: about 6,400 to 12,000 rows an hour for one symbol, roughly
-      520 bytes a row with its indexes, so 80 to 150 MB a day (29 to 55 GB a
-      year) per symbol. The disk had 23 GB free, so one symbol fills it in
-      about 5 to 9 months and each extra symbol shortens that. Proposed policy,
-      as a migration:
-      - `quotes`: compress chunks older than 7 days (segment by venue and
-        symbol, order by `received_time`) and drop chunks older than 90 days.
-        The expected 10x compression is a typical figure, not measured here;
-        try it on the existing chunks first. Backtests mostly need recent
-        quotes. Decide whether 90 days is enough before dropping anything, and
-        make the ages configurable or at least documented.
-      - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever. They are small
-        (1-minute bars for 15 symbols grow about 1.7 GB a year; a day of P&L
-        snapshots is about 360 kB).
-      - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
-      - Add a check that warns at startup when the disk is nearly full.
-- [ ] Use `account_fills` for the cost basis of what the account holds at the
-      start of a run, so selling a starting holding realizes a real profit or
-      loss instead of the whole sale price (the 8 hour run's phantom
-      position). Needs a rule for holdings older than the stored history
-      (transfers in, buys before the first sync).
-- [ ] Sync `account_fills` at the start of a live run, and now and then during
-      it, instead of only from the `account` command, and compare a run's
-      `fills` against it afterwards to catch fills the runner missed.
-- [ ] Tell Kestrel's fills in `account_fills` from manual or other programs'
-      ones. Binance.US orders already get a `kst-<tag>-<n>` client order ID
-      (the tag is random per process), but `myTrades` does not return client
-      order IDs, so `account_fills.client_order_id` is always empty. Record
-      the exchange order ID of every order Kestrel places, with its run (and
-      make the tag the run ID), so `account_fills` can be joined on
-      `order_id`. Older history can be backfilled once by looking each order
-      up (weight 4 each, about 800 for the 197 orders stored so far). The
-      startup cancel does not need this: it clears every open order on the
-      configured symbols by design (see docs/running.md, "One trader per
-      account").
-- [ ] Persist orders and strategy decisions to the database (fills and P&L
-      snapshots are recorded with `[recording]`; see `RunRecorder`). Store
-      Kestrel's own orders with their final state, not the venue's whole order
-      history: a market maker cancels most of what it places (about 125k
-      orders a day at the paper run's pace), which would outgrow `quotes`.
-- [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
-      stays down
-- [ ] Health checks: stale-data detection, stream reconnect counts, clock-skew
-      warning
-- [ ] Structured logging, with a per-strategy log context
-- [ ] Run several strategies in one process, sharing data subscriptions
-- [ ] Dry-run mode for live data: real quotes and the paper venue, with a switch
-      to the live venue only when explicitly enabled
-
-### Engineering
-- [ ] Building components in the factory starts the paper venue's quote
-      stream as a side effect, so `bars` and `run` open a WebSocket whether or
-      not they need it (`stream`, `stream-bars` and `backtest` already avoid
-      this by building only the data source); make starting the venue explicit
-- [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
-      (build on a machine with no system cpr or libcurl). It is written but has
-      only ever used the system cpr.
-- [ ] CI: build and run tests on every push, with a clang-tidy job and the
-      ASan/UBSan and TSan builds above. TSan is worth having, since the runner
-      and venues are multithreaded.
-- [ ] The database tests share fixture rows, so they cannot run in parallel
-      (`ctest -j` fails them); give each test its own venue name or schema
-- [ ] Sanitize the Docker image's build as well, and run TSan against a long
-      paper run (`kestrel_app run`), which the unit tests do not cover
-- [ ] Integration tests against venue sandboxes or recorded responses
-- [ ] Shorting and margin in the paper venue and the P&L tracker
-
 
 ## Done
 
@@ -681,6 +749,14 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 - [x] Market maker order-flow pull (`flow_pull_imbalance`,
       `flow_window_ms`): no quote on the side recent trades run against,
       off by default
+- [x] Risk gate holdings: the larger of the venue's position and what the
+      gate has seen fill since its count started, so on Binance.US (no
+      positions) a halt or loss limit still lets the exit of what the run
+      bought through, and `max_position_notional` counts it (review item, Nov
+      2026)
+- [x] `order` goes through the risk gate with the limits one order can trip
+      (`ManualOrderLimits`), `--test` included; `--no-risk` skips it with a
+      warning
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP
@@ -705,6 +781,8 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       bars, and 5 to 30 minutes built from them, in the regular session
       unless `[schwab] extended_hours`. Bar strategies run on Schwab in paper
       mode.
+- [x] Binance.US order statuses with an unknown side or type fail with
+      kParse instead of being read as a buy or a limit order
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

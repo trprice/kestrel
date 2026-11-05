@@ -60,6 +60,14 @@ types::Result<std::unique_ptr<strategy::Strategy>> CreateStrategy(
 types::Result<std::optional<trading::RiskLimits>> ResolveRiskLimits(
     const std::string& strategy, const config::Configuration& configuration);
 
+// The [risk] limits that apply to an order placed by hand (`kestrel_app
+// order`): the symbol allowlist, the order and position notional, open
+// orders and the price age. Loss, drawdown and order-count limits are left
+// out: a process that places one order would count them from its own start,
+// so they could never trip. Absent when none of these is set.
+std::optional<trading::RiskLimits> ManualOrderLimits(
+    const std::optional<trading::RiskLimits>& limits);
+
 // Checks that the configuration may be used to trade (--run) with `limits`
 // (from ResolveRiskLimits). Paper mode always passes. Live mode fails with
 // kInvalidArgument unless `limits` is set, and with kNotImplemented if the
