@@ -6,6 +6,7 @@
 
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
+#include "kestrel/data/schwab_streamer.hpp"
 
 namespace kestrel::data {
 
@@ -38,41 +39,41 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 // tick size per symbol cannot say; 0.01 is valid for them too, only coarser.
 // The symbol is not checked with Schwab.
 //
-// TODO(schwab): StreamQuotes on the streamer. GET /trader/v1/userPreference
-//   returns `streamerInfo` (socket URL, schwabClientCustomerId, correlId,
-//   channel, functionId). Open that WebSocket, send ADMIN LOGIN with the
-//   access token and wait for its reply (code 3: token refused; log in again
-//   with a renewed one), then SUBS to LEVELONE_EQUITIES. Fields, per the
-//   table: 0 symbol, 1 bid, 2 ask, 3 last, 4 bid size and 5 ask size (in lots
-//   of 100 shares), 9 last size (shares), 34 quote time, 35 trade time; the
-//   document's own example is one off from field 12, so check a live message.
-//   Updates carry only changed fields: merge them. One streamer connection
-//   per user at a time.
+// StreamQuotes: LEVELONE_EQUITIES on Schwab's streamer, over one connection
+// that every StreamQuotes of this data source shares (see SchwabStreamer:
+// Schwab allows one streamer connection per user, so two processes streaming
+// Schwab quotes at once cannot both work). Schwab sends a symbol's changes
+// about once a second, conflated. Quotes carry bid, ask, last, their sizes in
+// shares, and the exchange time; not the taker's side.
 class SchwabDataSource : public DataSource {
    public:
     struct Options {
         bool extended_hours = false;
         std::string base_url = "https://api.schwabapi.com/marketdata/v1";
+        // For userPreference, which gives the streamer's address.
+        std::string trader_url = "https://api.schwabapi.com/trader/v1";
+        SchwabStreamer::SocketFactory make_socket = MakeSchwabStreamerSocket;
         std::function<types::Timestamp()> clock = types::Now;
     };
 
     explicit SchwabDataSource(std::shared_ptr<SchwabApi> api)
         : SchwabDataSource(std::move(api), Options{}) {}
-    SchwabDataSource(std::shared_ptr<SchwabApi> api, Options options)
-        : mApi(std::move(api)), mOptions(std::move(options)) {}
+    SchwabDataSource(std::shared_ptr<SchwabApi> api, Options options);
 
     std::string_view Name() const override { return "schwab"; }
     types::Result<std::vector<types::Bar>> GetBars(
         const types::Symbol& symbol, types::Timeframe timeframe,
         types::Timestamp start, types::Timestamp end) override;
     types::Result<std::unique_ptr<Subscription>> StreamQuotes(
-        const std::vector<std::string>&, QuoteCallback) override;
+        const std::vector<std::string>& symbols,
+        QuoteCallback callback) override;
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) override;
 
    private:
     std::shared_ptr<SchwabApi> mApi;
     Options mOptions;
+    std::shared_ptr<SchwabStreamer> mStreamer;
 };
 
 }  // namespace kestrel::data

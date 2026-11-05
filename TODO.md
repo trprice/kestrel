@@ -24,9 +24,9 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 
 Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
 renews them and `SchwabApi` sends requests within the market-data rate limit.
-`GetBars` and `GetSymbolInfo` work (see `SchwabDataSource` in
-`include/kestrel/data/schwab_data_source.hpp`); `StreamQuotes` and
-`StreamBars` still return `kNotImplemented`.
+`GetBars`, `GetSymbolInfo` and `StreamQuotes` work (see `SchwabDataSource`
+in `include/kestrel/data/schwab_data_source.hpp` and `SchwabStreamer` in
+`schwab_streamer.hpp`); `StreamBars` still returns `kNotImplemented`.
 
 What the live API showed (Nov 2026, SPY), beyond Schwab's docs:
 `/pricehistory` answers in whole days, whatever times are asked for; one
@@ -36,7 +36,13 @@ days come back empty, not as an error, as does an unknown symbol);
 `needExtendedHoursData` defaults to true, and extended hours include the
 overnight session (20:00 to 04:00 ET); daily, weekly and monthly bars are
 stamped midnight US Central; share classes are `BRK/B` (`BRK.B` comes back
-empty).
+empty). The streamer: `userPreference` works for a Market Data app and gives
+`wss://streamer-api.schwab.com/ws`; LEVELONE_EQUITIES sends a symbol's changes
+about once a second; field 12 is the previous close, as the field table says
+(the document's example is off); bid and ask sizes are in shares, as in REST
+`/quotes`, not lots of 100 as the document says; an unknown symbol comes back
+as zeros with status `Unknown`; a second LOGIN for the user disconnects the
+first with notify code 12.
 
 #### Next steps
 - [ ] Confirm which error body Schwab sends for an expired or revoked
@@ -47,27 +53,23 @@ empty).
 - [ ] `GetSymbolInfo`'s tick is 0.01 for every symbol: sub-dollar stocks
       quote in 0.0001, which `SymbolInfo` cannot express (one tick per
       symbol). It does not check that the symbol exists.
-- [ ] `bars` and other commands that build the paper venue fail on Schwab in
-      paper mode until `StreamQuotes` exists, as the paper venue subscribes
-      to quotes at startup.
-- [ ] `StreamQuotes` on the streamer: `streamerInfo` from
-      `GET /trader/v1/userPreference`, WebSocket LOGIN with the access token,
-      SUBS to LEVELONE_EQUITIES, deltas merged into full quotes, and a
-      reconnect that logs in again with a renewed token.
 - [ ] `StreamBars` (CHART_EQUITY gives 1-minute bars), so bar strategies such
       as `SmaCrossover` can run on Schwab; until then `run` has no bar stream
-      there.
+      there. It must go through `SchwabStreamer`'s one connection, as a
+      service beside LEVELONE_EQUITIES.
+- [ ] See a login that the streamer refuses for a token Schwab has revoked
+      (only an expired one, code 3, is in the document), and a
+      `STOP_STREAMING` (code 30), live.
 - [ ] Market hours: the runner's gap backfill sees every overnight and
       weekend as a gap (one wasted `GetBars` call each), a quiet feed outside
       the session must not look like a dead one to any future stale-feed
       check, and a strategy needs to know when the market is closed.
-- [ ] Tests for the streamer messages, alongside
-      `schwab_data_source_test.cpp` (bars and symbol info have them).
 - [ ] Docs: a `config/schwab.example.toml` (docs/configuration.md says
       there is none).
 - [ ] Then the trading venue (see Venues under Projects). Its header's TODO
       predates `SchwabAuth` and `SchwabApi` and should be rewritten to build
-      on them.
+      on them. Pushed executions (ACCT_ACTIVITY) would also have to share
+      `SchwabStreamer`'s connection.
 
 ## Status
 
@@ -76,11 +78,10 @@ live; `run` refuses live mode on any other provider until its trading venue
 is implemented (`HasLiveVenue` in `factory.cpp`).
 
 ### Stubs
-- [ ] The Schwab data source's streams (`StreamQuotes`, `StreamBars`), and
-      the Kraken and Schwab trading venues, return `kNotImplemented`; each
-      header has a TODO listing the endpoints and auth needed. Schwab's bars,
-      symbol info and authorization (`authorize`, token renewal, `SchwabApi`)
-      are real. See Schwab data source under In progress, and Venues under
+- [ ] The Schwab data source's `StreamBars`, and the Kraken and Schwab
+      trading venues, return `kNotImplemented`; each header has a TODO listing
+      the endpoints and auth needed. Schwab's bars, symbol info, quote stream
+      and authorization (`authorize`, token renewal, `SchwabApi`) are real. See Schwab data source under In progress, and Venues under
       Projects.
 
 ### Not started
@@ -372,9 +373,12 @@ the header of the code concerned.
   request, not that it can be paid for.
 - The latency rollups cover HTTP round trips only, and a window that fails to
   write is dropped, not retried.
-- The Schwab data source has bars and symbol info but no quote or bar
-  stream, so on Schwab only live-mode `bars` works for now (see Schwab data
-  source under In progress).
+- The Schwab data source has no bar stream yet (see Schwab data source under
+  In progress).
+- Schwab allows one streamer connection per user, so only one process can
+  stream Schwab quotes at a time: when a second one logs in, the first stops
+  streaming (it logs an error and does not reconnect, which would set the two
+  fighting) and its subscriptions go quiet.
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
 - `run` refuses live mode on a provider whose venue is a stub
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
@@ -683,6 +687,11 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       trimmed to the range, daily and longer at 00:00 UTC of their date,
       `[schwab] extended_hours`) and `GetSymbolInfo` from US equity rules;
       share classes map `BRK.B` to Schwab's `BRK/B`
+- [x] Schwab `StreamQuotes` on the streamer's LEVELONE_EQUITIES, over one
+      connection shared by the process (`SchwabStreamer`): login with a
+      current token, ADD and UNSUBS as subscriptions come and go, one token
+      renewal on a denied login, and a stop when another connection takes
+      over. `bars` and `run` now work on Schwab in paper mode.
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

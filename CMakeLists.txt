@@ -72,6 +72,7 @@ add_library(kestrel
   src/data/kraken_quote_stream.cpp
   src/data/schwab_auth.cpp
   src/data/schwab_data_source.cpp
+  src/data/schwab_streamer.cpp
   src/data/binanceus_data_source.cpp
   src/data/binanceus_errors.cpp
   src/data/binanceus_quote_stream.cpp
@@ -205,6 +206,7 @@ if(KESTREL_BUILD_TESTS)
     tests/cpr_http_client_test.cpp
     tests/schwab_auth_test.cpp
     tests/schwab_data_source_test.cpp
+    tests/schwab_streamer_test.cpp
     tests/binanceus_api_test.cpp
     tests/binanceus_trading_venue_test.cpp
     tests/risk_gate_test.cpp

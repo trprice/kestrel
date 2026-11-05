@@ -66,6 +66,13 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe tf) {
     }
 }
 
+SchwabDataSource::SchwabDataSource(std::shared_ptr<SchwabApi> api,
+                                   Options options)
+    : mApi(std::move(api)),
+      mOptions(std::move(options)),
+      mStreamer(std::make_shared<SchwabStreamer>(
+          mApi, mOptions.trader_url, mOptions.make_socket, mOptions.clock)) {}
+
 types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
     const types::Symbol& symbol, types::Timeframe tf, types::Timestamp start,
     types::Timestamp end) {
@@ -180,9 +187,28 @@ types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
 }
 
 types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
-    const std::vector<std::string>&, QuoteCallback) {
-    return MakeError(ErrorCategory::kNotImplemented,
-                     "SchwabDataSource::StreamQuotes is not implemented yet");
+    const std::vector<std::string>& symbols, QuoteCallback callback) {
+    if (symbols.empty()) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamQuotes: no symbols");
+    }
+    if (!callback) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamQuotes: no callback");
+    }
+    std::vector<std::string> keys;
+    for (const auto& symbol : symbols) {
+        auto normalized = types::NormalizeSymbol(symbol);
+        if (!normalized) {
+            return std::unexpected(normalized.error());
+        }
+        auto native = ToSchwabSymbol(*normalized);
+        if (!native) {
+            return std::unexpected(native.error());
+        }
+        keys.push_back(std::move(*native));
+    }
+    return mStreamer->SubscribeQuotes(keys, std::move(callback));
 }
 
 types::Result<types::SymbolInfo> SchwabDataSource::GetSymbolInfo(
