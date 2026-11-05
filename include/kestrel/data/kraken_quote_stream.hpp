@@ -35,7 +35,7 @@ class KrakenTickerMerger {
 // WebSocket subscription to Kraken's v2 ticker channel. Reconnects with
 // exponential backoff (IXWebSocket's built-in automatic reconnection) and
 // resubscribes on every (re)connect. The callback runs on IXWebSocket's thread.
-class KrakenQuoteStream : public Subscription {
+class KrakenQuoteStream final : public Subscription {
    public:
     KrakenQuoteStream(std::string url, std::vector<std::string> ws_symbols,
                       QuoteCallback callback);

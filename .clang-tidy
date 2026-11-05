@@ -1,0 +1,57 @@
+# clang-tidy checks for Kestrel. Run over the whole tree with the compile
+# database the build writes (CMAKE_EXPORT_COMPILE_COMMANDS is on):
+#
+#   run-clang-tidy -p build -quiet '^.*/kestrel/(src|app|tests)/'
+#
+# or one file: clang-tidy -p build src/data/schwab_streamer.cpp
+#
+# The families that find bugs are on, minus checks that were all noise here
+# (Nov 2026, clang-tidy 21). Left off on purpose:
+# - bugprone-unchecked-optional-access: cannot see guards made through a
+#   container or an earlier check (every finding was such a guard).
+# - bugprone-easily-swappable-parameters: most functions take two strings.
+# - misc-const-correctness, modernize-use-nodiscard: style only, and many.
+# - cppcoreguidelines-special-member-functions: interfaces are made
+#   non-copyable in their base classes, which it does not follow.
+# - cppcoreguidelines-avoid-magic-numbers, -pro-bounds-*, -avoid-c-arrays,
+#   -pro-type-vararg, -owning-memory, -avoid-do-while, -macro-usage,
+#   -avoid-const-or-ref-data-members, -non-private-member-variables-in-classes,
+#   -pro-type-reinterpret-cast (OpenSSL takes unsigned char*): style.
+# - performance-enum-size: the enums are not stored in bulk.
+# - concurrency-mt-unsafe: flags getenv, read once at startup.
+# - misc-include-cleaner, misc-use-anonymous-namespace, misc-no-recursion,
+#   misc-non-private-member-variables-in-classes: style.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-unchecked-optional-access,
+  performance-*,
+  -performance-enum-size,
+  concurrency-*,
+  -concurrency-mt-unsafe,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-*,
+  -cppcoreguidelines-avoid-c-arrays,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-macro-usage,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-special-member-functions,
+  modernize-use-override,
+  misc-*,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -misc-use-anonymous-namespace,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes
+# Headers of Kestrel only, not of its dependencies.
+HeaderFilterRegex: '.*/kestrel/(include|src|app|tests)/.*'
+# The static analyzer ignores this filter: one warning in spdlog's bundled
+# fmt (base.h, UninitializedObject) is expected.
+FormatStyle: file

@@ -137,9 +137,12 @@ Result<json> KrakenDataSource::Call(const std::string& method,
                     if (category == ErrorCategory::kRateLimit) {
                         mLimiter.Penalize();
                     }
-                    auto err =
-                        MakeError(category, "kraken " + method + ": " + code,
-                                  response->status, code);
+                    auto err = MakeError(category,
+                                         std::string("kraken ")
+                                             .append(method)
+                                             .append(": ")
+                                             .append(code),
+                                         response->status, code);
                     return err;
                 }
             }

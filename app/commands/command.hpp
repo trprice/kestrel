@@ -13,6 +13,10 @@ namespace kestrel::app {
 class Command {
    public:
     virtual ~Command() = default;
+    Command() = default;
+    // An interface: implementations are held by pointer, never copied.
+    Command(const Command&) = delete;
+    Command& operator=(const Command&) = delete;
 
     // Returns the process exit code: 0 on success, 1 on failure, 2 for a
     // usage error that only shows once the command runs. Errors are logged

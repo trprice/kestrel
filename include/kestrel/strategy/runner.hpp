@@ -106,7 +106,7 @@ class Runner : private Context {
            std::shared_ptr<trading::TradingVenue> venue,
            std::unique_ptr<Strategy> strategy, RunnerOptions options = {},
            std::function<types::Timestamp()> clock = types::Now);
-    ~Runner();
+    ~Runner() override;
 
     // Begin(), then processes events until Stop(), then End(). Blocks.
     // Returns an error only if Begin() fails; once the loop is running,

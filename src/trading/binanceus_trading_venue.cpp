@@ -281,7 +281,7 @@ BinanceUSTradingVenue::BinanceUSTradingVenue(
     config::BinanceUSCredentials credentials,
     std::shared_ptr<data::DataSource> data_source,
     std::vector<types::Symbol> symbols, std::shared_ptr<net::HttpClient> http,
-    BinanceUSApi::Options options)
+    const BinanceUSApi::Options& options)
     : mCredentials(credentials),
       mDataSource(std::move(data_source)),
       mSymbols(std::move(symbols)),

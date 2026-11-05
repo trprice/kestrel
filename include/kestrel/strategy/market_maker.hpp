@@ -246,7 +246,7 @@ class MarketMaker : public Strategy {
     // so a quote that filled on arrival is not placed again and again before
     // the inventory catches up.
     struct Unconfirmed {
-        types::Side side;
+        types::Side side{};
         types::Decimal expected;  // filled, per the venue
         types::Decimal seen;      // in OnFill so far
         types::Timestamp since;
@@ -291,7 +291,7 @@ class MarketMaker : public Strategy {
     struct VolSample {
         types::Timestamp start;
         types::Timestamp end;
-        double squared_bps;
+        double squared_bps = 0;
     };
     std::optional<std::pair<types::Timestamp, types::Decimal>> mVolLast;
     std::optional<types::Timestamp> mVolFirst;
@@ -311,7 +311,7 @@ class MarketMaker : public Strategy {
     struct FlowTrade {
         types::Timestamp time;
         types::Decimal size;
-        bool bought;  // a buyer took
+        bool bought = false;  // a buyer took
     };
     struct LastTrade {
         std::optional<types::Decimal> price;

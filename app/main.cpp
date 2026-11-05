@@ -6,11 +6,14 @@
 #include <spdlog/spdlog.h>
 
 #include <CLI/CLI.hpp>
+#include <exception>
 
 #include "commands/command.hpp"
 #include "kestrel/config/configuration.hpp"
 
-int main(int argc, char** argv) {
+namespace {
+
+int Main(int argc, char** argv) {
     using namespace kestrel;
 
     CLI::App app{
@@ -51,4 +54,20 @@ int main(int argc, char** argv) {
         return 1;
     }
     return command->Run(**config);
+}
+
+}  // namespace
+
+// Errors are returned, not thrown; this catches what still escapes (a
+// standard library throw, say) so it is logged rather than ending the process
+// in std::terminate, and destructors run on the way out.
+int main(int argc, char** argv) {
+    try {
+        return Main(argc, argv);
+    } catch (const std::exception& e) {
+        spdlog::critical("unexpected exception: {}", e.what());
+    } catch (...) {
+        spdlog::critical("unexpected exception of unknown type");
+    }
+    return 1;
 }

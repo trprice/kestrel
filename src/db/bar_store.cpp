@@ -6,8 +6,6 @@
 
 namespace kestrel::db {
 
-using types::ErrorCategory;
-using types::MakeError;
 using types::Result;
 
 namespace {

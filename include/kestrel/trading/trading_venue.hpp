@@ -39,6 +39,10 @@ using ExecutionCallback = std::function<void(const ExecutionUpdate&)>;
 class TradingVenue {
    public:
     virtual ~TradingVenue() = default;
+    TradingVenue() = default;
+    // An interface: implementations are held by pointer, never copied.
+    TradingVenue(const TradingVenue&) = delete;
+    TradingVenue& operator=(const TradingVenue&) = delete;
 
     virtual std::string_view Name() const = 0;
 

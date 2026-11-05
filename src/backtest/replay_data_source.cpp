@@ -7,7 +7,7 @@ namespace kestrel::backtest {
 using types::ErrorCategory;
 using types::MakeError;
 
-class ReplayDataSource::Subscription : public data::Subscription {
+class ReplayDataSource::Subscription final : public data::Subscription {
    public:
     Subscription(ReplayDataSource& source, types::Timeframe timeframe)
         : mSource(source), mTimeframe(timeframe) {}
@@ -19,7 +19,7 @@ class ReplayDataSource::Subscription : public data::Subscription {
     types::Timeframe mTimeframe;
 };
 
-class ReplayDataSource::QuoteSubscription : public data::Subscription {
+class ReplayDataSource::QuoteSubscription final : public data::Subscription {
    public:
     explicit QuoteSubscription(ReplayDataSource& source) : mSource(source) {}
     ~QuoteSubscription() override { Stop(); }

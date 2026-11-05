@@ -125,7 +125,8 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // not after the start with kInvalidArgument. `data` needs bars (and quotes if
 // asked for) and SetSymbolInfo for every symbol the strategy trades.
 types::Result<BacktestResult> RunBacktest(
-    std::shared_ptr<ReplayDataSource> data,
-    std::unique_ptr<strategy::Strategy> strategy, BacktestOptions options);
+    const std::shared_ptr<ReplayDataSource>& data,
+    std::unique_ptr<strategy::Strategy> strategy,
+    const BacktestOptions& options);
 
 }  // namespace kestrel::backtest

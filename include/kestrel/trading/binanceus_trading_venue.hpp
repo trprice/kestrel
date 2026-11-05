@@ -70,7 +70,7 @@ class BinanceUSTradingVenue : public TradingVenue {
                           std::shared_ptr<data::DataSource> data_source,
                           std::vector<types::Symbol> symbols,
                           std::shared_ptr<net::HttpClient> http = nullptr,
-                          BinanceUSApi::Options options = {});
+                          const BinanceUSApi::Options& options = {});
 
     std::string_view Name() const override { return "binanceus"; }
 

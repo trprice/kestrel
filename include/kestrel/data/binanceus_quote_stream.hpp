@@ -37,11 +37,11 @@ class BinanceUSStreamMerger {
 // Binance's forced disconnect after 24 hours; the streams are encoded in the
 // URL, so nothing needs resubscribing. The callback runs on IXWebSocket's
 // thread.
-class BinanceUSQuoteStream : public Subscription {
+class BinanceUSQuoteStream final : public Subscription {
    public:
     // `native_symbols` are upper-case Binance symbols such as "BTCUSD".
-    BinanceUSQuoteStream(std::string ws_base_url,
-                         std::vector<std::string> native_symbols,
+    BinanceUSQuoteStream(const std::string& ws_base_url,
+                         const std::vector<std::string>& native_symbols,
                          QuoteCallback callback);
     ~BinanceUSQuoteStream() override;
 

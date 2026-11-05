@@ -44,6 +44,7 @@ const Entry& Lookup(Timeframe tf) {
 
 std::vector<Timeframe> AllTimeframes() {
     std::vector<Timeframe> out;
+    out.reserve(std::size(kTable));
     for (const auto& e : kTable) out.push_back(e.tf);
     return out;
 }

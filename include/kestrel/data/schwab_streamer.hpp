@@ -128,6 +128,10 @@ class SchwabStreamerSocket {
     using Handler = std::function<void(Event, const std::string& text)>;
 
     virtual ~SchwabStreamerSocket() = default;
+    SchwabStreamerSocket() = default;
+    // An interface: implementations are held by pointer, never copied.
+    SchwabStreamerSocket(const SchwabStreamerSocket&) = delete;
+    SchwabStreamerSocket& operator=(const SchwabStreamerSocket&) = delete;
     // Connects to `url`, and after any close reconnects with backoff until
     // StopReconnecting() or Stop().
     virtual void Start(const std::string& url, Handler handler) = 0;
@@ -202,12 +206,14 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
 
    private:
     class ConsumerSubscription;
-    enum Service { kLevelOne, kChart, kServices };
+    enum class Service : std::uint8_t { kLevelOne, kChart };
+    // The service as Schwab names it.
+    static std::string_view ServiceName(Service service);
     struct Consumer {
-        Service service = kLevelOne;
+        Service service = Service::kLevelOne;
         std::set<std::string> keys;
-        QuoteCallback on_quote;  // kLevelOne
-        BarCallback on_bar;      // kChart
+        QuoteCallback on_quote;  // Service::kLevelOne
+        BarCallback on_bar;      // Service::kChart
         types::Timeframe timeframe{};
         std::chrono::minutes step{1};
         // Per key; guarded by mDispatch.
@@ -257,7 +263,7 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     std::mutex mMutex;  // guards the members below
     std::map<std::uint64_t, std::shared_ptr<Consumer>> mConsumers;
     // Per service, key -> consumers that want it.
-    std::map<std::string, int> mKeys[kServices];
+    std::map<Service, std::map<std::string, int>> mKeys;
     std::uint64_t mNextConsumer = 1;
     std::unique_ptr<SchwabStreamerSocket> mSocket;
     std::uint64_t mGeneration = 0;  // of mSocket; older events are ignored

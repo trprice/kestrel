@@ -24,13 +24,13 @@ std::optional<std::pair<types::Symbol, types::Bar>> ParseBinanceUSClosedKline(
 // WebSocket subscription to the combined kline streams of one interval. Like
 // BinanceUSQuoteStream it reconnects with backoff and runs the callback on
 // IXWebSocket's thread.
-class BinanceUSBarStream : public Subscription {
+class BinanceUSBarStream final : public Subscription {
    public:
     // `native_symbols` are upper-case Binance symbols such as "BTCUSD";
     // `interval` is the Binance interval string for `timeframe`.
-    BinanceUSBarStream(std::string ws_base_url,
-                       std::vector<std::string> native_symbols,
-                       types::Timeframe timeframe, std::string interval,
+    BinanceUSBarStream(const std::string& ws_base_url,
+                       const std::vector<std::string>& native_symbols,
+                       types::Timeframe timeframe, const std::string& interval,
                        BarCallback callback);
     ~BinanceUSBarStream() override;
 

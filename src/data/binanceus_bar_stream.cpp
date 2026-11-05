@@ -77,17 +77,17 @@ std::string BinanceUSBarStream::BuildUrl(
         std::ranges::transform(symbol, symbol.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
-        url += (first ? "" : "/") + symbol + "@kline_" + interval;
+        url += first ? "" : "/";
+        url.append(symbol).append("@kline_").append(interval);
         first = false;
     }
     return url;
 }
 
-BinanceUSBarStream::BinanceUSBarStream(std::string ws_base_url,
-                                       std::vector<std::string> native_symbols,
-                                       types::Timeframe timeframe,
-                                       std::string interval,
-                                       BarCallback callback)
+BinanceUSBarStream::BinanceUSBarStream(
+    const std::string& ws_base_url,
+    const std::vector<std::string>& native_symbols, types::Timeframe timeframe,
+    const std::string& interval, BarCallback callback)
     : mUrl(BuildUrl(ws_base_url, native_symbols, interval)),
       mTimeframe(timeframe),
       mCallback(std::move(callback)),

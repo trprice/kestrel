@@ -128,7 +128,8 @@ Decimal PaperTradingVenue::Reserve(const Order& order,
     return ToBookScale(order.reserve_unit * remaining, Rounding::kUp);
 }
 
-class PaperTradingVenue::ExecutionSubscription : public data::Subscription {
+class PaperTradingVenue::ExecutionSubscription final
+    : public data::Subscription {
    public:
     ExecutionSubscription(std::weak_ptr<Listeners> listeners, std::uint64_t id)
         : mListeners(std::move(listeners)), mId(id) {}

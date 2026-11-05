@@ -80,6 +80,7 @@ Decimal PnlTracker::Realized(const types::Symbol& symbol) const {
 
 std::vector<types::Position> PnlTracker::Positions() const {
     std::vector<types::Position> out;
+    out.reserve(mHoldings.size());
     for (const auto& [symbol, holding] : mHoldings) {
         out.push_back({symbol, holding.quantity, holding.average_price,
                        holding.realized});

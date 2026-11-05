@@ -59,3 +59,17 @@ runner, a venue, a stream or `QuoteWriter`, since they are multithreaded.
 
 Run the database tests serially (plain `ctest`, not `-j`), sanitized or not:
 they share the fixture venues' rows, so parallel runs collide.
+
+## clang-tidy
+
+`.clang-tidy` holds the checks: the bug-finding families (bugprone,
+performance, concurrency, the static analyzer, the C++ Core Guidelines) minus
+the ones that were only noise here; the file says which and why. It reads the
+compile database every build writes (`build/compile_commands.json`):
+
+```sh
+run-clang-tidy -p build -quiet '^.*/kestrel/(src|app|tests)/'   # everything
+clang-tidy -p build src/data/schwab_streamer.cpp                 # one file
+```
+
+The whole tree takes about 12 minutes on 4 cores. It is not run in CI.

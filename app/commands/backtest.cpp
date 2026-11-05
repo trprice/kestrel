@@ -81,8 +81,8 @@ class BacktestCommand : public Command {
         options.risk = *limits;
         options.start = mFrom;
         options.end = mTo;
-        auto result = backtest::RunBacktest(*replay, std::move(*strategy),
-                                            std::move(options));
+        auto result =
+            backtest::RunBacktest(*replay, std::move(*strategy), options);
         if (!result) {
             return Fail("backtest", result.error());
         }

@@ -64,10 +64,6 @@ std::optional<types::Timestamp> ReadTime(const json& item, const char* field) {
     return types::FromEpochMillis(it->get<std::int64_t>());
 }
 
-std::string_view ServiceName(int service) {
-    return service == 0 ? "LEVELONE_EQUITIES" : "CHART_EQUITY";
-}
-
 std::string Join(const std::set<std::string>& keys) {
     std::string out;
     for (const auto& key : keys) {
@@ -89,7 +85,7 @@ std::pair<int, std::string> Outcome(const json& item) {
             content->value("msg", "")};
 }
 
-class IxStreamerSocket : public SchwabStreamerSocket {
+class IxStreamerSocket final : public SchwabStreamerSocket {
    public:
     ~IxStreamerSocket() override { Stop(); }
 
@@ -355,7 +351,7 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket() {
 }
 
 // A consumer's handle: stopping it removes the consumer.
-class SchwabStreamer::ConsumerSubscription : public Subscription {
+class SchwabStreamer::ConsumerSubscription final : public Subscription {
    public:
     ConsumerSubscription(std::shared_ptr<SchwabStreamer> streamer,
                          std::uint64_t id)
@@ -373,6 +369,10 @@ class SchwabStreamer::ConsumerSubscription : public Subscription {
     std::shared_ptr<SchwabStreamer> mStreamer;
     std::uint64_t mId;
 };
+
+std::string_view SchwabStreamer::ServiceName(Service service) {
+    return service == Service::kLevelOne ? "LEVELONE_EQUITIES" : "CHART_EQUITY";
+}
 
 SchwabStreamer::SchwabStreamer(std::shared_ptr<SchwabApi> api,
                                std::string trader_url,
@@ -453,7 +453,7 @@ types::Result<SchwabStreamerInfo> SchwabStreamer::FetchInfo() {
 types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeQuotes(
     const std::vector<std::string>& keys, QuoteCallback callback) {
     auto consumer = std::make_shared<Consumer>();
-    consumer->service = kLevelOne;
+    consumer->service = Service::kLevelOne;
     consumer->keys = {keys.begin(), keys.end()};
     consumer->on_quote = std::move(callback);
     return Add(std::move(consumer));
@@ -471,7 +471,7 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeBars(
                              std::string(types::ToString(timeframe)) + " bars");
     }
     auto consumer = std::make_shared<Consumer>();
-    consumer->service = kChart;
+    consumer->service = Service::kChart;
     consumer->keys = {keys.begin(), keys.end()};
     consumer->on_bar = std::move(callback);
     consumer->timeframe = timeframe;
@@ -519,7 +519,7 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::Add(
 
 void SchwabStreamer::Remove(std::uint64_t id) {
     std::set<std::string> removed;
-    Service service = kLevelOne;
+    Service service = Service::kLevelOne;
     std::unique_ptr<SchwabStreamerSocket> socket;
     {
         std::lock_guard lock(mMutex);
@@ -547,7 +547,7 @@ void SchwabStreamer::Remove(std::uint64_t id) {
     // Wait out a dispatch that may still be calling this consumer.
     {
         std::lock_guard dispatch(mDispatch);
-        if (service == kLevelOne) {
+        if (service == Service::kLevelOne) {
             for (const auto& key : removed) {
                 mMerger.Forget(key);
             }
@@ -588,8 +588,9 @@ void SchwabStreamer::SendKeys(Service service, std::string_view command,
                               const std::set<std::string>& keys) {
     json parameters = {{"keys", Join(keys)}};
     if (command != "UNSUBS") {
-        parameters["fields"] =
-            service == kLevelOne ? kSchwabLevelOneFields : kSchwabChartFields;
+        parameters["fields"] = service == Service::kLevelOne
+                                   ? kSchwabLevelOneFields
+                                   : kSchwabChartFields;
     }
     Send(ServiceName(service), command, std::move(parameters));
 }
@@ -651,7 +652,7 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
         std::lock_guard dispatch(mDispatch);
         mMerger.Reset();
         std::lock_guard lock(mMutex);
-        for (const auto& consumer : ConsumersOf(kChart)) {
+        for (const auto& consumer : ConsumersOf(Service::kChart)) {
             for (auto& [key, aggregator] : consumer->aggregators) {
                 aggregator.Reset();
             }
@@ -714,7 +715,8 @@ void SchwabStreamer::OnResponse(std::uint64_t generation, const json& item) {
             spdlog::info("schwab streamer: logged in ({})", message);
             mLoggedIn = true;
             mDenials = 0;
-            for (const Service service : {kLevelOne, kChart}) {
+            for (const Service service :
+                 {Service::kLevelOne, Service::kChart}) {
                 std::set<std::string> keys;
                 for (const auto& [key, count] : mKeys[service]) {
                     keys.insert(key);
@@ -781,9 +783,9 @@ void SchwabStreamer::OnData(std::uint64_t generation, const json& item) {
         return;
     }
     const std::string service = item.value("service", "");
-    if (service == ServiceName(kLevelOne)) {
+    if (service == ServiceName(Service::kLevelOne)) {
         OnQuotes(generation, *content);
-    } else if (service == ServiceName(kChart)) {
+    } else if (service == ServiceName(Service::kChart)) {
         OnBars(generation, *content);
     }
 }
@@ -800,7 +802,7 @@ void SchwabStreamer::OnQuotes(std::uint64_t generation, const json& content) {
         if (!Current(generation)) {
             return;
         }
-        consumers = ConsumersOf(kLevelOne);
+        consumers = ConsumersOf(Service::kLevelOne);
     }
     for (const auto& keyed : quotes) {
         for (const auto& consumer : consumers) {
@@ -829,7 +831,7 @@ void SchwabStreamer::OnBars(std::uint64_t generation, const json& content) {
         if (!Current(generation)) {
             return;
         }
-        consumers = ConsumersOf(kChart);
+        consumers = ConsumersOf(Service::kChart);
     }
     for (const auto& keyed : minutes) {
         auto symbol = FromSchwabSymbol(keyed.key);

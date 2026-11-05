@@ -180,8 +180,9 @@ std::vector<types::Quote> QuotesFromTrades(
 }
 
 types::Result<BacktestResult> RunBacktest(
-    std::shared_ptr<ReplayDataSource> data,
-    std::unique_ptr<strategy::Strategy> strategy, BacktestOptions options) {
+    const std::shared_ptr<ReplayDataSource>& data,
+    std::unique_ptr<strategy::Strategy> strategy,
+    const BacktestOptions& options) {
     if (options.end <= options.start) {
         return MakeError(ErrorCategory::kInvalidArgument,
                          "the end of a backtest must be after its start");
@@ -208,7 +209,7 @@ types::Result<BacktestResult> RunBacktest(
                     item.symbol = &symbol;
                     item.timeframe = timeframe;
                     item.bar = bar;
-                    timeline.push_back(std::move(item));
+                    timeline.push_back(item);
                 }
             }
         }
@@ -224,7 +225,7 @@ types::Result<BacktestResult> RunBacktest(
                     item.is_quote = true;
                     item.symbol = &symbol;
                     item.quote = &quote;
-                    timeline.push_back(std::move(item));
+                    timeline.push_back(item);
                 }
             }
         }

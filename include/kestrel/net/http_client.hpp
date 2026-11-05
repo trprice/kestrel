@@ -42,6 +42,10 @@ struct HttpResponse {
 class HttpClient {
    public:
     virtual ~HttpClient() = default;
+    HttpClient() = default;
+    // An interface: implementations are held by pointer, never copied.
+    HttpClient(const HttpClient&) = delete;
+    HttpClient& operator=(const HttpClient&) = delete;
     virtual types::Result<HttpResponse> Send(const HttpRequest& request) = 0;
 };
 

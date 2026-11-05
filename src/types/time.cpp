@@ -49,7 +49,7 @@ Result<Timestamp> ParseIso8601(std::string_view text) {
                                                     std::string(text) + "'");
     };
     std::size_t pos = 0;
-    int y, mo, d, h, mi, sec;
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
     if (!ReadInt(text, pos, 4, y) || !Expect(text, pos, '-') ||
         !ReadInt(text, pos, 2, mo) || !Expect(text, pos, '-') ||
         !ReadInt(text, pos, 2, d)) {

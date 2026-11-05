@@ -105,15 +105,19 @@ std::string BinanceUSQuoteStream::BuildUrl(
         std::ranges::transform(symbol, symbol.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
-        url += (first ? "" : "/") + symbol + "@bookTicker/" + symbol + "@trade";
+        url += first ? "" : "/";
+        url.append(symbol)
+            .append("@bookTicker/")
+            .append(symbol)
+            .append("@trade");
         first = false;
     }
     return url;
 }
 
 BinanceUSQuoteStream::BinanceUSQuoteStream(
-    std::string ws_base_url, std::vector<std::string> native_symbols,
-    QuoteCallback callback)
+    const std::string& ws_base_url,
+    const std::vector<std::string>& native_symbols, QuoteCallback callback)
     : mUrl(BuildUrl(ws_base_url, native_symbols)),
       mCallback(std::move(callback)),
       mSocket(std::make_unique<ix::WebSocket>()) {}

@@ -29,6 +29,10 @@ struct PnlRow {
 class TradeLog {
    public:
     virtual ~TradeLog() = default;
+    TradeLog() = default;
+    // An interface: implementations are held by pointer, never copied.
+    TradeLog(const TradeLog&) = delete;
+    TradeLog& operator=(const TradeLog&) = delete;
 
     // Each fill once. A fill that is written twice must not be stored twice.
     virtual types::Result<void> WriteFills(

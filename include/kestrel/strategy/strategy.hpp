@@ -30,6 +30,10 @@ struct Requirements {
 class Context {
    public:
     virtual ~Context() = default;
+    Context() = default;
+    // An interface: implementations are held by pointer, never copied.
+    Context(const Context&) = delete;
+    Context& operator=(const Context&) = delete;
 
     virtual types::Timestamp Now() const = 0;
 
@@ -51,6 +55,10 @@ class Context {
 class Strategy {
    public:
     virtual ~Strategy() = default;
+    Strategy() = default;
+    // An interface: implementations are held by pointer, never copied.
+    Strategy(const Strategy&) = delete;
+    Strategy& operator=(const Strategy&) = delete;
 
     virtual std::string_view Name() const = 0;
 

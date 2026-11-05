@@ -38,7 +38,7 @@ std::optional<Decimal> QuotePrice(const types::Quote& quote) {
 class OrderTracker : public trading::TradingVenue {
    public:
     struct Seen {
-        types::OrderState state;
+        types::OrderState state{};
         Decimal filled;
     };
 

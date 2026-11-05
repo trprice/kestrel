@@ -18,6 +18,10 @@ namespace kestrel::data {
 class Subscription {
    public:
     virtual ~Subscription() = default;
+    Subscription() = default;
+    // An interface: implementations are held by pointer, never copied.
+    Subscription(const Subscription&) = delete;
+    Subscription& operator=(const Subscription&) = delete;
     virtual void Stop() = 0;
 };
 
@@ -35,6 +39,10 @@ using BarCallback = std::function<void(const types::Symbol&, types::Timeframe,
 class DataSource {
    public:
     virtual ~DataSource() = default;
+    DataSource() = default;
+    // An interface: implementations are held by pointer, never copied.
+    DataSource(const DataSource&) = delete;
+    DataSource& operator=(const DataSource&) = delete;
 
     virtual std::string_view Name() const = 0;  // venue name, e.g. "kraken"
 
