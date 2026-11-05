@@ -105,10 +105,19 @@ class ConfigParser {
                                          Provider expected,
                                          const LoadOptions& options) {
         CommonSettings c;
+        if (auto ok = RejectUnknownTables(root); !ok) {
+            return std::unexpected(ok.error());
+        }
         const auto* general = root["general"].as_table();
         if (!general) {
             return MakeError(ErrorCategory::kInvalidArgument,
                              "config is missing the [general] table");
+        }
+        if (auto ok = RejectUnknownKeys(
+                general, "general",
+                {"provider", "mode", "symbols", "secrets_file"});
+            !ok) {
+            return std::unexpected(ok.error());
         }
 
         if (const auto provider = general->get("provider")) {
@@ -263,6 +272,15 @@ class ConfigParser {
         }
 
         if (const auto* paper = root["paper"].as_table()) {
+            if (auto ok = RejectUnknownKeys(
+                    paper, "paper",
+                    {"initial_balances", "maker_fee_bps", "taker_fee_bps",
+                     "slippage_bps", "default_quote_asset",
+                     "cap_limit_fills_at_quote_size", "order_latency_ms",
+                     "report_latency_ms", "limit_fill_model"});
+                !ok) {
+                return std::unexpected(ok.error());
+            }
             auto& p = c.paper;
             if (const auto* balances =
                     paper->get_as<toml::table>("initial_balances")) {
@@ -482,6 +500,12 @@ class ConfigParser {
         if (auto ok = RejectSecrets(&section, "database"); !ok) {
             return std::unexpected(ok.error());
         }
+        if (auto ok = RejectUnknownKeys(&section, "database",
+                                        {"host", "port", "dbname", "user",
+                                         "sslmode", "statement_timeout_ms"});
+            !ok) {
+            return std::unexpected(ok.error());
+        }
         db::ConnectionOptions d;
         d.host = Str(&section, "host", d.host);
         d.dbname = Str(&section, "dbname", d.dbname);
@@ -495,6 +519,16 @@ class ConfigParser {
             }
             d.port = static_cast<int>(*port);
         }
+        if (const auto* node = section.get("statement_timeout_ms")) {
+            const auto ms = node->value<std::int64_t>();
+            if (!node->is_integer() || !ms || *ms < 0) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 "[database] statement_timeout_ms must be a "
+                                 "whole number of milliseconds, 0 (no limit) "
+                                 "or more");
+            }
+            d.statement_timeout = std::chrono::milliseconds(*ms);
+        }
         auto secrets = Secrets(root, o);
         if (!secrets) {
             return std::unexpected(secrets.error());
@@ -503,6 +537,45 @@ class ConfigParser {
                             "KESTREL_DATABASE_PASSWORD")
                          .value_or("");
         return d;
+    }
+
+    // A misspelled key would otherwise be silently ignored and its default
+    // used, which for a config that can trade real money is the wrong way to
+    // fail. Every section is checked; [risk] and [recording] check their own.
+    static Result<void> RejectUnknownKeys(
+        const toml::table* table, std::string_view section,
+        std::initializer_list<std::string_view> known) {
+        if (!table) {
+            return {};
+        }
+        for (const auto& [key, node] : *table) {
+            if (std::find(known.begin(), known.end(), key.str()) ==
+                known.end()) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 "[" + std::string(section) +
+                                     "] has an unknown key '" +
+                                     std::string(key.str()) + "'");
+            }
+        }
+        return {};
+    }
+
+    // The tables a config may have (every provider's, whichever this is).
+    static Result<void> RejectUnknownTables(const toml::table& root) {
+        static constexpr std::string_view kTables[] = {
+            "general", "database", "risk",   "strategy",  "recording",
+            "http",    "paper",    "kraken", "binanceus", "schwab"};
+        for (const auto& [key, node] : root) {
+            if (std::find(std::begin(kTables), std::end(kTables), key.str()) ==
+                std::end(kTables)) {
+                return MakeError(
+                    ErrorCategory::kInvalidArgument,
+                    "config has an unknown " +
+                        std::string(node.is_table() ? "table [" : "key '") +
+                        std::string(key.str()) + (node.is_table() ? "]" : "'"));
+            }
+        }
+        return {};
     }
 
     // Credentials in the main file would end up in version control and logs.
@@ -702,6 +775,11 @@ Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
     if (auto ok = ConfigParser::RejectSecrets(section, "kraken"); !ok) {
         return std::unexpected(ok.error());
     }
+    if (auto ok = ConfigParser::RejectUnknownKeys(section, "kraken",
+                                                  {"rest_url", "ws_url"});
+        !ok) {
+        return std::unexpected(ok.error());
+    }
     auto creds = ConfigParser::Credentials<KrakenCredentials>(
         *root, options, "kraken", "KRAKEN", "api_key", "api_secret",
         [](std::string k, std::string s) {
@@ -741,6 +819,11 @@ Result<BinanceUSConfiguration> BinanceUSConfiguration::Parse(
     if (auto ok = ConfigParser::RejectSecrets(section, "binanceus"); !ok) {
         return std::unexpected(ok.error());
     }
+    if (auto ok = ConfigParser::RejectUnknownKeys(section, "binanceus",
+                                                  {"rest_url", "ws_url"});
+        !ok) {
+        return std::unexpected(ok.error());
+    }
     auto creds = ConfigParser::Credentials<BinanceUSCredentials>(
         *root, options, "binanceus", "BINANCEUS", "api_key", "api_secret",
         [](std::string k, std::string s) {
@@ -778,6 +861,13 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     }
     const auto* section = (*root)["schwab"].as_table();
     if (auto ok = ConfigParser::RejectSecrets(section, "schwab"); !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (auto ok = ConfigParser::RejectUnknownKeys(
+            section, "schwab",
+            {"redirect_uri", "token_file", "extended_hours",
+             "takeover_reconnect_ms"});
+        !ok) {
         return std::unexpected(ok.error());
     }
     auto creds = ConfigParser::Credentials<SchwabCredentials>(

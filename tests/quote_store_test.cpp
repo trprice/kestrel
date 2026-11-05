@@ -88,6 +88,28 @@ TEST_F(QuoteStoreTest, RoundTripsQuotesIncludingMissingFields) {
     EXPECT_EQ((*loaded)[1].last_taker_side, types::Side::kSell);
 }
 
+// A flush that failed after some of its batches went in is retried whole.
+TEST_F(QuoteStoreTest, SavingQuotesAgainSkipsTheStoredOnes) {
+    db::QuoteStore store(mDatabase);
+    std::vector<types::Quote> first;
+    for (int i = 0; i < 3; ++i) {
+        first.push_back(MakeQuote(i));
+    }
+    auto saved = store.Save(first);
+    ASSERT_OK(saved);
+    EXPECT_EQ(*saved, 3U);
+
+    auto again = first;
+    again.push_back(MakeQuote(3));
+    auto resaved = store.Save(again);
+    ASSERT_OK(resaved);
+    EXPECT_EQ(*resaved, 1U);  // only the new one
+    auto loaded = store.Load(kVenue, "BTC/USD", MakeQuote(0).received_time,
+                             MakeQuote(10).received_time);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->size(), 4U);
+}
+
 TEST_F(QuoteStoreTest, WriterFlushesBufferedQuotesOnDestruction) {
     {
         db::QuoteWriter writer(mDatabase, std::chrono::hours(1));

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -21,6 +22,9 @@ struct ConnectionOptions {
     std::string user;
     std::string password;  // never logged
     std::string sslmode;
+    // A statement running longer is cancelled by the server and fails; zero
+    // means no limit. Long enough for a backtest's large quote loads.
+    std::chrono::milliseconds statement_timeout{300'000};
 };
 
 // One PostgreSQL connection, serialised by a mutex so the stream thread and

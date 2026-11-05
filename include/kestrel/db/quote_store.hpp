@@ -25,7 +25,9 @@ class QuoteStore {
     explicit QuoteStore(std::shared_ptr<Database> database)
         : mDatabase(std::move(database)) {}
 
-    // Returns how many quotes were written.
+    // Returns how many of `quotes` were new. One already stored (same venue,
+    // symbol, received_time and seq) is skipped, so a retried save is
+    // harmless.
     types::Result<std::size_t> Save(std::span<const types::Quote> quotes);
 
     // Highest stored seq for the symbol, 0 if there are no quotes yet.

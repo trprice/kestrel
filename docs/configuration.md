@@ -8,11 +8,13 @@ Every command takes the file with `-c/--config`. `config/kestrel.example.toml`
 is a commented Kraken setup with every table except the `[binanceus]` and
 `[schwab]` provider tables (see [Provider tables](#provider-tables); there is
 no Schwab example file). `config/binanceus-zec-marketmaker.example.toml` is a
-complete Binance.US market-making setup. Unknown keys in `[risk]`,
-`[recording]` and `[http]` are errors when the config is loaded, so a
-misspelled limit is not silently ignored. Unknown `[strategy]` keys are errors
-too, but only when a strategy is built (`run` and `backtest`), since the
-valid keys depend on the strategy.
+complete Binance.US market-making setup. Unknown keys, in any table, and
+unknown tables are errors when the config is loaded, so a misspelled setting
+is never silently replaced by its default. One exception: a config may
+carry all three provider tables, and only its own provider's is read and
+checked. Unknown `[strategy]` keys are errors too,
+but only when a strategy is built (`run` and `backtest`), since the valid
+keys depend on the strategy.
 
 ## `[general]`
 
@@ -184,3 +186,9 @@ password comes from `KESTREL_DATABASE_PASSWORD`, `[database] password` in the
 secrets file, or libpq's `PGPASSWORD` / `~/.pgpass`. Use `host = "localhost"`
 when the role has a password, since the local socket normally uses peer
 authentication. See [database.md](database.md) for setting the database up.
+
+`statement_timeout_ms` (default 300000, 5 minutes; 0 for no limit) cancels a
+statement that runs longer. The connection also gives up connecting after
+10 s and notices a dead server or network with TCP keepalives (about a
+minute), so a database that stops answering fails the call instead of
+hanging it.

@@ -75,6 +75,9 @@ class SchwabDataSourceTest : public ::testing::Test {
         options.extended_hours = extended_hours;
         options.base_url = "https://api.test/marketdata/v1";
         options.clock = [this] { return mNow; };
+        options.sleeper = [this](std::chrono::milliseconds d) {
+            mSlept.push_back(d);
+        };
         return SchwabDataSource(
             std::make_shared<SchwabApi>(mAuth, mHttp,
                                         SchwabApi::Options{1000, 1000}),
@@ -91,7 +94,13 @@ class SchwabDataSourceTest : public ::testing::Test {
     std::shared_ptr<SchwabAuth> mAuth;
     std::shared_ptr<FakeHttp> mHttp;
     types::Timestamp mNow = At("2026-11-04T01:00:00Z");
+    std::vector<std::chrono::milliseconds> mSlept;
 };
+
+types::Result<net::HttpResponse> Status(int status, std::string body = "") {
+    return std::unexpected(net::ErrorFromHttpStatus(
+        net::HttpResponse{status, std::move(body), {}}));
+}
 
 TEST_F(SchwabDataSourceTest, TrimsTheDaySchwabSendsToTheRange) {
     // Schwab answers a few minutes with the whole day.
@@ -242,6 +251,57 @@ TEST_F(SchwabDataSourceTest, ReportsErrorsAndMalformedAnswers) {
         ASSERT_FALSE(bad.has_value()) << body;
         EXPECT_EQ(bad.error().category, types::ErrorCategory::kParse) << body;
     }
+}
+
+TEST_F(SchwabDataSourceTest, RetriesAPageThatFailsTransiently) {
+    // Two pages of minute bars; the second fails twice (429, then 503).
+    int calls = 0;
+    mHttp->reply = [&calls](const net::HttpRequest&) {
+        ++calls;
+        if (calls == 2) {
+            auto limited =
+                net::ErrorFromHttpStatus(net::HttpResponse{429, "", {}});
+            limited.retry_after = std::chrono::seconds(3);
+            return types::Result<net::HttpResponse>(std::unexpected(limited));
+        }
+        if (calls == 3) {
+            return Status(503);
+        }
+        return types::Result<net::HttpResponse>(net::HttpResponse{
+            200, Candles({Candle("2026-10-20T14:30:00Z")}), {}});
+    };
+    auto bars =
+        Source().GetBars("SPY", Timeframe::kM1, At("2026-10-15T00:00:00Z"),
+                         At("2026-11-03T00:00:00Z"));
+    ASSERT_OK(bars);
+    EXPECT_EQ(bars->size(), 1u);
+    EXPECT_EQ(calls, 4);
+    ASSERT_EQ(mSlept.size(), 2u);
+    EXPECT_GE(mSlept[0], std::chrono::seconds(3));  // Retry-After honoured
+}
+
+TEST_F(SchwabDataSourceTest,
+       GivesUpAfterTheLastAttemptAndNeverRetriesARefusal) {
+    int calls = 0;
+    mHttp->reply = [&calls](const net::HttpRequest&) {
+        ++calls;
+        return Status(500);
+    };
+    auto failed =
+        Source().GetBars("SPY", Timeframe::kM1, At("2026-11-03T14:30:00Z"),
+                         At("2026-11-03T15:00:00Z"));
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(calls, util::RetryPolicy{}.max_attempts);
+
+    calls = 0;
+    mHttp->reply = [&calls](const net::HttpRequest&) {
+        ++calls;
+        return Status(400);
+    };
+    EXPECT_FALSE(Source().GetBars("SPY", Timeframe::kM1,
+                                  At("2026-11-03T14:30:00Z"),
+                                  At("2026-11-03T15:00:00Z")));
+    EXPECT_EQ(calls, 1);
 }
 
 TEST_F(SchwabDataSourceTest, RefusesTimeframesSchwabLacksAndBadRanges) {

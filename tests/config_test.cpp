@@ -93,6 +93,90 @@ TEST(Config, DatabaseSectionIsOptionalAndTakesPasswordFromEnv) {
     EXPECT_EQ(cfg->GetDatabase()->dbname, "bars");
     EXPECT_EQ(cfg->GetDatabase()->user, "kes");
     EXPECT_EQ(cfg->GetDatabase()->password, "hunter2");
+    EXPECT_EQ(cfg->GetDatabase()->statement_timeout, std::chrono::minutes(5));
+}
+
+// The shipped examples must load: every key in them is one Kestrel knows.
+TEST(Config, TheExampleConfigsLoad) {
+    const auto dir =
+        std::filesystem::path(KESTREL_TEST_DATA_DIR) / ".." / ".." / "config";
+    int loaded = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        const auto name = entry.path().filename().string();
+        if (!name.ends_with(".example.toml") || name.starts_with("secrets")) {
+            continue;
+        }
+        auto cfg = config::LoadConfiguration(entry.path());
+        EXPECT_TRUE(cfg.has_value())
+            << name << ": " << (cfg ? "" : cfg.error().ToString());
+        ++loaded;
+    }
+    EXPECT_GE(loaded, 3);
+}
+
+TEST(Config, UnknownKeysAndTablesAreErrors) {
+    const std::string base = kKrakenToml;
+    for (const char* extra :
+         {"\n[recordng]\nenabled = true\n", "\n[database]\nprot = 5433\n",
+          "\n[kraken]\nrest_ulr = \"https://example.test\"\n"}) {
+        auto cfg = config::KrakenConfiguration::Parse(base + extra, NoEnv());
+        ASSERT_FALSE(cfg.has_value()) << extra;
+        EXPECT_NE(cfg.error().message.find("unknown"), std::string::npos)
+            << cfg.error().message;
+    }
+    // Each provider checks its own section.
+    const auto as = [&base](const char* provider) {
+        std::string text = base;
+        text.replace(text.find("\"kraken\""), 8,
+                     "\"" + std::string(provider) + "\"");
+        return text;
+    };
+    auto binance = config::BinanceUSConfiguration::Parse(
+        as("binanceus") + "\n[binanceus]\nws = \"wss://example.test\"\n",
+        NoEnv());
+    ASSERT_FALSE(binance.has_value());
+    EXPECT_NE(binance.error().message.find("unknown key 'ws'"),
+              std::string::npos)
+        << binance.error().message;
+    auto schwab = config::SchwabConfiguration::Parse(
+        as("schwab") + "\n[schwab]\ntoken_fiile = \"t.json\"\n", NoEnv());
+    ASSERT_FALSE(schwab.has_value());
+    EXPECT_NE(schwab.error().message.find("unknown key 'token_fiile'"),
+              std::string::npos)
+        << schwab.error().message;
+    // [general] and [paper] are checked too.
+    std::string general = base;
+    general.insert(general.find("[general]") + 10, "simbols = [\"X\"]\n");
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(general, NoEnv()));
+    std::string paper = base;
+    paper.insert(paper.find("[paper]") + 8, "slipage_bps = 5\n");
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(paper, NoEnv()));
+    // Another provider's section is allowed, and not read.
+    EXPECT_TRUE(config::KrakenConfiguration::Parse(
+        base + "\n[schwab]\nextended_hours = true\n", NoEnv()));
+    // A credential in the main file still says so, not "unknown key".
+    auto secret = config::KrakenConfiguration::Parse(
+        base + "\n[database]\npassword = \"x\"\n", NoEnv());
+    ASSERT_FALSE(secret.has_value());
+    EXPECT_NE(secret.error().message.find("credentials"), std::string::npos);
+}
+
+TEST(Config, DatabaseStatementTimeout) {
+    const auto parse = [](const std::string& value) {
+        return config::KrakenConfiguration::Parse(
+            std::string(kKrakenToml) +
+                "\n[database]\nstatement_timeout_ms = " + value + "\n",
+            NoEnv());
+    };
+    auto set = parse("60000");
+    ASSERT_OK(set);
+    EXPECT_EQ(set->GetDatabase()->statement_timeout, std::chrono::minutes(1));
+    auto none = parse("0");
+    ASSERT_OK(none);
+    EXPECT_EQ(none->GetDatabase()->statement_timeout.count(), 0);
+    for (const char* bad : {"-1", "1.5", "\"30s\""}) {
+        EXPECT_FALSE(parse(bad).has_value()) << bad;
+    }
 }
 
 TEST(Config, DatabasePasswordInMainConfigIsRejected) {

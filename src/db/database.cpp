@@ -83,7 +83,19 @@ PGconn* Open(const ConnectionOptions& o) {
     add("password", o.password);
     add("sslmode", o.sslmode);
     add("application_name", "kestrel");
-    add("options", "-c client_min_messages=warning");
+    // A server or network that stops answering must not hang the caller (a
+    // stream thread recording bars, say): give up connecting after 10 s,
+    // notice a dead peer with keepalives (idle 30 s, then every 10 s, 3
+    // tries), and drop a connection whose sent data goes unacknowledged
+    // for 60 s.
+    add("connect_timeout", "10");
+    add("keepalives", "1");
+    add("keepalives_idle", "30");
+    add("keepalives_interval", "10");
+    add("keepalives_count", "3");
+    add("tcp_user_timeout", "60000");
+    add("options", "-c client_min_messages=warning -c statement_timeout=" +
+                       std::to_string(o.statement_timeout.count()));
     keys.push_back(nullptr);
     values.push_back(nullptr);
     return PQconnectdbParams(keys.data(), values.data(), 0);

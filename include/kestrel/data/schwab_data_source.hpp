@@ -7,6 +7,7 @@
 #include "kestrel/data/data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_streamer.hpp"
+#include "kestrel/util/retry.hpp"
 
 namespace kestrel::data {
 
@@ -66,6 +67,10 @@ class SchwabDataSource : public DataSource {
         // See SchwabStreamer: zero never reconnects after a takeover.
         std::chrono::milliseconds takeover_reconnect{0};
         std::function<types::Timestamp()> clock = types::Now;
+        // Each price-history page is retried on a transient failure (a
+        // timeout, 429 or 5xx), honouring Retry-After.
+        util::RetryPolicy retry;
+        util::Sleeper sleeper = util::DefaultSleep;
     };
 
     explicit SchwabDataSource(std::shared_ptr<SchwabApi> api)

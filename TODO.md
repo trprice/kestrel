@@ -20,22 +20,8 @@ the risk limits on `order`, and Binance.US order statuses that fail closed.
 See Done.
 
 ### 2. The Schwab and recording path in use now
-- [ ] Retry Schwab `GetBars` with `util::Retry`, as the other providers do
-      (`src/data/schwab_data_source.cpp`): one 429 or timeout on a page
-      aborts a backtest download or the runner's warmup and gap backfill.
-- [ ] `QuoteStore::Save`: `ON CONFLICT (venue, symbol, received_time, seq)
-      DO NOTHING`, as the other stores have. A save of more than 1000 quotes
-      is several inserts; if a later one fails, `QuoteWriter::Flush` retries
-      them all, the saved ones violate the unique constraint every time, and
-      the buffer ends up dropping quotes.
-- [ ] Database timeouts: `connect_timeout`, TCP keepalives and a
-      `statement_timeout` (`src/db/database.cpp`). A dead connection can hang
-      the stream thread that writes bars (`BarStore::MakeStreamSink`) or
-      numbers quotes (`QuoteWriter::Push`'s first `LastSeq`).
-- [ ] Unknown keys are errors in every config section, not only `[risk]`,
-      `[recording]`, `[http]` and `[strategy]`: a misspelled `token_file` in
-      `[schwab]` falls back to the default, a misspelled `slippage_bps`
-      changes a backtest silently.
+Done (Nov 5 2026): Schwab `GetBars` retries, idempotent quote saves,
+database timeouts, and unknown config keys rejected everywhere. See Done.
 
 ### 3. Quick hygiene
 - [ ] `URL_HASH` on the `nlohmann_json` download
@@ -67,6 +53,9 @@ See Done.
       `sql::ParseDecimal` reads zero; return kParse instead.
 - [ ] The backtest summary keeps every mark of the run; only the markout
       horizons' tail is needed.
+- [ ] `bars <timeframe> <count>` prints one bar fewer than asked for: the
+      range ends at now, so the bar still forming is not returned
+      (`app/commands/bars.cpp`).
 
 ### 5. Before the Kraken or Schwab trading venue lands
 - [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
@@ -784,6 +773,16 @@ the header of the code concerned.
 - [x] Binance.US order statuses with an unknown side, type or time in force
       fail with kParse instead of being read as a buy, a limit order or GTC
       (a missing time in force, as on market orders, is still GTC)
+
+### Recording and configuration
+- [x] Schwab `GetBars` retries each page on a timeout, 429 or 5xx
+      (`util::Retry`, honouring Retry-After), as the other providers do
+- [x] `QuoteStore::Save` skips quotes already stored (`ON CONFLICT ... DO
+      NOTHING`), so a retried flush no longer fails forever and drops quotes
+- [x] Database connections: a 10 s connect timeout, TCP keepalives and
+      user timeout, and `[database] statement_timeout_ms` (default 5 min)
+- [x] Unknown keys in every config table, and unknown tables, are errors at
+      load; the shipped examples are loaded by a test
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

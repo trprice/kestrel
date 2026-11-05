@@ -66,6 +66,35 @@ class BarStoreTest : public ::testing::Test {
     std::unique_ptr<db::BarStore> mStore;
 };
 
+// Not about bars: the connection's statement timeout, on the same database.
+TEST_F(BarStoreTest, TheStatementTimeoutCancelsALongStatement) {
+    db::ConnectionOptions options;
+    options.dbname = Env("KESTREL_TEST_DBNAME");
+    options.host = Env("KESTREL_TEST_DBHOST");
+    options.user = Env("KESTREL_TEST_DBUSER");
+    options.password = Env("KESTREL_TEST_DBPASSWORD");
+    if (const auto port = Env("KESTREL_TEST_DBPORT"); !port.empty()) {
+        options.port = std::stoi(port);
+    }
+    options.statement_timeout = std::chrono::milliseconds(200);
+    auto database = db::Database::Connect(options);
+    ASSERT_OK(database);
+    auto shown = (*database)->Query("SHOW statement_timeout");
+    ASSERT_OK(shown);
+    EXPECT_EQ((*shown)[0][0], "200ms");
+    const auto before = std::chrono::steady_clock::now();
+    auto slept = (*database)->Query("SELECT pg_sleep(5)");
+    EXPECT_FALSE(slept.has_value());
+    EXPECT_LT(std::chrono::steady_clock::now() - before,
+              std::chrono::seconds(3));
+    ASSERT_OK((*database)->Query("SELECT 1"));  // still usable
+
+    // The default is five minutes.
+    auto shown_default = mDatabase->Query("SHOW statement_timeout");
+    ASSERT_OK(shown_default);
+    EXPECT_EQ((*shown_default)[0][0], "5min");
+}
+
 TEST_F(BarStoreTest, RoundTripsBarsExactly) {
     const std::vector<types::Bar> bars = {MakeBar(0, "105.5"),
                                           MakeBar(1, "106")};

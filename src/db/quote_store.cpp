@@ -28,6 +28,11 @@ std::string InsertSql(std::size_t rows) {
         }
         sql += ")";
     }
+    // A quote already stored (a retried flush whose earlier batch went in)
+    // is skipped, not an error.
+    sql +=
+        " ON CONFLICT (venue, symbol, received_time, seq) DO NOTHING "
+        "RETURNING 1";
     return sql;
 }
 
@@ -47,7 +52,8 @@ std::optional<types::Decimal> ParseOptional(
 }  // namespace
 
 Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
-    std::size_t written = 0;
+    std::size_t written = 0;  // sent
+    std::size_t stored = 0;   // new
     while (written < quotes.size()) {
         const auto batch = quotes.subspan(
             written, std::min(kRowsPerInsert, quotes.size() - written));
@@ -77,9 +83,10 @@ Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
         if (!result) {
             return std::unexpected(result.error());
         }
+        stored += result->size();
         written += batch.size();
     }
-    return written;
+    return stored;
 }
 
 Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,

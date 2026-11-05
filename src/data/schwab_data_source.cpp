@@ -113,7 +113,9 @@ types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
             request.query["needExtendedHoursData"] =
                 mOptions.extended_hours ? "true" : "false";
         }
-        auto response = mApi->Send(std::move(request));
+        auto response = util::Retry(
+            mOptions.retry, [&] { return mApi->Send(request); },
+            mOptions.sleeper);
         if (!response) {
             auto error = response.error();
             error.message =
