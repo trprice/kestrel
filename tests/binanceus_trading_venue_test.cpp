@@ -419,6 +419,34 @@ TEST(BinanceUSTradingVenue, AnUnknownSideOrTypeFailsTheCall) {
     }
 }
 
+TEST(BinanceUSTradingVenue, AMissingTimeInForceIsGtcButAnUnknownOneFails) {
+    const std::string order = Order("ZECUSDT", 31, "NEW", "MARKET", "BUY",
+                                    "0.00", "0.01", "0.0", "0.0");
+    const std::string tif = "\"timeInForce\":\"GTC\",";
+    ASSERT_NE(order.find(tif), std::string::npos);
+    {
+        Fixture f;
+        auto venue = f.Venue();
+        std::string missing = order;
+        missing.erase(missing.find(tif), tif.size());
+        f.http->Push("/api/v3/order", missing);
+        auto parsed = venue->GetOrder("31");
+        ASSERT_OK(parsed);
+        EXPECT_EQ(parsed->time_in_force, types::TimeInForce::kGtc);
+    }
+    {
+        Fixture f;
+        auto venue = f.Venue();
+        std::string unknown = order;
+        unknown.replace(unknown.find(tif), tif.size(),
+                        "\"timeInForce\":\"GTX\",");
+        f.http->Push("/api/v3/order", unknown);
+        auto parsed = venue->GetOrder("31");
+        ASSERT_FALSE(parsed.has_value());
+        EXPECT_EQ(parsed.error().category, types::ErrorCategory::kParse);
+    }
+}
+
 TEST(BinanceUSTradingVenue, ReportsNoPositions) {
     Fixture f;
     auto venue = f.Venue();

@@ -163,14 +163,19 @@ Result<types::OrderType> OrderTypeFrom(const std::string& type) {
     return std::unexpected(Malformed("unknown order type \"" + type + "\""));
 }
 
-types::TimeInForce TimeInForceFrom(const std::string& tif) {
+// Binance leaves timeInForce out of some orders (market ones), which are GTC
+// here; a value it does send must be one of its three.
+Result<types::TimeInForce> TimeInForceFrom(const std::string& tif) {
+    if (tif.empty() || tif == "GTC") {
+        return types::TimeInForce::kGtc;
+    }
     if (tif == "IOC") {
         return types::TimeInForce::kIoc;
     }
     if (tif == "FOK") {
         return types::TimeInForce::kFok;
     }
-    return types::TimeInForce::kGtc;
+    return std::unexpected(Malformed("unknown time in force \"" + tif + "\""));
 }
 
 // A PENDING_CANCEL order is still working, so it reports by what it has
@@ -228,6 +233,10 @@ Result<types::OrderStatus> ParseOrder(const json& order) {
     if (!parsed_type) {
         return std::unexpected(parsed_type.error());
     }
+    auto tif = TimeInForceFrom(OptionalText(order, "timeInForce"));
+    if (!tif) {
+        return std::unexpected(tif.error());
+    }
 
     types::OrderStatus out;
     out.order_id = std::to_string(*id);
@@ -235,7 +244,7 @@ Result<types::OrderStatus> ParseOrder(const json& order) {
     out.symbol = *symbol;
     out.side = *parsed_side;
     out.type = *parsed_type;
-    out.time_in_force = TimeInForceFrom(OptionalText(order, "timeInForce"));
+    out.time_in_force = *tif;
     out.quantity = *quantity;
     out.filled_quantity = *filled;
     out.state = OrderStateFrom(*status, *filled);

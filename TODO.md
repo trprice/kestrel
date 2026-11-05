@@ -781,8 +781,9 @@ the header of the code concerned.
       bars, and 5 to 30 minutes built from them, in the regular session
       unless `[schwab] extended_hours`. Bar strategies run on Schwab in paper
       mode.
-- [x] Binance.US order statuses with an unknown side or type fail with
-      kParse instead of being read as a buy or a limit order
+- [x] Binance.US order statuses with an unknown side, type or time in force
+      fail with kParse instead of being read as a buy, a limit order or GTC
+      (a missing time in force, as on market orders, is still GTC)
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building
