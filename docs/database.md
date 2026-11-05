@@ -45,7 +45,8 @@ automatically on startup (`src/db/migrations.cpp`, append-only).
 ```
 
 Saving bars is an upsert, so re-pulling a range is harmless. `stream-bars`
-(`DataSource::StreamBars`, implemented for Binance.US klines) emits each bar
+(`DataSource::StreamBars`, implemented for Binance.US klines and Schwab's
+1-minute chart stream) emits each bar
 once, when it closes. Bars closed while the socket was down are not replayed;
 backfill with `bars --store`.
 

@@ -75,6 +75,12 @@ struct Wire {
              R"("command":"SUBS","content":)" +
                  content + "}]}");
     }
+    void Chart(const std::string& content) {
+        Fire(Event::kMessage,
+             R"({"data":[{"service":"CHART_EQUITY","timestamp":1,)"
+             R"("command":"SUBS","content":)" +
+                 content + "}]}");
+    }
     // Opens and logs in.
     void Connect() {
         Fire(Event::kOpen);
@@ -167,6 +173,22 @@ class SchwabStreamerTest : public ::testing::Test {
     std::shared_ptr<SchwabStreamer> mStreamer;
     types::Timestamp mNow = *types::ParseIso8601("2026-11-04T20:00:00Z");
 };
+
+types::Timestamp At(const char* iso) { return *types::ParseIso8601(iso); }
+
+// A CHART_EQUITY item as Schwab sends it (fields one higher than documented).
+std::string ChartItem(const std::string& key, const char* iso,
+                      const std::string& ohlcv = R"("2":10,"3":12,"4":9,)"
+                                                 R"("5":11,"6":100)") {
+    return R"({"seq":1,"key":")" + key + R"(","1":224,)" + ohlcv + R"(,"7":)" +
+           std::to_string(types::ToEpochMillis(At(iso))) + R"(,"8":20762})";
+}
+
+types::Bar Minute(const char* iso, const char* open, const char* high,
+                  const char* low, const char* close, const char* volume) {
+    return {At(iso),         testing::D(open),  testing::D(high),
+            testing::D(low), testing::D(close), testing::D(volume)};
+}
 
 std::vector<SchwabKeyedQuote> Merge(SchwabLevelOneMerger& merger,
                                     const std::string& content) {
@@ -482,6 +504,251 @@ TEST_F(SchwabStreamerTest, TheDataSourceMapsSymbols) {
     mWire->Data(R"([{"key":"BRK/B","1":578.78}])");
     ASSERT_EQ(quotes.size(), 1u);
     EXPECT_EQ(quotes[0].symbol, "BRK.B");
+}
+
+TEST(SchwabChartBars, ParsedFromALiveMessage) {
+    // As CHART_EQUITY sent it on Nov 5 2026 (volume may be fractional).
+    const auto bars = ParseSchwabChartBars(*util::ParseJson(R"([
+        {"seq":1767,"key":"SPY","1":225,"2":744.93,"3":745.11,"4":743.2,
+         "5":743.2,"6":244814.775721,"7":1793893500000,"8":20762},
+        {"seq":167,"key":"BRK/B","1":225,"2":582.42,"3":583.2,"4":582.42}])"));
+    ASSERT_EQ(bars.size(), 1u);  // BRK/B has no close, volume or time
+    EXPECT_EQ(bars[0].key, "SPY");
+    const auto& bar = bars[0].bar;
+    EXPECT_EQ(bar.open_time, At("2026-11-05T15:45:00Z"));
+    EXPECT_EQ(bar.open, testing::D("744.93"));
+    EXPECT_EQ(bar.high, testing::D("745.11"));
+    EXPECT_EQ(bar.low, testing::D("743.2"));
+    EXPECT_EQ(bar.close, testing::D("743.2"));
+    EXPECT_EQ(bar.volume, testing::D("244814.775721"));
+}
+
+TEST(SchwabChartBars, RegularSessionInNewYorkTime) {
+    // EST (UTC-5) in November.
+    EXPECT_FALSE(InUsRegularSession(At("2026-11-05T14:29:00Z")));
+    EXPECT_TRUE(InUsRegularSession(At("2026-11-05T14:30:00Z")));
+    EXPECT_TRUE(InUsRegularSession(At("2026-11-05T20:59:00Z")));
+    EXPECT_FALSE(InUsRegularSession(At("2026-11-05T21:00:00Z")));
+    // EDT (UTC-4) in July.
+    EXPECT_FALSE(InUsRegularSession(At("2026-07-01T13:29:00Z")));
+    EXPECT_TRUE(InUsRegularSession(At("2026-07-01T13:30:00Z")));
+    EXPECT_FALSE(InUsRegularSession(At("2026-07-01T20:00:00Z")));
+    // A Saturday.
+    EXPECT_FALSE(InUsRegularSession(At("2026-11-07T15:00:00Z")));
+}
+
+TEST(SchwabBarAggregator, OneMinuteBarsPassThroughOnce) {
+    SchwabBarAggregator one(1min);
+    const auto bar = Minute("2026-11-05T15:44:00Z", "1", "2", "1", "2", "5");
+    const auto out = one.Add(bar);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].open_time, bar.open_time);
+    EXPECT_EQ(out[0].close, bar.close);
+    // Sent again (as on every subscribe), even after a reconnect: ignored.
+    EXPECT_TRUE(one.Add(bar).empty());
+    one.Reset();
+    EXPECT_TRUE(one.Add(bar).empty());
+    EXPECT_EQ(
+        one.Add(Minute("2026-11-05T15:45:00Z", "2", "2", "2", "2", "1")).size(),
+        1u);
+}
+
+TEST(SchwabBarAggregator, BuildsLongerBarsOnlyFromWholeIntervals) {
+    SchwabBarAggregator five(5min);
+    // Joined at 15:43: 15:40's bar would lack 15:40 to 15:42.
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:43:00Z", "1", "1", "1", "1", "1"))
+            .empty());
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:44:00Z", "1", "1", "1", "1", "1"))
+            .empty());
+    // 15:45 to 15:49, with no trades at 15:47: it closes with its last minute.
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:45:00Z", "10", "12", "9", "11", "100"))
+            .empty());
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:46:00Z", "11", "15", "10", "14", "50"))
+            .empty());
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:48:00Z", "14", "14", "8", "9", "25.5"))
+            .empty());
+    const auto out =
+        five.Add(Minute("2026-11-05T15:49:00Z", "9", "10", "9", "10", "4.5"));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0].open_time, At("2026-11-05T15:45:00Z"));
+    EXPECT_EQ(out[0].open, testing::D("10"));
+    EXPECT_EQ(out[0].high, testing::D("15"));
+    EXPECT_EQ(out[0].low, testing::D("8"));
+    EXPECT_EQ(out[0].close, testing::D("10"));
+    EXPECT_EQ(out[0].volume, testing::D("180"));
+
+    // 15:50's last minute has no trades: it closes with 15:55's first.
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:51:00Z", "5", "6", "4", "6", "1"))
+            .empty());
+    const auto late =
+        five.Add(Minute("2026-11-05T15:56:00Z", "7", "7", "7", "7", "1"));
+    ASSERT_EQ(late.size(), 1u);
+    EXPECT_EQ(late[0].open_time, At("2026-11-05T15:50:00Z"));
+    EXPECT_EQ(late[0].close, testing::D("6"));
+
+    // After a reconnect the bar under way is dropped (minutes may be
+    // missing), and so is the next partial one.
+    five.Reset();
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T15:59:00Z", "1", "1", "1", "1", "1"))
+            .empty());
+    EXPECT_TRUE(
+        five.Add(Minute("2026-11-05T16:00:00Z", "1", "1", "1", "1", "1"))
+            .empty());
+    EXPECT_EQ(five.Add(Minute("2026-11-05T16:04:00Z", "1", "1", "1", "1", "1"))
+                  .size(),
+              1u);
+}
+
+TEST_F(SchwabStreamerTest, BarsAndQuotesShareTheConnection) {
+    std::vector<types::Quote> quotes;
+    auto quote_sub = Subscribe({"SPY"}, quotes);
+    std::vector<std::pair<types::Symbol, types::Bar>> bars;
+    auto bar_sub = mStreamer->SubscribeBars(
+        {"BRK/B", "SPY"}, types::Timeframe::kM1,
+        [&bars](const types::Symbol& symbol, types::Timeframe tf,
+                const types::Bar& bar) {
+            EXPECT_EQ(tf, types::Timeframe::kM1);
+            bars.emplace_back(symbol, bar);
+        });
+    ASSERT_OK(bar_sub);
+    mWire->Connect();
+    EXPECT_EQ(mWire->started, 1);
+    ASSERT_EQ(mWire->sent.size(), 3u);  // LOGIN, then a SUBS per service
+    EXPECT_EQ(mWire->sent[1]["service"], "LEVELONE_EQUITIES");
+    EXPECT_EQ(mWire->sent[2]["service"], "CHART_EQUITY");
+    EXPECT_EQ(mWire->sent[2]["command"], "SUBS");
+    EXPECT_EQ(mWire->sent[2]["parameters"]["keys"], "BRK/B,SPY");
+    EXPECT_EQ(mWire->sent[2]["parameters"]["fields"], kSchwabChartFields);
+
+    mWire->Chart("[" + ChartItem("BRK/B", "2026-11-05T15:44:00Z") + "]");
+    ASSERT_EQ(bars.size(), 1u);
+    EXPECT_EQ(bars[0].first, "BRK.B");
+    EXPECT_EQ(bars[0].second.close, testing::D("11"));
+    EXPECT_TRUE(quotes.empty());
+
+    // A later subscription on a logged-in connection ADDs its new keys.
+    auto more = mStreamer->SubscribeBars(
+        {"AAPL", "SPY"}, types::Timeframe::kM5,
+        [](const types::Symbol&, types::Timeframe, const types::Bar&) {});
+    ASSERT_OK(more);
+    EXPECT_EQ(mWire->Last()["service"], "CHART_EQUITY");
+    EXPECT_EQ(mWire->Last()["command"], "ADD");
+    EXPECT_EQ(mWire->Last()["parameters"]["keys"], "AAPL");
+
+    // Stopping the bars UNSUBS only the chart keys nobody else wants.
+    (*bar_sub)->Stop();
+    EXPECT_EQ(mWire->Last()["service"], "CHART_EQUITY");
+    EXPECT_EQ(mWire->Last()["command"], "UNSUBS");
+    EXPECT_EQ(mWire->Last()["parameters"]["keys"], "BRK/B");
+    mWire->Chart("[" + ChartItem("BRK/B", "2026-11-05T15:45:00Z") + "]");
+    EXPECT_EQ(bars.size(), 1u);
+    EXPECT_EQ(mWire->stopped, 0);
+}
+
+TEST_F(SchwabStreamerTest, AReconnectDropsTheBarUnderWay) {
+    std::vector<types::Bar> bars;
+    auto sub = mStreamer->SubscribeBars(
+        {"SPY"}, types::Timeframe::kM5,
+        [&bars](const types::Symbol&, types::Timeframe, const types::Bar& b) {
+            bars.push_back(b);
+        });
+    ASSERT_OK(sub);
+    mWire->Connect();
+    // The subscribe's last closed minute, 15:44, ends 15:40's bar, which
+    // began before the stream did.
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T15:44:00Z") + "]");
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T15:45:00Z") + "]");
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T15:46:00Z") + "]");
+    EXPECT_TRUE(bars.empty());
+    mWire->Fire(Event::kClose, "1006 gone");
+
+    mWire->Connect();
+    EXPECT_EQ(mWire->Last()["service"], "CHART_EQUITY");
+    EXPECT_EQ(mWire->Last()["command"], "SUBS");
+    // 15:47 was missed: 15:45's bar is not given.
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T15:48:00Z") + "]");
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T15:49:00Z") + "]");
+    EXPECT_TRUE(bars.empty());
+    for (const char* minute : {"2026-11-05T15:50:00Z", "2026-11-05T15:51:00Z",
+                               "2026-11-05T15:52:00Z", "2026-11-05T15:53:00Z",
+                               "2026-11-05T15:54:00Z"}) {
+        mWire->Chart("[" + ChartItem("SPY", minute) + "]");
+    }
+    ASSERT_EQ(bars.size(), 1u);
+    EXPECT_EQ(bars[0].open_time, At("2026-11-05T15:50:00Z"));
+    EXPECT_EQ(bars[0].volume, testing::D("500"));
+}
+
+TEST_F(SchwabStreamerTest, TheDataSourceStreamsBarsInTheSession) {
+    SchwabDataSource::Options options;
+    options.trader_url = "https://api.test/trader/v1";
+    options.make_socket = [this] {
+        return std::make_unique<FakeSocket>(mWire);
+    };
+    SchwabDataSource source(mApi, options);
+    const auto ignore = [](const types::Symbol&, types::Timeframe,
+                           const types::Bar&) {};
+    EXPECT_FALSE(source.StreamBars({}, types::Timeframe::kM1, ignore));
+    EXPECT_FALSE(source.StreamBars({"SPY"}, types::Timeframe::kM1, nullptr));
+    const auto hourly =
+        source.StreamBars({"SPY"}, types::Timeframe::kH1, ignore);
+    ASSERT_FALSE(hourly);
+    EXPECT_EQ(hourly.error().category, types::ErrorCategory::kUnsupported);
+
+    std::vector<std::pair<types::Symbol, types::Bar>> bars;
+    auto sub = source.StreamBars(
+        {"brk.b"}, types::Timeframe::kM1,
+        [&bars](const types::Symbol& symbol, types::Timeframe,
+                const types::Bar& bar) { bars.emplace_back(symbol, bar); });
+    ASSERT_OK(sub);
+    mWire->Connect();
+    EXPECT_EQ(mWire->Last()["parameters"]["keys"], "BRK/B");
+    // 09:29 and 16:00 New York time are outside the regular session.
+    mWire->Chart("[" + ChartItem("BRK/B", "2026-11-05T14:29:00Z") + "," +
+                 ChartItem("BRK/B", "2026-11-05T14:30:00Z") + "," +
+                 ChartItem("BRK/B", "2026-11-05T21:00:00Z") + "]");
+    ASSERT_EQ(bars.size(), 1u);
+    EXPECT_EQ(bars[0].first, "BRK.B");
+    EXPECT_EQ(bars[0].second.open_time, At("2026-11-05T14:30:00Z"));
+}
+
+TEST_F(SchwabStreamerTest, WithExtendedHoursEveryBarIsStreamed) {
+    SchwabDataSource::Options options;
+    options.extended_hours = true;
+    options.trader_url = "https://api.test/trader/v1";
+    options.make_socket = [this] {
+        return std::make_unique<FakeSocket>(mWire);
+    };
+    SchwabDataSource source(mApi, options);
+    int bars = 0;
+    auto sub = source.StreamBars({"SPY"}, types::Timeframe::kM1,
+                                 [&bars](const types::Symbol&, types::Timeframe,
+                                         const types::Bar&) { ++bars; });
+    ASSERT_OK(sub);
+    mWire->Connect();
+    mWire->Chart("[" + ChartItem("SPY", "2026-11-05T12:00:00Z") + "," +
+                 ChartItem("SPY", "2026-11-05T22:00:00Z") + "]");
+    EXPECT_EQ(bars, 2);
+}
+
+TEST_F(SchwabStreamerTest, OnlyFixedTimeframesAreBuilt) {
+    const auto daily = mStreamer->SubscribeBars(
+        {"SPY"}, types::Timeframe::kD1,
+        [](const types::Symbol&, types::Timeframe, const types::Bar&) {});
+    // A day is whole minutes; only months are not fixed.
+    EXPECT_TRUE(daily);
+    const auto monthly = mStreamer->SubscribeBars(
+        {"SPY"}, types::Timeframe::kMo1,
+        [](const types::Symbol&, types::Timeframe, const types::Bar&) {});
+    ASSERT_FALSE(monthly);
+    EXPECT_EQ(monthly.error().category, types::ErrorCategory::kInvalidArgument);
 }
 
 }  // namespace

@@ -24,9 +24,9 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 
 Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
 renews them and `SchwabApi` sends requests within the market-data rate limit.
-`GetBars`, `GetSymbolInfo` and `StreamQuotes` work (see `SchwabDataSource`
-in `include/kestrel/data/schwab_data_source.hpp` and `SchwabStreamer` in
-`schwab_streamer.hpp`); `StreamBars` still returns `kNotImplemented`.
+`GetBars`, `GetSymbolInfo`, `StreamQuotes` and `StreamBars` work (see
+`SchwabDataSource` in `include/kestrel/data/schwab_data_source.hpp` and
+`SchwabStreamer` in `schwab_streamer.hpp`).
 
 What the live API showed (Nov 2026, SPY), beyond Schwab's docs:
 `/pricehistory` answers in whole days, whatever times are asked for; one
@@ -42,7 +42,12 @@ about once a second; field 12 is the previous close, as the field table says
 (the document's example is off); bid and ask sizes are in shares, as in REST
 `/quotes`, not lots of 100 as the document says; an unknown symbol comes back
 as zeros with status `Unknown`; a second LOGIN for the user disconnects the
-first with notify code 12.
+first with notify code 12. CHART_EQUITY's fields are numbered one higher than
+its table says (1 is the minute's sequence, 2 to 6 open, high, low, close and
+volume, 7 the minute's start); it sends each closed minute once, about 2 s
+after it closes, and the last closed minute again on subscribe, never the
+forming one; the volume can be fractional (REST truncates it); the bars match
+`/pricehistory`'s; an unknown symbol gets no data and no error.
 
 #### Next steps
 - [ ] Confirm which error body Schwab sends for an expired or revoked
@@ -53,10 +58,6 @@ first with notify code 12.
 - [ ] `GetSymbolInfo`'s tick is 0.01 for every symbol: sub-dollar stocks
       quote in 0.0001, which `SymbolInfo` cannot express (one tick per
       symbol). It does not check that the symbol exists.
-- [ ] `StreamBars` (CHART_EQUITY gives 1-minute bars), so bar strategies such
-      as `SmaCrossover` can run on Schwab; until then `run` has no bar stream
-      there. It must go through `SchwabStreamer`'s one connection, as a
-      service beside LEVELONE_EQUITIES.
 - [ ] See a login that the streamer refuses for a token Schwab has revoked
       (only an expired one, code 3, is in the document), and a
       `STOP_STREAMING` (code 30), live.
@@ -78,11 +79,11 @@ live; `run` refuses live mode on any other provider until its trading venue
 is implemented (`HasLiveVenue` in `factory.cpp`).
 
 ### Stubs
-- [ ] The Schwab data source's `StreamBars`, and the Kraken and Schwab
-      trading venues, return `kNotImplemented`; each header has a TODO listing
-      the endpoints and auth needed. Schwab's bars, symbol info, quote stream
-      and authorization (`authorize`, token renewal, `SchwabApi`) are real. See Schwab data source under In progress, and Venues under
-      Projects.
+- [ ] The Kraken and Schwab trading venues return `kNotImplemented`; each
+      header has a TODO listing the endpoints and auth needed. Schwab's
+      market data (bars, symbol info, the quote and bar streams) and
+      authorization (`authorize`, token renewal, `SchwabApi`) are real. See
+      Schwab data source under In progress, and Venues under Projects.
 
 ### Not started
 - [ ] Indicators, more strategies, agent access (see Strategies under
@@ -373,10 +374,15 @@ the header of the code concerned.
   request, not that it can be paid for.
 - The latency rollups cover HTTP round trips only, and a window that fails to
   write is dropped, not retried.
-- The Schwab data source has no bar stream yet (see Schwab data source under
-  In progress).
+- Schwab streams 1-minute bars only, so `StreamBars` builds 5, 10, 15 and
+  30 minutes from them: such a bar whose last minute had no trades closes
+  with the next trade, and the first one after a (re)connect is skipped when
+  minutes of it were missed (the runner backfills it). Without
+  `extended_hours` the regular session is taken as 09:30 to 16:00 New York
+  time, so after-hours bars on an early-close day get through. Schwab has no
+  hourly bars at all, and daily and longer ones from `GetBars` only.
 - Schwab allows one streamer connection per user, so only one process can
-  stream Schwab quotes at a time: when a second one logs in (another
+  stream from Schwab at a time: when a second one logs in (another
   `kestrel_app`, or thinkorswim), the first stops streaming, logs an error and
   its subscriptions go quiet. With `[schwab] takeover_reconnect_ms` set it
   reconnects after that wait instead, taking the connection back; two
@@ -695,6 +701,10 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       renewal on a denied login, and a stop when another connection takes
       over (or, with `[schwab] takeover_reconnect_ms`, a reconnect after that
       wait). `bars` and `run` now work on Schwab in paper mode.
+- [x] Schwab `StreamBars` on CHART_EQUITY, on the same connection: 1-minute
+      bars, and 5 to 30 minutes built from them, in the regular session
+      unless `[schwab] extended_hours`. Bar strategies run on Schwab in paper
+      mode.
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

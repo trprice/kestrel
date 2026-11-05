@@ -67,14 +67,15 @@ production endpoints). `[schwab]` takes `redirect_uri` (default
 `https://127.0.0.1:8182`), which must match the app's callback URL in the
 Schwab developer portal exactly, `token_file`, and `extended_hours` (default
 `false`): intraday bars from outside the regular session too (pre-market,
-after hours and the overnight session).
+after hours and the overnight session), from `GetBars` and from the bar
+stream alike.
 
 Schwab allows one streamer connection per user, so when another one logs in
-(another `kestrel_app`, or thinkorswim streaming quotes) Kestrel's quote stream
-is disconnected. `[schwab] takeover_reconnect_ms` says what then happens: 0, the
-default, stops the stream for good (the other one is presumed to be wanted),
-and its subscriptions go quiet; more than 0 waits that long and reconnects,
-which in turn disconnects the other one.
+(another `kestrel_app`, or thinkorswim streaming quotes) Kestrel's quote and
+bar streams are disconnected. `[schwab] takeover_reconnect_ms` says what then
+happens: 0, the default, stops the streams for good (the other one is presumed
+to be wanted), and their subscriptions go quiet; more than 0 waits that long
+and reconnects, which in turn disconnects the other one.
 
 ## `[paper]`
 

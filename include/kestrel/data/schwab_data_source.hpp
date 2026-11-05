@@ -45,6 +45,16 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 // Schwab quotes at once cannot both work). Schwab sends a symbol's changes
 // about once a second, conflated. Quotes carry bid, ask, last, their sizes in
 // shares, and the exchange time; not the taker's side.
+//
+// StreamBars: CHART_EQUITY on the same connection. Schwab streams closed
+// 1-minute bars only, each about 2 s after its minute; 5, 10, 15 and 30
+// minutes (the intraday timeframes GetBars has) are built from them (see
+// SchwabBarAggregator). A minute with no trades has no bar, so a longer bar
+// whose last minute had none closes with the next trade. The first longer
+// bar after a (re)connect is not given if minutes of it were missed; the
+// runner backfills it with GetBars. Unless extended_hours is set, as for
+// GetBars, only bars in the regular session (09:30 to 16:00 New York time)
+// are given. An unknown symbol gets no bars and no error.
 class SchwabDataSource : public DataSource {
    public:
     struct Options {
@@ -69,10 +79,17 @@ class SchwabDataSource : public DataSource {
     types::Result<std::unique_ptr<Subscription>> StreamQuotes(
         const std::vector<std::string>& symbols,
         QuoteCallback callback) override;
+    types::Result<std::unique_ptr<Subscription>> StreamBars(
+        const std::vector<std::string>& symbols, types::Timeframe timeframe,
+        BarCallback callback) override;
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol& symbol) override;
 
    private:
+    // The symbols as Schwab keys.
+    types::Result<std::vector<std::string>> Keys(
+        const std::vector<std::string>& symbols) const;
+
     std::shared_ptr<SchwabApi> mApi;
     Options mOptions;
     std::shared_ptr<SchwabStreamer> mStreamer;

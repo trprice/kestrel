@@ -64,6 +64,10 @@ std::optional<types::Timestamp> ReadTime(const json& item, const char* field) {
     return types::FromEpochMillis(it->get<std::int64_t>());
 }
 
+std::string_view ServiceName(int service) {
+    return service == 0 ? "LEVELONE_EQUITIES" : "CHART_EQUITY";
+}
+
 std::string Join(const std::set<std::string>& keys) {
     std::string out;
     for (const auto& key : keys) {
@@ -235,6 +239,115 @@ std::vector<SchwabKeyedQuote> SchwabLevelOneMerger::Apply(
 
 void SchwabLevelOneMerger::Reset() { mState.clear(); }
 
+std::vector<SchwabKeyedBar> ParseSchwabChartBars(const json& content) {
+    std::vector<SchwabKeyedBar> out;
+    if (!content.is_array()) {
+        return out;
+    }
+    for (const auto& item : content) {
+        if (!item.is_object()) {
+            continue;
+        }
+        const auto key = item.find("key");
+        if (key == item.end() || !key->is_string()) {
+            continue;
+        }
+        SchwabKeyedBar keyed;
+        keyed.key = key->get<std::string>();
+        const std::pair<const char*, types::Decimal*> fields[] = {
+            {"2", &keyed.bar.open},
+            {"3", &keyed.bar.high},
+            {"4", &keyed.bar.low},
+            {"5", &keyed.bar.close},
+            {"6", &keyed.bar.volume}};
+        bool complete = true;
+        for (const auto& [field, value] : fields) {
+            const auto it = item.find(field);
+            auto d = it == item.end() || it->is_null()
+                         ? types::Result<types::Decimal>(
+                               MakeError(ErrorCategory::kParse, "missing"))
+                         : util::JsonDecimal(*it);
+            if (!d) {
+                spdlog::warn("schwab streamer: {} bar without field {}: {}",
+                             keyed.key, field, d.error().message);
+                complete = false;
+                break;
+            }
+            *value = *d;
+        }
+        const auto time = ReadTime(item, "7");
+        if (complete && !time) {
+            spdlog::warn("schwab streamer: {} bar without a time", keyed.key);
+        }
+        if (!complete || !time) {
+            continue;
+        }
+        keyed.bar.open_time = *time;
+        out.push_back(std::move(keyed));
+    }
+    return out;
+}
+
+bool InUsRegularSession(types::Timestamp open_time) {
+    using namespace std::chrono;
+    static const time_zone* const kNewYork = locate_zone("America/New_York");
+    const auto local = kNewYork->to_local(floor<seconds>(open_time));
+    const auto day = floor<days>(local);
+    const weekday wd{day};
+    if (wd == Saturday || wd == Sunday) {
+        return false;
+    }
+    const auto time = local - day;
+    return time >= hours(9) + minutes(30) && time < hours(16);
+}
+
+SchwabBarAggregator::SchwabBarAggregator(std::chrono::minutes step)
+    : mStep(step) {}
+
+std::vector<types::Bar> SchwabBarAggregator::Add(const types::Bar& minute) {
+    using namespace std::chrono;
+    std::vector<types::Bar> out;
+    if (mLast && minute.open_time <= *mLast) {
+        return out;
+    }
+    mLast = minute.open_time;
+    if (!mSince) {
+        mSince = minute.open_time;
+    }
+    const auto since_epoch = minute.open_time.time_since_epoch();
+    const types::Timestamp start{
+        since_epoch -
+        since_epoch % duration_cast<types::Timestamp::duration>(mStep)};
+    // Only a bar whose every minute could have been seen counts.
+    const auto flush = [&] {
+        if (mPending && mPending->open_time >= *mSince) {
+            out.push_back(*mPending);
+        }
+        mPending.reset();
+    };
+    if (mPending && mPending->open_time != start) {
+        flush();  // its last minute had no trades
+    }
+    if (!mPending) {
+        mPending = minute;
+        mPending->open_time = start;
+    } else {
+        mPending->high = std::max(mPending->high, minute.high);
+        mPending->low = std::min(mPending->low, minute.low);
+        mPending->close = minute.close;
+        mPending->volume = mPending->volume + minute.volume;
+    }
+    if (minute.open_time + minutes(1) >= start + mStep) {
+        flush();
+    }
+    return out;
+}
+
+void SchwabBarAggregator::Reset() {
+    mSince.reset();
+    mPending.reset();
+}
+
 void SchwabLevelOneMerger::Forget(const std::string& key) { mState.erase(key); }
 
 std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket() {
@@ -242,12 +355,12 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket() {
 }
 
 // A consumer's handle: stopping it removes the consumer.
-class SchwabStreamer::QuoteSubscription : public Subscription {
+class SchwabStreamer::ConsumerSubscription : public Subscription {
    public:
-    QuoteSubscription(std::shared_ptr<SchwabStreamer> streamer,
-                      std::uint64_t id)
+    ConsumerSubscription(std::shared_ptr<SchwabStreamer> streamer,
+                         std::uint64_t id)
         : mStreamer(std::move(streamer)), mId(id) {}
-    ~QuoteSubscription() override { Stop(); }
+    ~ConsumerSubscription() override { Stop(); }
 
     void Stop() override {
         if (mStreamer) {
@@ -339,6 +452,38 @@ types::Result<SchwabStreamerInfo> SchwabStreamer::FetchInfo() {
 
 types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeQuotes(
     const std::vector<std::string>& keys, QuoteCallback callback) {
+    auto consumer = std::make_shared<Consumer>();
+    consumer->service = kLevelOne;
+    consumer->keys = {keys.begin(), keys.end()};
+    consumer->on_quote = std::move(callback);
+    return Add(std::move(consumer));
+}
+
+types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeBars(
+    const std::vector<std::string>& keys, types::Timeframe timeframe,
+    BarCallback callback) {
+    using namespace std::chrono;
+    const auto length = types::FixedDuration(timeframe);
+    if (!length || *length < minutes(1) || *length % minutes(1) != seconds(0)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "the Schwab streamer builds bars from 1-minute ones, "
+                         "so not " +
+                             std::string(types::ToString(timeframe)) + " bars");
+    }
+    auto consumer = std::make_shared<Consumer>();
+    consumer->service = kChart;
+    consumer->keys = {keys.begin(), keys.end()};
+    consumer->on_bar = std::move(callback);
+    consumer->timeframe = timeframe;
+    consumer->step = duration_cast<minutes>(*length);
+    for (const auto& key : consumer->keys) {
+        consumer->aggregators.emplace(key, SchwabBarAggregator(consumer->step));
+    }
+    return Add(std::move(consumer));
+}
+
+types::Result<std::unique_ptr<Subscription>> SchwabStreamer::Add(
+    std::shared_ptr<Consumer> consumer) {
     std::lock_guard lock(mMutex);
     if (mHalted) {
         return MakeError(ErrorCategory::kRejected,
@@ -353,12 +498,10 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeQuotes(
         }
         mInfo = std::move(*info);
     }
-    auto consumer = std::make_shared<Consumer>();
-    consumer->keys = {keys.begin(), keys.end()};
-    consumer->callback = std::move(callback);
+    const Service service = consumer->service;
     std::set<std::string> added;
     for (const auto& key : consumer->keys) {
-        if (mKeys[key]++ == 0) {
+        if (mKeys[service][key]++ == 0) {
             added.insert(key);
         }
     }
@@ -368,14 +511,15 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeQuotes(
     if (!mSocket) {
         StartSocket();
     } else if (mLoggedIn && !added.empty()) {
-        SendKeys("ADD", added);
+        SendKeys(service, "ADD", added);
     }
     // Before login, OnResponse subscribes to every key wanted.
-    return std::make_unique<QuoteSubscription>(shared_from_this(), id);
+    return std::make_unique<ConsumerSubscription>(shared_from_this(), id);
 }
 
 void SchwabStreamer::Remove(std::uint64_t id) {
     std::set<std::string> removed;
+    Service service = kLevelOne;
     std::unique_ptr<SchwabStreamerSocket> socket;
     {
         std::lock_guard lock(mMutex);
@@ -383,9 +527,11 @@ void SchwabStreamer::Remove(std::uint64_t id) {
         if (it == mConsumers.end()) {
             return;
         }
+        service = it->second->service;
+        auto& counts = mKeys[service];
         for (const auto& key : it->second->keys) {
-            if (--mKeys[key] == 0) {
-                mKeys.erase(key);
+            if (--counts[key] == 0) {
+                counts.erase(key);
                 removed.insert(key);
             }
         }
@@ -395,14 +541,16 @@ void SchwabStreamer::Remove(std::uint64_t id) {
             mLoggedIn = false;
             mResumeAt.reset();
         } else if (mLoggedIn && !removed.empty()) {
-            SendKeys("UNSUBS", removed);
+            SendKeys(service, "UNSUBS", removed);
         }
     }
     // Wait out a dispatch that may still be calling this consumer.
     {
         std::lock_guard dispatch(mDispatch);
-        for (const auto& key : removed) {
-            mMerger.Forget(key);
+        if (service == kLevelOne) {
+            for (const auto& key : removed) {
+                mMerger.Forget(key);
+            }
         }
     }
     if (socket) {
@@ -425,20 +573,33 @@ void SchwabStreamer::Send(std::string_view service, std::string_view command,
     mSocket->Send(json{{"requests", json::array({std::move(request)})}}.dump());
 }
 
-void SchwabStreamer::SendKeys(std::string_view command,
+std::vector<std::shared_ptr<SchwabStreamer::Consumer>>
+SchwabStreamer::ConsumersOf(Service service) const {
+    std::vector<std::shared_ptr<Consumer>> out;
+    for (const auto& [id, consumer] : mConsumers) {
+        if (consumer->service == service) {
+            out.push_back(consumer);
+        }
+    }
+    return out;
+}
+
+void SchwabStreamer::SendKeys(Service service, std::string_view command,
                               const std::set<std::string>& keys) {
     json parameters = {{"keys", Join(keys)}};
     if (command != "UNSUBS") {
-        parameters["fields"] = kSchwabLevelOneFields;
+        parameters["fields"] =
+            service == kLevelOne ? kSchwabLevelOneFields : kSchwabChartFields;
     }
-    Send("LEVELONE_EQUITIES", command, std::move(parameters));
+    Send(ServiceName(service), command, std::move(parameters));
 }
 
 void SchwabStreamer::Halt(const std::string& reason) {
     mHalted = reason;
     mLoggedIn = false;
-    spdlog::error("schwab streamer: stopped, so no more Schwab quotes: {}",
-                  reason);
+    spdlog::error(
+        "schwab streamer: stopped, so no more Schwab quotes or bars: {}",
+        reason);
     mSocket->StopReconnecting();
     mSocket->Close();
 }
@@ -486,8 +647,15 @@ void SchwabStreamer::OnEvent(std::uint64_t generation,
 
 void SchwabStreamer::OnOpen(std::uint64_t generation) {
     {
+        // Minutes may have been missed since the last connection.
         std::lock_guard dispatch(mDispatch);
         mMerger.Reset();
+        std::lock_guard lock(mMutex);
+        for (const auto& consumer : ConsumersOf(kChart)) {
+            for (auto& [key, aggregator] : consumer->aggregators) {
+                aggregator.Reset();
+            }
+        }
     }
     {
         std::lock_guard lock(mMutex);
@@ -546,12 +714,14 @@ void SchwabStreamer::OnResponse(std::uint64_t generation, const json& item) {
             spdlog::info("schwab streamer: logged in ({})", message);
             mLoggedIn = true;
             mDenials = 0;
-            std::set<std::string> keys;
-            for (const auto& [key, count] : mKeys) {
-                keys.insert(key);
-            }
-            if (!keys.empty()) {
-                SendKeys("SUBS", keys);
+            for (const Service service : {kLevelOne, kChart}) {
+                std::set<std::string> keys;
+                for (const auto& [key, count] : mKeys[service]) {
+                    keys.insert(key);
+                }
+                if (!keys.empty()) {
+                    SendKeys(service, "SUBS", keys);
+                }
             }
             return;
         }
@@ -606,15 +776,21 @@ void SchwabStreamer::OnNotify(std::uint64_t generation, const json& item) {
 }
 
 void SchwabStreamer::OnData(std::uint64_t generation, const json& item) {
-    if (item.value("service", "") != "LEVELONE_EQUITIES") {
-        return;
-    }
     const auto content = item.find("content");
     if (content == item.end()) {
         return;
     }
+    const std::string service = item.value("service", "");
+    if (service == ServiceName(kLevelOne)) {
+        OnQuotes(generation, *content);
+    } else if (service == ServiceName(kChart)) {
+        OnBars(generation, *content);
+    }
+}
+
+void SchwabStreamer::OnQuotes(std::uint64_t generation, const json& content) {
     std::lock_guard dispatch(mDispatch);
-    const auto quotes = mMerger.Apply(*content, mClock());
+    const auto quotes = mMerger.Apply(content, mClock());
     if (quotes.empty()) {
         return;
     }
@@ -624,9 +800,7 @@ void SchwabStreamer::OnData(std::uint64_t generation, const json& item) {
         if (!Current(generation)) {
             return;
         }
-        for (const auto& [id, consumer] : mConsumers) {
-            consumers.push_back(consumer);
-        }
+        consumers = ConsumersOf(kLevelOne);
     }
     for (const auto& keyed : quotes) {
         for (const auto& consumer : consumers) {
@@ -634,10 +808,47 @@ void SchwabStreamer::OnData(std::uint64_t generation, const json& item) {
                 continue;
             }
             try {
-                consumer->callback(keyed.quote);
+                consumer->on_quote(keyed.quote);
             } catch (const std::exception& e) {
                 spdlog::error("schwab streamer: quote callback threw: {}",
                               e.what());
+            }
+        }
+    }
+}
+
+void SchwabStreamer::OnBars(std::uint64_t generation, const json& content) {
+    const auto minutes = ParseSchwabChartBars(content);
+    if (minutes.empty()) {
+        return;
+    }
+    std::lock_guard dispatch(mDispatch);
+    std::vector<std::shared_ptr<Consumer>> consumers;
+    {
+        std::lock_guard lock(mMutex);
+        if (!Current(generation)) {
+            return;
+        }
+        consumers = ConsumersOf(kChart);
+    }
+    for (const auto& keyed : minutes) {
+        auto symbol = FromSchwabSymbol(keyed.key);
+        if (!symbol) {
+            spdlog::warn("schwab streamer: {}", symbol.error().message);
+            continue;
+        }
+        for (const auto& consumer : consumers) {
+            const auto aggregator = consumer->aggregators.find(keyed.key);
+            if (aggregator == consumer->aggregators.end()) {
+                continue;
+            }
+            for (const auto& bar : aggregator->second.Add(keyed.bar)) {
+                try {
+                    consumer->on_bar(*symbol, consumer->timeframe, bar);
+                } catch (const std::exception& e) {
+                    spdlog::error("schwab streamer: bar callback threw: {}",
+                                  e.what());
+                }
             }
         }
     }

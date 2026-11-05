@@ -197,6 +197,61 @@ types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
         return MakeError(ErrorCategory::kInvalidArgument,
                          "StreamQuotes: no callback");
     }
+    auto keys = Keys(symbols);
+    if (!keys) {
+        return std::unexpected(keys.error());
+    }
+    return mStreamer->SubscribeQuotes(*keys, std::move(callback));
+}
+
+types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamBars(
+    const std::vector<std::string>& symbols, types::Timeframe timeframe,
+    BarCallback callback) {
+    using types::Timeframe;
+    if (symbols.empty()) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamBars: no symbols");
+    }
+    if (!callback) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "StreamBars: no callback");
+    }
+    if (timeframe != Timeframe::kM1 && timeframe != Timeframe::kM5 &&
+        timeframe != Timeframe::kM10 && timeframe != Timeframe::kM15 &&
+        timeframe != Timeframe::kM30) {
+        return MakeError(ErrorCategory::kUnsupported,
+                         "Schwab streams 1m, 5m, 10m, 15m and 30m bars, not " +
+                             std::string(types::ToString(timeframe)));
+    }
+    auto keys = Keys(symbols);
+    if (!keys) {
+        return std::unexpected(keys.error());
+    }
+    if (!mOptions.extended_hours) {
+        try {
+            (void)InUsRegularSession(types::Now());
+        } catch (const std::exception& e) {
+            return MakeError(ErrorCategory::kUnsupported,
+                             "StreamBars needs New York time for the regular "
+                             "session, and the time zone database is "
+                             "missing (install tzdata): " +
+                                 std::string(e.what()));
+        }
+        callback = [inner = std::move(callback)](const types::Symbol& symbol,
+                                                 Timeframe tf,
+                                                 const types::Bar& bar) {
+            // The session's edges are on every timeframe's boundaries, so a
+            // bar is all in it or all out of it.
+            if (InUsRegularSession(bar.open_time)) {
+                inner(symbol, tf, bar);
+            }
+        };
+    }
+    return mStreamer->SubscribeBars(*keys, timeframe, std::move(callback));
+}
+
+types::Result<std::vector<std::string>> SchwabDataSource::Keys(
+    const std::vector<std::string>& symbols) const {
     std::vector<std::string> keys;
     for (const auto& symbol : symbols) {
         auto normalized = types::NormalizeSymbol(symbol);
@@ -209,7 +264,7 @@ types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
         }
         keys.push_back(std::move(*native));
     }
-    return mStreamer->SubscribeQuotes(keys, std::move(callback));
+    return keys;
 }
 
 types::Result<types::SymbolInfo> SchwabDataSource::GetSymbolInfo(

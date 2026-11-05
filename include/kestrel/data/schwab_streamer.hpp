@@ -39,6 +39,12 @@ types::Result<SchwabStreamerInfo> ParseSchwabStreamerInfo(
 inline constexpr std::string_view kSchwabLevelOneFields =
     "0,1,2,3,4,5,9,32,34,35";
 
+// The CHART_EQUITY fields asked for. Live (Nov 2026) they are numbered one
+// higher than the Streamer document says: 1 is the minute's sequence, 2 to 5
+// open, high, low and close, 6 the volume, 7 the minute's start (epoch ms)
+// and 8 the day.
+inline constexpr std::string_view kSchwabChartFields = "0,1,2,3,4,5,6,7";
+
 // A quote for one Schwab key (the symbol as Schwab writes it, e.g. "BRK/B").
 struct SchwabKeyedQuote {
     std::string key;
@@ -72,6 +78,48 @@ class SchwabLevelOneMerger {
     std::set<std::string> mDelayed;  // keys logged as delayed
 };
 
+// A closed 1-minute bar for one Schwab key.
+struct SchwabKeyedBar {
+    std::string key;
+    types::Bar bar;
+};
+
+// Reads the bars in the `content` array of one CHART_EQUITY data item, from
+// util::ParseJson. An item without a key, a price, the volume or the time is
+// logged and skipped.
+std::vector<SchwabKeyedBar> ParseSchwabChartBars(const nlohmann::json& content);
+
+// Whether a 1-minute bar opening at `open_time` is in the US equity regular
+// session: 09:30 to 16:00 New York time, Monday to Friday. Holidays and early
+// closes are not known (on a holiday there are no bars anyway).
+bool InUsRegularSession(types::Timestamp open_time);
+
+// Builds the bars of one timeframe from one key's closed 1-minute bars, as
+// CHART_EQUITY streams only those. Bars open at multiples of the timeframe
+// from the epoch (so 30-minute bars at :00 and :30).
+//
+// A bar is given only if every minute of it could have been seen: its start
+// is not before the first minute added since Reset (the stream's start, or a
+// reconnect), as minutes before that were missed. A minute with no trades
+// has no bar, so a bar closes with its last minute, or failing that with the
+// first minute of a later one. Minutes not after the last one added, even
+// across Reset, are ignored: Schwab sends the last closed minute again on
+// every subscribe.
+class SchwabBarAggregator {
+   public:
+    explicit SchwabBarAggregator(std::chrono::minutes step);
+    // The bars that closed with `minute`, oldest first.
+    std::vector<types::Bar> Add(const types::Bar& minute);
+    // Starts again after minutes may have been missed.
+    void Reset();
+
+   private:
+    std::chrono::minutes mStep;
+    std::optional<types::Timestamp> mSince;  // the first minute since Reset
+    std::optional<types::Timestamp> mLast;   // the last minute added
+    std::optional<types::Bar> mPending;      // the bar being built
+};
+
 // The streamer's WebSocket, as SchwabStreamer sees it, so tests can stand in
 // for it. Events arrive on one background thread.
 class SchwabStreamerSocket {
@@ -99,19 +147,22 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket();
 
 // One connection to Schwab's streamer, shared by every subscription in the
 // process: Schwab allows one streamer connection per user, and a second
-// LOGIN disconnects the first (notify code 12). Thread-safe. Hold it in a
+// LOGIN disconnects the first (notify code 12). It streams quotes
+// (LEVELONE_EQUITIES) and bars (CHART_EQUITY) on that one connection.
+// Thread-safe. Hold it in a
 // shared_ptr: subscriptions keep it alive.
 //
 // The first subscription fetches the streamer info (GET userPreference) and
 // connects; on every (re)connect the streamer logs in with a current access
-// token and, once the login succeeds, subscribes to every symbol wanted.
+// token and, once the login succeeds, subscribes to every symbol wanted on
+// each service.
 // Later subscriptions ADD their new symbols, and a stopped one UNSUBS the
 // symbols nobody else wants. The connection closes when the last
 // subscription stops, and the next one connects again.
 //
 // A denied login renews the access token and reconnects; a second denial in
 // a row, or a token only re-authorizing can fix, stops the streamer. After a
-// stop the existing subscriptions get no more quotes, which is logged as an
+// stop the existing subscriptions get no more data, which is logged as an
 // error, and new ones are refused.
 //
 // Code 12 means another connection for this user (another Kestrel process,
@@ -141,15 +192,35 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     // stopped; the userPreference request's error if it fails.
     types::Result<std::unique_ptr<Subscription>> SubscribeQuotes(
         const std::vector<std::string>& keys, QuoteCallback callback);
+    // Streams `timeframe` bars for `keys`, built from CHART_EQUITY's 1-minute
+    // bars by SchwabBarAggregator, to `callback` on the socket's thread.
+    // `timeframe` must be a whole number of minutes (kInvalidArgument
+    // otherwise); the rest is as SubscribeQuotes.
+    types::Result<std::unique_ptr<Subscription>> SubscribeBars(
+        const std::vector<std::string>& keys, types::Timeframe timeframe,
+        BarCallback callback);
 
    private:
-    class QuoteSubscription;
+    class ConsumerSubscription;
+    enum Service { kLevelOne, kChart, kServices };
     struct Consumer {
+        Service service = kLevelOne;
         std::set<std::string> keys;
-        QuoteCallback callback;
+        QuoteCallback on_quote;  // kLevelOne
+        BarCallback on_bar;      // kChart
+        types::Timeframe timeframe{};
+        std::chrono::minutes step{1};
+        // Per key; guarded by mDispatch.
+        std::map<std::string, SchwabBarAggregator> aggregators;
     };
 
     types::Result<SchwabStreamerInfo> FetchInfo();
+    types::Result<std::unique_ptr<Subscription>> Add(
+        std::shared_ptr<Consumer> consumer);
+    void OnQuotes(std::uint64_t generation, const nlohmann::json& content);
+    void OnBars(std::uint64_t generation, const nlohmann::json& content);
+    // The consumers of `service`. Requires mMutex.
+    std::vector<std::shared_ptr<Consumer>> ConsumersOf(Service service) const;
     void Remove(std::uint64_t id);
     void OnEvent(std::uint64_t generation, SchwabStreamerSocket::Event event,
                  const std::string& text);
@@ -162,8 +233,9 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     // Sends one request on mSocket. Requires mMutex.
     void Send(std::string_view service, std::string_view command,
               nlohmann::json parameters);
-    // Sends a LEVELONE_EQUITIES command for `keys`. Requires mMutex.
-    void SendKeys(std::string_view command, const std::set<std::string>& keys);
+    // Sends a `service` command for `keys`. Requires mMutex.
+    void SendKeys(Service service, std::string_view command,
+                  const std::set<std::string>& keys);
     // Stops for good, with `reason` logged. Requires mMutex.
     void Halt(const std::string& reason);
     // Makes mSocket a new socket and starts it. Requires mMutex.
@@ -184,7 +256,8 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
 
     std::mutex mMutex;  // guards the members below
     std::map<std::uint64_t, std::shared_ptr<Consumer>> mConsumers;
-    std::map<std::string, int> mKeys;  // key -> consumers that want it
+    // Per service, key -> consumers that want it.
+    std::map<std::string, int> mKeys[kServices];
     std::uint64_t mNextConsumer = 1;
     std::unique_ptr<SchwabStreamerSocket> mSocket;
     std::uint64_t mGeneration = 0;  // of mSocket; older events are ignored
