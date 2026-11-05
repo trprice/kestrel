@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
+#include <thread>
 
 #include "kestrel/data/schwab_data_source.hpp"
 #include "kestrel/util/json.hpp"
@@ -42,10 +44,12 @@ constexpr const char* kUserPreference = R"({
     "schwabClientFunctionId": "APIAPP"}]})";
 
 // What the fake sockets saw, shared with the test. Events are fired from the
-// test's thread, standing in for the socket's.
+// test's thread, standing in for the socket's. A socket may be started and
+// stopped on the streamer's resume thread, hence the atomics; the handler is
+// set before `started` counts it.
 struct Wire {
-    int started = 0;
-    int stopped = 0;
+    std::atomic<int> started = 0;
+    std::atomic<int> stopped = 0;
     int closes = 0;
     bool reconnecting = true;
     std::string url;
@@ -83,9 +87,9 @@ class FakeSocket : public SchwabStreamerSocket {
    public:
     explicit FakeSocket(std::shared_ptr<Wire> wire) : mWire(std::move(wire)) {}
     void Start(const std::string& url, Handler handler) override {
-        ++mWire->started;
         mWire->url = url;
         mWire->handler = std::move(handler);
+        ++mWire->started;
     }
     void Send(const std::string& text) override {
         mWire->sent.push_back(json::parse(text)["requests"][0]);
@@ -126,10 +130,22 @@ class SchwabStreamerTest : public ::testing::Test {
         };
         mApi = std::make_shared<SchwabApi>(mAuth, mHttp,
                                            SchwabApi::Options{1000, 1000});
-        mStreamer = std::make_shared<SchwabStreamer>(
+        mStreamer = MakeStreamer({});
+    }
+
+    std::shared_ptr<SchwabStreamer> MakeStreamer(
+        std::chrono::milliseconds takeover_reconnect) {
+        return std::make_shared<SchwabStreamer>(
             mApi, "https://api.test/trader/v1",
             [this] { return std::make_unique<FakeSocket>(mWire); },
-            [this] { return mNow; });
+            takeover_reconnect, [this] { return mNow; });
+    }
+
+    void TakeOver() {
+        mWire->Fire(Event::kMessage,
+                    R"({"notify":[{"service":"Invalid Service","timestamp":1,)"
+                    R"("content":{"code":12,"msg":"This Streamer was )"
+                    R"(disconnected because of another connection"}}]})");
     }
     void TearDown() override { std::filesystem::remove_all(mDir); }
 
@@ -356,10 +372,7 @@ TEST_F(SchwabStreamerTest, AnotherConnectionTakingOverStopsTheStreamer) {
     std::vector<types::Quote> quotes;
     auto sub = Subscribe({"SPY"}, quotes);
     mWire->Connect();
-    mWire->Fire(Event::kMessage,
-                R"({"notify":[{"service":"Invalid Service","timestamp":1,)"
-                R"("content":{"code":12,"msg":"This Streamer was )"
-                R"(disconnected because of another connection"}}]})");
+    TakeOver();
     EXPECT_FALSE(mWire->reconnecting);
     // A reconnect that IXWebSocket had already begun does not log in.
     const auto sent = mWire->sent.size();
@@ -370,6 +383,61 @@ TEST_F(SchwabStreamerTest, AnotherConnectionTakingOverStopsTheStreamer) {
     ASSERT_FALSE(refused);
     EXPECT_NE(refused.error().message.find("another streamer connection"),
               std::string::npos);
+    EXPECT_NE(refused.error().message.find("takeover_reconnect_ms"),
+              std::string::npos);
+}
+
+// Waits up to five seconds for `done`.
+template <typename Done>
+bool Eventually(Done done) {
+    for (int i = 0; i < 500 && !done(); ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    return done();
+}
+
+TEST_F(SchwabStreamerTest, WithADelayATakeoverReconnectsAfterIt) {
+    mStreamer = MakeStreamer(50ms);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+    TakeOver();
+    EXPECT_FALSE(mWire->reconnecting);  // IXWebSocket's own reconnect is off
+
+    // A reconnect already under way does not log in during the wait.
+    const auto old_handler = mWire->handler;
+    const auto sent = mWire->sent.size();
+    mWire->Fire(Event::kOpen);
+    EXPECT_EQ(mWire->sent.size(), sent);
+    EXPECT_EQ(mWire->closes, 1);
+    // Subscribing meanwhile works, and waits for the login.
+    std::vector<types::Quote> more;
+    auto second = Subscribe({"AAPL"}, more);
+    EXPECT_EQ(mWire->sent.size(), sent);
+
+    ASSERT_TRUE(Eventually([&] { return mWire->started == 2; }));
+    EXPECT_TRUE(Eventually([&] { return mWire->stopped == 1; }));
+    mWire->Connect();
+    EXPECT_EQ(mWire->sent[sent]["command"], "LOGIN");
+    EXPECT_EQ(mWire->Last()["command"], "SUBS");
+    EXPECT_EQ(mWire->Last()["parameters"]["keys"], "AAPL,SPY");
+
+    // The old socket's events no longer count.
+    const auto now_sent = mWire->sent.size();
+    old_handler(Event::kOpen, "");
+    EXPECT_EQ(mWire->sent.size(), now_sent);
+}
+
+TEST_F(SchwabStreamerTest, StoppingDuringTheWaitCancelsTheReconnect) {
+    mStreamer = MakeStreamer(50ms);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+    TakeOver();
+    sub.reset();
+    EXPECT_EQ(mWire->stopped, 1);
+    std::this_thread::sleep_for(150ms);
+    EXPECT_EQ(mWire->started, 1);
 }
 
 TEST_F(SchwabStreamerTest, HeartbeatsAndFailedCommandsAreNotQuotes) {

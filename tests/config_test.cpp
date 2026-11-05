@@ -207,6 +207,15 @@ TEST(Config, SchwabSettings) {
     EXPECT_FALSE(config::SchwabConfiguration::Parse(
                      base + "[schwab]\nextended_hours='yes'\n", NoEnv())
                      .has_value());
+
+    EXPECT_EQ(cfg->TakeoverReconnect(), std::chrono::milliseconds(0));
+    auto reconnect = config::SchwabConfiguration::Parse(
+        base + "[schwab]\ntakeover_reconnect_ms=300000\n", NoEnv());
+    ASSERT_OK(reconnect);
+    EXPECT_EQ(reconnect->TakeoverReconnect(), std::chrono::minutes(5));
+    EXPECT_FALSE(config::SchwabConfiguration::Parse(
+                     base + "[schwab]\ntakeover_reconnect_ms=-1\n", NoEnv())
+                     .has_value());
 }
 
 TEST(Config, LoadConfigurationDispatchesOnProvider) {

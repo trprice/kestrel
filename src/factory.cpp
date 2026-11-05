@@ -111,6 +111,7 @@ Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
     }
     data::SchwabDataSource::Options options;
     options.extended_hours = cfg.ExtendedHours();
+    options.takeover_reconnect = cfg.TakeoverReconnect();
     return std::make_shared<data::SchwabDataSource>(
         std::make_shared<data::SchwabApi>(auth, http,
                                           data::SchwabApi::Options{}),

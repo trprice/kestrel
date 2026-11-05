@@ -376,9 +376,11 @@ the header of the code concerned.
 - The Schwab data source has no bar stream yet (see Schwab data source under
   In progress).
 - Schwab allows one streamer connection per user, so only one process can
-  stream Schwab quotes at a time: when a second one logs in, the first stops
-  streaming (it logs an error and does not reconnect, which would set the two
-  fighting) and its subscriptions go quiet.
+  stream Schwab quotes at a time: when a second one logs in (another
+  `kestrel_app`, or thinkorswim), the first stops streaming, logs an error and
+  its subscriptions go quiet. With `[schwab] takeover_reconnect_ms` set it
+  reconnects after that wait instead, taking the connection back; two
+  processes that both set it take it from each other at every wait.
 - `PaperTradingVenue` is spot only: no shorting, no leverage.
 - `run` refuses live mode on a provider whose venue is a stub
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
@@ -691,7 +693,8 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       connection shared by the process (`SchwabStreamer`): login with a
       current token, ADD and UNSUBS as subscriptions come and go, one token
       renewal on a denied login, and a stop when another connection takes
-      over. `bars` and `run` now work on Schwab in paper mode.
+      over (or, with `[schwab] takeover_reconnect_ms`, a reconnect after that
+      wait). `bars` and `run` now work on Schwab in paper mode.
 
 ### Backtesting and research
 - [x] Load backtest bars from the database (`BarStore`) instead of building

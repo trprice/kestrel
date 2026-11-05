@@ -69,6 +69,13 @@ Schwab developer portal exactly, `token_file`, and `extended_hours` (default
 `false`): intraday bars from outside the regular session too (pre-market,
 after hours and the overnight session).
 
+Schwab allows one streamer connection per user, so when another one logs in
+(another `kestrel_app`, or thinkorswim streaming quotes) Kestrel's quote stream
+is disconnected. `[schwab] takeover_reconnect_ms` says what then happens: 0, the
+default, stops the stream for good (the other one is presumed to be wanted),
+and its subscriptions go quiet; more than 0 waits that long and reconnects,
+which in turn disconnects the other one.
+
 ## `[paper]`
 
 Used in paper mode, by `run` and by `backtest`.

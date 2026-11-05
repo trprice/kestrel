@@ -263,20 +263,65 @@ class SchwabStreamer::QuoteSubscription : public Subscription {
 
 SchwabStreamer::SchwabStreamer(std::shared_ptr<SchwabApi> api,
                                std::string trader_url,
-                               SocketFactory make_socket, Clock clock)
+                               SocketFactory make_socket,
+                               std::chrono::milliseconds takeover_reconnect,
+                               Clock clock)
     : mApi(std::move(api)),
       mTraderUrl(std::move(trader_url)),
       mMakeSocket(std::move(make_socket)),
+      mTakeoverReconnect(takeover_reconnect),
       mClock(std::move(clock)) {}
 
 SchwabStreamer::~SchwabStreamer() {
     std::unique_ptr<SchwabStreamerSocket> socket;
     {
         std::lock_guard lock(mMutex);
+        mClosing = true;
         socket = std::move(mSocket);
+    }
+    mResumeWake.notify_all();
+    if (mResumer.joinable()) {
+        mResumer.join();
     }
     if (socket) {
         socket->Stop();
+    }
+}
+
+void SchwabStreamer::StartSocket() {
+    mSocket = mMakeSocket();
+    mLoggedIn = false;
+    mDenials = 0;
+    const std::uint64_t generation = ++mGeneration;
+    mSocket->Start(mInfo->socket_url,
+                   [this, generation](SchwabStreamerSocket::Event event,
+                                      const std::string& text) {
+                       OnEvent(generation, event, text);
+                   });
+}
+
+void SchwabStreamer::ResumeLoop() {
+    std::unique_lock lock(mMutex);
+    while (!mClosing) {
+        if (!mResumeAt) {
+            mResumeWake.wait(lock);
+            continue;
+        }
+        if (std::chrono::steady_clock::now() < *mResumeAt) {
+            mResumeWake.wait_until(lock, *mResumeAt);
+            continue;
+        }
+        mResumeAt.reset();
+        if (!mSocket || mHalted) {
+            continue;  // nobody is subscribed any more
+        }
+        spdlog::info("schwab streamer: reconnecting after the takeover");
+        auto old = std::move(mSocket);
+        StartSocket();
+        // The old socket's thread may be waiting for mMutex.
+        lock.unlock();
+        old->Stop();
+        lock.lock();
     }
 }
 
@@ -321,15 +366,7 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeQuotes(
     mConsumers.emplace(id, std::move(consumer));
 
     if (!mSocket) {
-        mSocket = mMakeSocket();
-        mLoggedIn = false;
-        mDenials = 0;
-        const std::uint64_t generation = ++mGeneration;
-        mSocket->Start(mInfo->socket_url,
-                       [this, generation](SchwabStreamerSocket::Event event,
-                                          const std::string& text) {
-                           OnEvent(generation, event, text);
-                       });
+        StartSocket();
     } else if (mLoggedIn && !added.empty()) {
         SendKeys("ADD", added);
     }
@@ -356,6 +393,7 @@ void SchwabStreamer::Remove(std::uint64_t id) {
         if (mConsumers.empty()) {
             socket = std::move(mSocket);
             mLoggedIn = false;
+            mResumeAt.reset();
         } else if (mLoggedIn && !removed.empty()) {
             SendKeys("UNSUBS", removed);
         }
@@ -457,11 +495,17 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
             return;
         }
         mLoggedIn = false;
+        if (mResumeAt) {
+            // A reconnect begun before the takeover was seen: logging in
+            // now would take the connection back before the wait is over.
+            mSocket->Close();
+            return;
+        }
     }
     // Not under mMutex: a renewal is a request to the token endpoint.
     auto token = mApi->Auth().AccessToken();
     std::lock_guard lock(mMutex);
-    if (!Current(generation) || mHalted) {
+    if (!Current(generation) || mHalted || mResumeAt) {
         return;
     }
     if (!token) {
@@ -535,11 +579,25 @@ void SchwabStreamer::OnNotify(std::uint64_t generation, const json& item) {
     if (!Current(generation) || mHalted) {
         return;
     }
-    if (code == kCloseConnection) {
-        Halt("another streamer connection for this Schwab user took over (" +
-             message +
-             "); only one is allowed at a time, so stop the other one (another "
-             "kestrel_app, or a Schwab app streaming quotes) and start again");
+    if (code == kCloseConnection && mTakeoverReconnect.count() == 0) {
+        Halt(
+            "another streamer connection for this Schwab user took over (" +
+            message +
+            "); only one is allowed at a time. To stream here, stop the other "
+            "one (another kestrel_app, or thinkorswim) and start again, or set "
+            "[schwab] takeover_reconnect_ms to take it back after a wait");
+    } else if (code == kCloseConnection) {
+        spdlog::warn(
+            "schwab streamer: another streamer connection for this Schwab user "
+            "took over ({}); reconnecting in {} s, which takes it back",
+            message, mTakeoverReconnect.count() / 1000.0);
+        mLoggedIn = false;
+        mSocket->StopReconnecting();
+        mResumeAt = std::chrono::steady_clock::now() + mTakeoverReconnect;
+        if (!mResumer.joinable()) {
+            mResumer = std::thread([this] { ResumeLoop(); });
+        }
+        mResumeWake.notify_all();
     } else if (code == kStopStreaming) {
         spdlog::warn("schwab streamer: Schwab stopped streaming: {}", message);
     } else {

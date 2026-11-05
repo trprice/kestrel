@@ -246,22 +246,32 @@ class SchwabConfiguration : public Configuration {
     // [schwab] extended_hours: intraday bars outside the regular session
     // (pre-market, after hours and overnight) too. Default false.
     bool ExtendedHours() const { return mExtendedHours; }
+    // [schwab] takeover_reconnect_ms: how long the quote stream waits before
+    // reconnecting after another streamer connection for the user (another
+    // process, or thinkorswim) took over; reconnecting takes it back. Zero,
+    // the default: never reconnect.
+    std::chrono::milliseconds TakeoverReconnect() const {
+        return mTakeoverReconnect;
+    }
 
    private:
     SchwabConfiguration(CommonSettings c, std::string redirect,
                         std::filesystem::path token_file,
                         std::optional<SchwabCredentials> cr,
-                        bool extended_hours)
+                        bool extended_hours,
+                        std::chrono::milliseconds takeover_reconnect)
         : Configuration(std::move(c)),
           mRedirectUri(std::move(redirect)),
           mTokenFile(std::move(token_file)),
           mCredentials(std::move(cr)),
-          mExtendedHours(extended_hours) {}
+          mExtendedHours(extended_hours),
+          mTakeoverReconnect(takeover_reconnect) {}
     friend class ConfigParser;
     std::string mRedirectUri;
     std::filesystem::path mTokenFile;
     std::optional<SchwabCredentials> mCredentials;
     bool mExtendedHours = false;
+    std::chrono::milliseconds mTakeoverReconnect{0};
 };
 
 // Reads [general] provider from the file and returns the matching subclass.

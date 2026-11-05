@@ -71,7 +71,8 @@ SchwabDataSource::SchwabDataSource(std::shared_ptr<SchwabApi> api,
     : mApi(std::move(api)),
       mOptions(std::move(options)),
       mStreamer(std::make_shared<SchwabStreamer>(
-          mApi, mOptions.trader_url, mOptions.make_socket, mOptions.clock)) {}
+          mApi, mOptions.trader_url, mOptions.make_socket,
+          mOptions.takeover_reconnect, mOptions.clock)) {}
 
 types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
     const types::Symbol& symbol, types::Timeframe tf, types::Timestamp start,

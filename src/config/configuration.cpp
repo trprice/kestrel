@@ -801,10 +801,23 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
         }
         extended_hours = node->value_or(false);
     }
+    std::chrono::milliseconds takeover_reconnect{0};
+    if (const auto* node =
+            section ? section->get("takeover_reconnect_ms") : nullptr) {
+        const auto v =
+            node->is_integer() ? node->value<std::int64_t>() : std::nullopt;
+        if (!v || *v < 0) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "[schwab] takeover_reconnect_ms must be a whole "
+                             "number of milliseconds, 0 (never) or more");
+        }
+        takeover_reconnect = std::chrono::milliseconds(*v);
+    }
     return SchwabConfiguration(
         std::move(*common),
         ConfigParser::Str(section, "redirect_uri", "https://127.0.0.1:8182"),
-        std::move(token_file), std::move(*creds), extended_hours);
+        std::move(token_file), std::move(*creds), extended_hours,
+        takeover_reconnect);
 }
 
 Result<SchwabConfiguration> SchwabConfiguration::Load(

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -9,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -107,11 +110,16 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket();
 // subscription stops, and the next one connects again.
 //
 // A denied login renews the access token and reconnects; a second denial in
-// a row, or a token only re-authorizing can fix, stops the streamer. So does
-// code 12: another connection for this user (another Kestrel process, or a
-// Schwab app) has taken over, and reconnecting would only take it back and
-// set the two fighting. After a stop the existing subscriptions get no more
-// quotes, which is logged as an error, and new ones are refused.
+// a row, or a token only re-authorizing can fix, stops the streamer. After a
+// stop the existing subscriptions get no more quotes, which is logged as an
+// error, and new ones are refused.
+//
+// Code 12 means another connection for this user (another Kestrel process,
+// or thinkorswim) has taken over, and reconnecting takes it back. With
+// `takeover_reconnect` zero, the default, that stops the streamer too: the
+// user is presumed to want the other one. Otherwise the streamer waits that
+// long, without logging in, then connects afresh; if the other one takes
+// over again, so does the next wait.
 class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
    public:
     using SocketFactory =
@@ -121,7 +129,9 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     // `trader_url` is the Trader API's base, e.g.
     // https://api.schwabapi.com/trader/v1.
     SchwabStreamer(std::shared_ptr<SchwabApi> api, std::string trader_url,
-                   SocketFactory make_socket, Clock clock = types::Now);
+                   SocketFactory make_socket,
+                   std::chrono::milliseconds takeover_reconnect = {},
+                   Clock clock = types::Now);
     ~SchwabStreamer();
     SchwabStreamer(const SchwabStreamer&) = delete;
     SchwabStreamer& operator=(const SchwabStreamer&) = delete;
@@ -156,10 +166,15 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     void SendKeys(std::string_view command, const std::set<std::string>& keys);
     // Stops for good, with `reason` logged. Requires mMutex.
     void Halt(const std::string& reason);
+    // Makes mSocket a new socket and starts it. Requires mMutex.
+    void StartSocket();
+    // The thread that reconnects after a takeover, once mResumeAt comes.
+    void ResumeLoop();
 
     const std::shared_ptr<SchwabApi> mApi;
     const std::string mTraderUrl;
     const SocketFactory mMakeSocket;
+    const std::chrono::milliseconds mTakeoverReconnect;
     const Clock mClock;
 
     // Held while quotes are merged and callbacks run, so a subscription that
@@ -179,6 +194,12 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     int mDenials = 0;                    // denied logins since the last success
     std::optional<std::string> mHalted;  // why the streamer stopped
     std::uint64_t mNextRequest = 1;
+    // When to reconnect after a takeover; until then nothing logs in.
+    std::optional<std::chrono::steady_clock::time_point> mResumeAt;
+    bool mClosing = false;                // the destructor has begun
+    std::condition_variable mResumeWake;  // with mMutex
+
+    std::thread mResumer;  // started at the first takeover
 };
 
 }  // namespace kestrel::data

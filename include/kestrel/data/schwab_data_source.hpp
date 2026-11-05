@@ -53,6 +53,8 @@ class SchwabDataSource : public DataSource {
         // For userPreference, which gives the streamer's address.
         std::string trader_url = "https://api.schwabapi.com/trader/v1";
         SchwabStreamer::SocketFactory make_socket = MakeSchwabStreamerSocket;
+        // See SchwabStreamer: zero never reconnects after a takeover.
+        std::chrono::milliseconds takeover_reconnect{0};
         std::function<types::Timestamp()> clock = types::Now;
     };
 
