@@ -67,10 +67,13 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
-- [ ] Backtest fill model: fill at the next bar's open by default (filling a
-      signal computed on a close at that same close is a look-ahead), keeping
-      fill-on-close as an option; use bar high/low for limit and stop order
-      triggering
+- [ ] Backtest fill model: fill a market order at the next bar's open by
+      default (filling a signal computed on a close at that same close is a
+      look-ahead), keeping fill-on-close as an option. (Resting stops and
+      limits already trade inside the bar: see Done.)
+- [ ] Optionally drive the paper venue from 1-minute bars while the strategy
+      takes longer ones, so the path within a bar is the real one rather
+      than open, nearer extreme, other extreme, close.
 
 ### Schwab data source
 
@@ -778,6 +781,14 @@ the header of the code concerned.
       `CurrentOrNextSession`. Backtests step their clock through the session
       events. The paper venue fills nothing while closed. The bar stream's
       regular-session filter uses the calendar (early closes, holidays).
+
+### Backtest fills within a bar
+- [x] Bar-only backtests walk each bar of the finest series for the paper
+      venue (open, nearer extreme, other extreme, close, and every resting
+      order's price on the way), so a stop or limit inside a bar fills at its
+      own price, a gap through it at the open, and a protective stop placed
+      on a fill can trade later in the same bar. Before, the venue saw only
+      each close: a stop filled only on a close beyond it, at that close.
 
 ### Schwab data, polish
 - [x] `config/schwab.example.toml`: a commented paper setup with the

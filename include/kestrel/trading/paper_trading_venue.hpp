@@ -127,6 +127,13 @@ class PaperTradingVenue : public TradingVenue {
     // Feed a quote. Thread-safe; this is also the stream callback.
     void OnQuote(const types::Quote& quote);
 
+    // The prices at which `symbol`'s resting orders would trade: each active
+    // limit order's limit and each untriggered stop's stop price, in no order.
+    // For a backtest walking a bar's path: a quote at each of them on the way
+    // fills an order inside the bar at its own price. Thread-safe.
+    std::vector<types::Decimal> RestingPrices(
+        const types::Symbol& symbol) const;
+
     std::string_view Name() const override { return "paper"; }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;

@@ -98,13 +98,18 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // clock, so a run is repeatable. The bars of all of the strategy's series are
 // replayed in the order they close.
 //
-// Each time a bar closes the paper venue is given a quote at the bar's close
-// (bid = ask = last), then the strategy sees the bar. So:
+// For a strategy without quotes, the paper venue walks each bar of the
+// finest series before the strategy sees it, as quotes (bid = ask = last):
+// the open, the extreme nearer the open, the other extreme and the close, a
+// third of the bar apart, and on each leg every resting order's price it
+// passes. The strategy runs at each point. So:
 //   - orders a strategy places on a bar fill on that bar's close, plus the
 //     paper venue's slippage and fees;
-//   - resting limit and stop orders can only trigger when the venue is given
-//     a quote: at a close, or (for a strategy that asks for quotes) when a
-//     stored quote arrives, which can be between two closes;
+//   - a resting stop or limit inside a later bar fills at its own price (at
+//     the start of its leg), and one the bar opens beyond, at the open; an
+//     order placed on that fill (a protective stop) can fill later in the
+//     same bar. Which extreme came first is a guess (the nearer one), so a bar
+//     that reaches both an entry and its stop is decided by it;
 //   - an order placed in OnStart is rejected, as no quote exists yet.
 // A strategy that asks for quotes is also replayed through the stored quotes
 // in [start, end) (AddQuotes), in arrival order and ahead of any bar closing at

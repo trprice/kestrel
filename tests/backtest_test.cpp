@@ -1,5 +1,7 @@
 #include "kestrel/backtest/backtest.hpp"
 
+#include <array>
+
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/types/market_hours.hpp"
 #include "test_helpers.hpp"
@@ -501,6 +503,151 @@ class RecordingBuyer : public strategy::Strategy {
 };
 
 // Rests a buy limit at 99 on the first quote it sees.
+// Hourly bars with their own open, high, low and close.
+std::shared_ptr<ReplayDataSource> OhlcData(
+    const std::vector<std::array<const char*, 4>>& bars) {
+    auto data = std::make_shared<ReplayDataSource>();
+    std::vector<types::Bar> series;
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        types::Bar bar;
+        bar.open_time = Hour(static_cast<int>(i));
+        bar.open = D(bars[i][0]);
+        bar.high = D(bars[i][1]);
+        bar.low = D(bars[i][2]);
+        bar.close = D(bars[i][3]);
+        series.push_back(bar);
+    }
+    data->AddBars(kSymbol, Timeframe::kH1, std::move(series));
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    return data;
+}
+
+// Places `orders` on the first bar it sees (hour 4's, closing at 05:00);
+// with `protect`, a sell-stop at that price once its buy fills.
+class BarOrders : public strategy::Strategy {
+   public:
+    BarOrders(std::vector<types::OrderRequest> orders,
+              std::optional<const char*> protect = std::nullopt)
+        : mOrders(std::move(orders)), mProtect(protect) {}
+    std::string_view Name() const override { return "bar-orders"; }
+    strategy::Requirements Needs() const override {
+        strategy::Requirements r;
+        r.symbols = {kSymbol};
+        r.bar_timeframes = {Timeframe::kH1};
+        r.warmup_bars = 1;
+        return r;
+    }
+    void OnBar(strategy::Context& ctx, const types::Symbol&, Timeframe,
+               const types::Bar&) override {
+        for (const auto& order : mOrders) {
+            EXPECT_TRUE(ctx.Venue().PlaceOrder(order).has_value());
+        }
+        mOrders.clear();
+    }
+    void OnFill(strategy::Context& ctx, const types::Fill& fill) override {
+        if (mProtect && fill.side == types::Side::kBuy) {
+            types::OrderRequest stop;
+            stop.symbol = kSymbol;
+            stop.side = types::Side::kSell;
+            stop.type = types::OrderType::kStop;
+            stop.quantity = fill.quantity;
+            stop.stop_price = D(*mProtect);
+            EXPECT_TRUE(ctx.Venue().PlaceOrder(stop).has_value());
+            mProtect.reset();
+        }
+    }
+
+   private:
+    std::vector<types::OrderRequest> mOrders;
+    std::optional<const char*> mProtect;
+};
+
+types::OrderRequest Stop(types::Side side, const char* price) {
+    types::OrderRequest r;
+    r.symbol = kSymbol;
+    r.side = side;
+    r.type = types::OrderType::kStop;
+    r.quantity = D("1");
+    r.stop_price = D(price);
+    return r;
+}
+
+types::OrderRequest LimitBuy(const char* price) {
+    types::OrderRequest r;
+    r.symbol = kSymbol;
+    r.side = types::Side::kBuy;
+    r.type = types::OrderType::kLimit;
+    r.quantity = D("1");
+    r.limit_price = D(price);
+    return r;
+}
+
+// Hours 0-4 are flat at 10; hour 5's bar is `bar` (the one walked after the
+// orders are placed at 05:00).
+std::vector<std::array<const char*, 4>> WithBar5(
+    std::array<const char*, 4> bar) {
+    std::vector<std::array<const char*, 4>> bars(5, {"10", "10", "10", "10"});
+    bars.push_back(bar);
+    bars.push_back({"12", "12", "12", "12"});
+    return bars;
+}
+
+// Without recorded quotes the venue walks each bar: open, the extreme nearer
+// the open, the other extreme, close, stopping at every resting order's
+// price. A stop inside the bar fills at its own price, not at the close.
+TEST(BacktestTest, AStopInsideABarFillsAtItsPrice) {
+    // 10 -> 9 (the nearer extreme) -> 20 -> 12: the buy-stop at 15 is
+    // crossed on the way up, though the bar closes below it.
+    auto result = RunBacktest(
+        OhlcData(WithBar5({"10", "20", "9", "12"})),
+        std::make_unique<BarOrders>(std::vector{Stop(types::Side::kBuy, "15")}),
+        Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("15"));
+    // At the start of its leg: the second third of hour 5.
+    EXPECT_EQ(result->fills[0].time, Hour(5) + std::chrono::minutes(20));
+}
+
+TEST(BacktestTest, AGapThroughAStopFillsAtTheOpen) {
+    auto result = RunBacktest(
+        OhlcData(WithBar5({"18", "20", "17", "19"})),
+        std::make_unique<BarOrders>(std::vector{Stop(types::Side::kBuy, "15")}),
+        Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("18"));
+    EXPECT_EQ(result->fills[0].time, Hour(5));
+}
+
+TEST(BacktestTest, AStopPlacedOnAFillTradesInTheRestOfTheBar) {
+    // Entry at 15 on the way up to 20, then the protective stop at 14 on the
+    // way down to 12, all in hour 5.
+    auto result =
+        RunBacktest(OhlcData(WithBar5({"10", "20", "9", "12"})),
+                    std::make_unique<BarOrders>(
+                        std::vector{Stop(types::Side::kBuy, "15")}, "14"),
+                    Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 2u);
+    EXPECT_EQ(result->fills[0].side, types::Side::kBuy);
+    EXPECT_EQ(result->fills[0].price, D("15"));
+    EXPECT_EQ(result->fills[1].side, types::Side::kSell);
+    EXPECT_EQ(result->fills[1].price, D("14"));
+    EXPECT_EQ(result->fills[1].time, Hour(5) + std::chrono::minutes(40));
+}
+
+TEST(BacktestTest, ARestingLimitFillsWhenTheBarReachesIt) {
+    // The low of 9 passes the buy limit at 9.5: filled at 9.5, as a maker.
+    auto result = RunBacktest(
+        OhlcData(WithBar5({"10", "11", "9", "10.5"})),
+        std::make_unique<BarOrders>(std::vector{LimitBuy("9.5")}), Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("9.5"));
+    EXPECT_EQ(result->fills[0].liquidity, types::Liquidity::kMaker);
+}
+
 class RestingBuyer : public strategy::Strategy {
    public:
     std::string_view Name() const override { return "resting-buyer"; }

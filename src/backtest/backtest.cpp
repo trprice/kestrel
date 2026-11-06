@@ -3,6 +3,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 
 #include "kestrel/strategy/runner.hpp"
 
@@ -275,9 +276,78 @@ types::Result<BacktestResult> RunBacktest(
             runner.Drain();
         }
     };
+    // Without recorded quotes the venue trades on the bars of the finest
+    // series (a coarser one would replay prices it has already seen).
+    std::optional<types::Timeframe> driving;
+    for (types::Timeframe timeframe : needs.bar_timeframes) {
+        if (!driving || *types::FixedDuration(timeframe) <
+                            *types::FixedDuration(*driving)) {
+            driving = timeframe;
+        }
+    }
+    // A quote at `price` for the venue at `t`, then the strategy runs.
+    const auto quote_at = [&](const types::Symbol& symbol, const Decimal& price,
+                              types::Timestamp t) {
+        run_sessions(t);
+        now = std::max(now, t);
+        data->SetTime(now);
+        types::Quote quote;
+        quote.symbol = symbol;
+        quote.venue = std::string(data->Name());
+        quote.received_time = now;
+        quote.bid = quote.ask = quote.last = price;
+        venue->OnQuote(quote);
+        runner.Drain();
+    };
+    // Walks a bar for the venue: open, the extreme nearer the open, the other
+    // extreme, close, a third of the bar apart, and on each leg the price of
+    // every resting order it passes, so a stop or limit inside the bar trades
+    // at its own price (and one the open gaps through, at the open). The
+    // strategy runs at each point, so an order it places after a fill there
+    // takes part in the rest of the bar.
+    const auto walk = [&](const types::Symbol& symbol, const types::Bar& bar,
+                          types::Timestamp close) {
+        const types::Timestamp open = bar.open_time;
+        const bool high_first = bar.high - bar.open <= bar.open - bar.low;
+        const std::array<Decimal, 4> points = {
+            bar.open, high_first ? bar.high : bar.low,
+            high_first ? bar.low : bar.high, bar.close};
+        const auto leg_length = (close - open) / 3;
+        quote_at(symbol, points[0], open);
+        for (std::size_t leg = 0; leg < 3; ++leg) {
+            const Decimal& from = points[leg];
+            const Decimal& to = points[leg + 1];
+            const bool up = from < to;
+            const types::Timestamp leg_start =
+                open + leg_length * static_cast<std::int64_t>(leg);
+            // Each resting price strictly between, in the leg's direction,
+            // at the leg's start time; asked again after each, since the
+            // strategy may have placed or cancelled orders there.
+            for (Decimal at = from;;) {
+                std::optional<Decimal> next;
+                for (const Decimal& price : venue->RestingPrices(symbol)) {
+                    const bool ahead = up ? at < price && price < to
+                                          : to < price && price < at;
+                    if (ahead &&
+                        (!next || (up ? price < *next : *next < price))) {
+                        next = price;
+                    }
+                }
+                if (!next) {
+                    break;
+                }
+                at = *next;
+                quote_at(symbol, at, leg_start);
+            }
+            quote_at(symbol, to, leg == 2 ? close : leg_start + leg_length);
+        }
+    };
     for (const Replayed& item : timeline) {
+        if (!item.is_quote && !needs.quotes && item.timeframe == driving) {
+            walk(*item.symbol, item.bar, item.time);  // ends at item.time
+        }
         run_sessions(item.time);
-        now = item.time;
+        now = std::max(now, item.time);
         data->SetTime(now);
 
         if (item.is_quote) {
@@ -287,16 +357,6 @@ types::Result<BacktestResult> RunBacktest(
             observe(*item.symbol, SummaryBuilder::MarkOf(*item.quote));
             continue;
         }
-        if (!needs.quotes) {
-            // Without recorded quotes the bar's close stands in for the book.
-            types::Quote quote;
-            quote.symbol = *item.symbol;
-            quote.venue = std::string(data->Name());
-            quote.received_time = now;
-            quote.bid = quote.ask = quote.last = item.bar.close;
-            venue->OnQuote(quote);
-        }
-
         data->Emit(*item.symbol, item.timeframe, item.bar);
         runner.Drain();
         // With quotes the venue trades on them, so they alone set the marks.

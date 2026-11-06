@@ -521,6 +521,25 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     }
 }
 
+std::vector<Decimal> PaperTradingVenue::RestingPrices(
+    const types::Symbol& symbol) const {
+    std::lock_guard lock(mMutex);
+    std::vector<Decimal> prices;
+    for (const Order* order : mActive) {
+        if (order->status.symbol != symbol || !order->arrived ||
+            !types::IsActive(order->status.state)) {
+            continue;
+        }
+        if (order->status.type == OrderType::kLimit) {
+            prices.push_back(*order->status.limit_price);
+        } else if (order->status.type == OrderType::kStop &&
+                   !order->triggered) {
+            prices.push_back(*order->status.stop_price);
+        }
+    }
+    return prices;
+}
+
 Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     const types::OrderRequest& raw) {
     auto symbol = types::NormalizeSymbol(raw.symbol);
