@@ -13,6 +13,7 @@
 #include "kestrel/data/schwab_data_source.hpp"
 #include "kestrel/db/trade_store.hpp"
 #include "kestrel/net/timed_http_client.hpp"
+#include "kestrel/strategy/breakout.hpp"
 #include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
@@ -244,6 +245,45 @@ class ParamReader {
         return *tf;
     }
 
+    // An optional word, one of `allowed`.
+    Result<std::string> Word(const std::string& key,
+                             const std::string& fallback,
+                             std::initializer_list<std::string_view> allowed) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        if (std::find(allowed.begin(), allowed.end(), it->second) ==
+            allowed.end()) {
+            std::string list;
+            for (const auto word : allowed) {
+                list +=
+                    (list.empty() ? "\"" : ", \"") + std::string(word) + "\"";
+            }
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "[strategy] " + key + " must be one of " + list);
+        }
+        return it->second;
+    }
+
+    // An optional whole number, zero allowed.
+    Result<std::size_t> Whole(const std::string& key, std::size_t fallback) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        std::size_t value = 0;
+        const auto& text = it->second;
+        const auto [end, ec] =
+            std::from_chars(text.data(), text.data() + text.size(), value);
+        if (ec != std::errc() || end != text.data() + text.size()) {
+            return Bad(key, "a whole number");
+        }
+        return value;
+    }
+
     Result<std::size_t> Count(const std::string& key, std::size_t fallback) {
         auto it = mParams.find(key);
         if (it == mParams.end()) {
@@ -428,6 +468,55 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     }
 }
 
+Result<StrategyPtr> BuildBreakout(ParamReader& p) {
+    using Params = strategy::BreakoutParams;
+    Params params;
+    std::optional<types::Error> error;
+    Take(p.Symbol(), params.symbol, error);
+    Take(p.Quantity("quantity"), params.quantity, error);
+    Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
+    std::string setup = "nr";
+    Take(p.Word("setup", setup, {"nr", "inside", "range"}), setup, error);
+    params.setup = setup == "inside"  ? Params::Setup::kInsideBar
+                   : setup == "range" ? Params::Setup::kRange
+                                      : Params::Setup::kNarrowRange;
+    Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
+    Take(p.Count("range_bars", params.range_bars), params.range_bars, error);
+    std::string confirm = "none";
+    Take(p.Word("confirm", confirm, {"none", "closes", "percent"}), confirm,
+         error);
+    params.confirm = confirm == "closes"    ? Params::Confirm::kCloses
+                     : confirm == "percent" ? Params::Confirm::kPercent
+                                            : Params::Confirm::kNone;
+    Take(p.Count("confirm_closes", params.confirm_closes),
+         params.confirm_closes, error);
+    Take(p.Number("confirm_percent", params.confirm_percent),
+         params.confirm_percent, error);
+    Take(p.Number("stop_buffer_bps", params.stop_buffer_bps),
+         params.stop_buffer_bps, error);
+    Take(p.Number("target_multiple", params.target_multiple),
+         params.target_multiple, error);
+    Take(p.Count("arm_bars", params.arm_bars), params.arm_bars, error);
+    Take(p.Whole("max_hold_bars", params.max_hold_bars), params.max_hold_bars,
+         error);
+    Take(p.Whole("trend_sma", params.trend_sma), params.trend_sma, error);
+    Take(p.Flag("flatten_at_close", params.flatten_at_close),
+         params.flatten_at_close, error);
+    if (error) {
+        return std::unexpected(*error);
+    }
+    if (auto ok = p.Finish(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    try {
+        return StrategyPtr(
+            std::make_unique<strategy::Breakout>(std::move(params)));
+    } catch (const std::invalid_argument& e) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         std::string("[strategy] ") + e.what());
+    }
+}
+
 struct StrategyEntry {
     const char* name;
     Result<StrategyPtr> (*build)(ParamReader&);
@@ -436,6 +525,7 @@ struct StrategyEntry {
 constexpr StrategyEntry kStrategies[] = {
     {"sma_crossover", BuildSmaCrossover},
     {"market_maker", BuildMarketMaker},
+    {"breakout", BuildBreakout},
 };
 
 // Whether the provider's TradingVenue is a real implementation. Update this

@@ -261,9 +261,16 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       reusable pieces so strategies do not each reimplement them, in
       `strategy/patterns.hpp` beside the SMA and the bar patterns (NR,
       inside bar, range) already there
-- [ ] A `breakout` strategy on those patterns: buy-stop above the setup,
-      protective stop below it, target at the setup's height (the design
-      from Fidelity's "Identifying Chart Patterns" deck; long only for now)
+- [ ] Study `breakout` on Schwab bars: several symbols, 30-minute and daily,
+      against `sma_crossover` and holding, `confirm = "none"` against
+      `"closes"`, parameters fixed on one period and tested on another. A
+      first October SPY 30-minute run (one month, one symbol, far too few
+      trades to judge): nr -12.87 (19 trades, 11 won), inside -10.49 (18, 9
+      won), range -14.84 (1 trade).
+- [ ] `breakout`: rest the target as a sell limit beside the protective stop
+      once the venue can link them (one-cancels-other), instead of selling
+      at market on a close past it; short entries and stop-and-reverse once
+      the paper venue can short.
 - [ ] EMA crossover and RSI mean-reversion
 - [ ] Breakout / Donchian channel with an ATR stop
 - [ ] Grid trading and dollar-cost averaging
@@ -786,6 +793,13 @@ the header of the code concerned.
       `CurrentOrNextSession`. Backtests step their clock through the session
       events. The paper venue fills nothing while closed. The bar stream's
       regular-session filter uses the calendar (early closes, holidays).
+
+### Breakout strategy
+- [x] `breakout` (`strategy/breakout.hpp`): long-only breakout of an NR,
+      inside-bar or N-bar range setup, with a buy-stop entry (or `closes` /
+      `percent` confirmation), a protective stop below the setup, a target
+      at its height checked on closes, `arm_bars`, `max_hold_bars`, a
+      `trend_sma` filter and `flatten_at_close`; market-hours aware.
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

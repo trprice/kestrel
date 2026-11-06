@@ -577,6 +577,37 @@ TEST(Factory, MarketMakerReadsTheTowardsRequoteThreshold) {
         make("flow_pull_imbalance=0.6\nflow_window_ms=0\n").has_value());
 }
 
+TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
+    const std::string base = "[strategy]\nsymbol='BTC/USD'\nquantity='0.1'\n";
+    auto make = [&](const std::string& extra) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(base + extra), NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("breakout", *cfg);
+    };
+    auto plain = make("");
+    ASSERT_OK(plain);
+    EXPECT_EQ((*plain)->Name(), "breakout");
+    EXPECT_EQ((*plain)->Needs().warmup_bars, 4u);  // NR4
+    auto range = make(
+        "timeframe='30m'\nsetup='range'\nrange_bars=20\nconfirm='closes'\n"
+        "confirm_closes=2\nstop_buffer_bps=20\ntarget_multiple=1.5\n"
+        "arm_bars=3\nmax_hold_bars=0\ntrend_sma=50\nflatten_at_close=true\n");
+    ASSERT_OK(range);
+    EXPECT_EQ((*range)->Needs().warmup_bars, 50u);  // the trend SMA's
+    EXPECT_EQ((*range)->Needs().bar_timeframes,
+              std::vector<types::Timeframe>{types::Timeframe::kM30});
+    EXPECT_TRUE(make("setup='inside'\nconfirm='percent'\nconfirm_percent=1\n")
+                    .has_value());
+    // Unknown words, bad numbers and typos are errors.
+    EXPECT_FALSE(make("setup='triangle'\n").has_value());
+    EXPECT_FALSE(make("confirm='maybe'\n").has_value());
+    EXPECT_FALSE(make("nr_bars=1\n").has_value());
+    EXPECT_FALSE(make("target_multiple=-1\n").has_value());
+    EXPECT_FALSE(make("trend_sma='x'\n").has_value());
+    EXPECT_FALSE(make("stop_bufer_bps=5\n").has_value());
+}
+
 TEST(Factory, CreateStrategyRejectsBadInput) {
     auto make = [](const char* strategy_table) {
         auto cfg = config::BinanceUSConfiguration::Parse(

@@ -1,0 +1,134 @@
+#pragma once
+
+#include <cstddef>
+#include <optional>
+#include <string>
+
+#include "kestrel/strategy/strategy.hpp"
+#include "kestrel/types/decimal.hpp"
+
+namespace kestrel::strategy {
+
+struct BreakoutParams {
+    enum class Setup {
+        kNarrowRange,  // the newest bar narrower than the nr_bars - 1 before
+        kInsideBar,    // the newest bar inside the one before
+        kRange,        // the high and low of the last range_bars bars
+    };
+    enum class Confirm {
+        kNone,     // a buy-stop just above the setup's high
+        kCloses,   // a market buy after confirm_closes closes above it
+        kPercent,  // a buy-stop confirm_percent above the setup's high
+    };
+
+    types::Symbol symbol;
+    types::Decimal quantity;  // base-asset units per entry
+    types::Timeframe timeframe = types::Timeframe::kH1;
+    Setup setup = Setup::kNarrowRange;
+    std::size_t nr_bars = 4;      // kNarrowRange: 4 is NR4
+    std::size_t range_bars = 20;  // kRange
+    Confirm confirm = Confirm::kNone;
+    std::size_t confirm_closes = 2;
+    types::Decimal confirm_percent{5, 1};  // 0.5 (%)
+    // The protective stop: this far below the setup's low.
+    types::Decimal stop_buffer_bps{10, 0};
+    // The target: the entry plus this many times the setup's height; zero
+    // for none.
+    types::Decimal target_multiple{1, 0};
+    // Bars an untriggered entry stays armed (kCloses: the closes must start
+    // within this many bars).
+    std::size_t arm_bars = 1;
+    // Exit at market after this many whole bars held (not counting the bar
+    // the entry filled inside); zero for never.
+    std::size_t max_hold_bars = 0;
+    // Arm only while the close is above this many bars' average close; zero
+    // turns the filter off.
+    std::size_t trend_sma = 0;
+    // On a market that closes: sell in OnSessionClosing.
+    bool flatten_at_close = false;
+};
+
+// Long-only breakout of a bar setup, after Fidelity's "Identifying Chart
+// Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, or the
+// last N bars' range), enter on a break above its high, protect with a stop
+// below its low, and take profit at the setup's height above the entry.
+//
+// Flat: on each closed bar, a setup (and, with trend_sma, a close above the
+// average) arms an entry: a buy-stop one tick above the setup's high (raised
+// by confirm_percent with kPercent), or with kCloses a watch that buys at
+// market once confirm_closes closes in a row are above it. An entry not
+// triggered within arm_bars is cancelled, and the next setup can arm.
+//
+// Long: on the entry's fill, a sell-stop rests at the setup's low less
+// stop_buffer_bps. The target is checked on closes: a bar closing at or above
+// it sells at market (the stop is cancelled first; one order cannot hold the
+// shares for both, and the venue has no one-cancels-other). So does the
+// max_hold_bars-th bar held, and with flatten_at_close the session's closing
+// hook. A downward break is only ever an exit: there is no shorting.
+//
+// On a market that closes, nothing is armed while it is closed, and an armed
+// entry is cancelled in OnSessionClosing, so a setup does not carry into the
+// next session's open; a target or time exit due on a bar that closes with
+// the market (the 15:30 bar, at 16:00) waits for the next bar, the stop
+// resting meanwhile. Orders are tracked through OnFill and OnOrderUpdate: an
+// entry that closes unfilled returns to flat, and a protective stop that
+// closes unfilled, or could not be placed, is placed again (at the next bar).
+class Breakout : public Strategy {
+   public:
+    // Throws std::invalid_argument for a quantity that is not positive, an
+    // nr_bars under 2, a negative buffer, percent or multiple, or zero
+    // arm_bars or confirm_closes.
+    explicit Breakout(BreakoutParams params);
+
+    std::string_view Name() const override { return "breakout"; }
+    Requirements Needs() const override;
+    void OnBar(Context& context, const types::Symbol& symbol,
+               types::Timeframe timeframe, const types::Bar& bar) override;
+    void OnFill(Context& context, const types::Fill& fill) override;
+    void OnOrderUpdate(Context& context,
+                       const types::OrderStatus& status) override;
+    void OnSessionClosing(Context& context, types::Timestamp close) override;
+
+   private:
+    // What a setup gives a trade.
+    struct Levels {
+        types::Decimal trigger;  // buy above this
+        types::Decimal stop;     // protective stop
+        types::Decimal height;   // the setup's high minus its low
+    };
+    enum class State {
+        kFlat,
+        kArmed,     // a buy-stop rests (mEntryId)
+        kWatching,  // kCloses: counting closes above mLevels->trigger
+        kEntering,  // a market buy is out (mEntryId)
+        kLong,      // holding; the protective stop rests (mStopId)
+        kExiting,   // a market sell is out (mExitId)
+    };
+
+    std::optional<Levels> FindSetup(Context& context,
+                                    std::span<const types::Bar> bars) const;
+    void Arm(Context& context, const Levels& levels);
+    void EnterAtMarket(Context& context);
+    void PlaceStop(Context& context);
+    void Exit(Context& context, const char* why);
+    void Disarm(Context& context);
+    // Places an order; the ID if the venue took it and it is still active.
+    std::optional<std::string> Place(Context& context,
+                                     const types::OrderRequest& request,
+                                     const char* what);
+
+    BreakoutParams mParams;
+    State mState = State::kFlat;
+    std::optional<Levels> mLevels;  // the setup being traded
+    std::size_t mBarsLeft = 0;      // kArmed / kWatching: bars still allowed
+    std::size_t mCloses = 0;        // kWatching: closes above so far
+    std::size_t mBarsHeld = 0;      // kLong: whole bars since the entry
+    types::Timestamp mEntryTime;    // kLong: when the entry filled
+    types::Decimal mHeld;           // base asset bought and not yet sold
+    std::optional<types::Decimal> mTarget;
+    std::string mEntryId;
+    std::string mStopId;
+    std::string mExitId;
+};
+
+}  // namespace kestrel::strategy

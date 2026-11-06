@@ -140,6 +140,31 @@ are errors, and the symbol must be listed in `[general] symbols`.
 **`sma_crossover`**: `symbol` and `quantity` (required), `timeframe` (`1h`),
 `fast_period` (10), `slow_period` (30).
 
+**`breakout`**: long-only breakout of a bar setup (after Fidelity's
+"Identifying Chart Patterns" deck): a buy-stop just above the setup's high, a
+protective sell-stop below its low, and a target at the setup's height above
+the entry, checked on closes.
+
+| Key | Meaning |
+|---|---|
+| `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
+| `timeframe` | the bars it trades (default `1h`; on Schwab, `30m` or shorter) |
+| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before) or `range` (the high and low of the last `range_bars` bars) (default `nr`) |
+| `nr_bars`, `range_bars` | 4 (NR4) and 20 |
+| `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
+| `confirm_closes`, `confirm_percent` | 2 and 0.5 |
+| `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
+| `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
+| `arm_bars` | bars an untriggered entry stays (default 1); with `closes`, bars for the closes to start |
+| `max_hold_bars` | exit after this many whole bars held (default 0: never) |
+| `trend_sma` | enter only while the close is above this many bars' average close (default 0: off) |
+| `flatten_at_close` | sell in the closing hook, before the session closes (default `false`) |
+
+The target and the time exit sell at market on a bar's close; only the
+protective stop rests at the venue, since a spot account cannot hold the same
+shares for two sell orders. A bar-only backtest fills the entry and the stop
+inside the bar at their own prices (see `RunBacktest`).
+
 **`market_maker`**:
 
 | Key | Meaning |
