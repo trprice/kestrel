@@ -44,9 +44,6 @@ every target (errors in CI), and a safer token file save. See Done.
       `sql::ParseDecimal` reads zero; return kParse instead.
 - [ ] The backtest summary keeps every mark of the run; only the markout
       horizons' tail is needed.
-- [ ] `bars <timeframe> <count>` prints one bar fewer than asked for: the
-      range ends at now, so the bar still forming is not returned
-      (`app/commands/bars.cpp`).
 
 ### 5. Before the Kraken or Schwab trading venue lands
 - [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
@@ -105,21 +102,11 @@ forming one; the volume can be fractional (REST truncates it); the bars match
 `/pricehistory`'s; an unknown symbol gets no data and no error.
 
 #### Next steps
-- [ ] Confirm which error body Schwab sends for an expired or revoked
-      refresh token (`RefusesTheRefreshToken` in `src/data/schwab_auth.cpp`
-      looks for `invalid_grant` or "refresh token"). Renewal works live
-      (Nov 4 2026), and Schwab kept the same refresh token: renewals do not
-      rotate it, so the 7 days still run from `authorize`.
-- [ ] `GetSymbolInfo`'s tick is 0.01 for every symbol: sub-dollar stocks
-      quote in 0.0001, which `SymbolInfo` cannot express (one tick per
-      symbol). It does not check that the symbol exists.
-- [ ] See a login that the streamer refuses for a token Schwab has revoked
-      (only an expired one, code 3, is in the document), and a
-      `STOP_STREAMING` (code 30), live.
-- [ ] A future stale-feed check must use `DataSource::Hours()`: a quiet feed
-      outside the session is not a dead one.
-- [ ] Docs: a `config/schwab.example.toml` (docs/configuration.md says
-      there is none).
+- [ ] When it happens, note Schwab's error body for an expired or revoked
+      refresh token, a login refused for a revoked token, and a
+      `STOP_STREAMING` (code 30): none has been seen live. The handling is
+      defensive (see Done); renewals work, and do not rotate the refresh
+      token, so the 7 days still run from `authorize`.
 - [ ] Then the trading venue (see Venues under Projects). Its header's TODO
       predates `SchwabAuth` and `SchwabApi` and should be rewritten to build
       on them. Pushed executions (ACCT_ACTIVITY) would also have to share
@@ -649,11 +636,15 @@ the header of the code concerned.
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
   land), but `CreateComponents` still builds the stub, so `bars` in live mode
   runs until the first order-related call fails with `kNotImplemented`.
-- Stream liveness is reconnect-only: `StreamQuotes`/`StreamBars` re-subscribe
-  after disconnects, but nothing notices a half-open socket that quietly
-  stops delivering, or a feed gone stale. The health-check item under
-  Operations covers monitoring; a stale-feed watchdog that pauses (or halts)
-  the strategy is a trading-safety feature and belongs with the risk work.
+- Stream liveness: Schwab's streamer reconnects a connection silent for
+  60 s (it sends heartbeats, so silence means a half-open socket); the
+  Kraken and Binance.US streams have no such check. `run` logs a quote feed
+  quiet for 2 minutes of open market time, but only logs it: pausing (or
+  halting) the strategy on a stale feed is a trading-safety feature and
+  belongs with the risk work.
+- Schwab's `GetSymbolInfo` sets the tick from the price when first asked
+  (0.0001 under $1), so a stock that crosses $1 during a run keeps its old
+  tick until the next one.
 
 ## Done
 
@@ -787,6 +778,30 @@ the header of the code concerned.
       `CurrentOrNextSession`. Backtests step their clock through the session
       events. The paper venue fills nothing while closed. The bar stream's
       regular-session filter uses the calendar (early closes, holidays).
+
+### Schwab data, polish
+- [x] `config/schwab.example.toml`: a commented paper setup with the
+      authorization steps; `config/schwab.toml` and the token file's
+      temporary files are git- and docker-ignored.
+- [x] `data::RecentBars`: the newest N closed bars across closed time (the
+      span doubles until it has them). The runner's warmup uses it, so a
+      30-minute strategy on Schwab starts with its full window rather than
+      the ~13 bars of the last 16 hours; and `bars <tf> <count>` prints
+      exactly `count`.
+- [x] Schwab `GetSymbolInfo` checks the symbol with a quote: unknown is
+      kNotFound (and `bars` skips it), a non-equity kUnsupported, and a
+      stock under $1 gets a 0.0001 tick. The runner fetches every symbol's
+      info in `Begin`, so an unknown symbol stops a run (or a backtest)
+      before it starts, and orders never wait on the request.
+- [x] Defensive Schwab handling for what has not been seen live: a token
+      renewal refused with a 4xx RefusesTheRefreshToken does not recognise
+      is an authorization error once the access token has run out (the
+      streamer stops on it, with the re-authorization instructions); a
+      STOP_STREAMING closes the connection and reconnects after 30 s.
+- [x] Stale feeds: Schwab's streamer reconnects after 60 s without even a
+      heartbeat; `run` logs a quote feed quiet for
+      `RunnerOptions::stale_quote_warning` (2 min) of open market time
+      (`MarketHours::OpenDuration`), and its recovery the same way.
 
 ### Build and operations hygiene
 - [x] `nlohmann_json`'s release tarball pinned with `URL_HASH`;

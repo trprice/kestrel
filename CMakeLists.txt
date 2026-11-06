@@ -75,6 +75,7 @@ add_library(kestrel
   src/data/schwab_auth.cpp
   src/data/schwab_data_source.cpp
   src/data/schwab_streamer.cpp
+  src/data/recent_bars.cpp
   src/data/binanceus_data_source.cpp
   src/data/binanceus_errors.cpp
   src/data/binanceus_quote_stream.cpp
@@ -202,6 +203,7 @@ if(KESTREL_BUILD_TESTS)
     tests/symbol_test.cpp
     tests/timeframe_test.cpp
     tests/market_hours_test.cpp
+    tests/recent_bars_test.cpp
     tests/util_test.cpp
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp

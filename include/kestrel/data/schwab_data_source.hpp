@@ -105,10 +105,11 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 // and the overnight session). Daily, weekly and monthly bars are stamped
 // midnight US Central at Schwab; here they open at 00:00 UTC of their date.
 //
-// GetSymbolInfo: Schwab publishes no tick or lot size, so US equity rules:
-// tick 0.01, lot 1, minimum 1. Sub-dollar stocks quote in 0.0001, which one
-// tick size per symbol cannot say; 0.01 is valid for them too, only coarser.
-// The symbol is not checked with Schwab.
+// GetSymbolInfo: Schwab publishes no tick or lot size, so US equity rules,
+// checked against a quote (GET /quotes, once per symbol, then cached): an
+// unknown symbol is kNotFound, anything but a stock or ETF kUnsupported. The
+// tick is 0.01, or 0.0001 for a stock under $1 at the time it is asked; lot
+// and minimum 1 share.
 //
 // StreamQuotes: LEVELONE_EQUITIES on Schwab's streamer, over one connection
 // that every StreamQuotes of this data source shares (see SchwabStreamer:
@@ -177,6 +178,8 @@ class SchwabDataSource : public DataSource {
     std::shared_ptr<SchwabApi> mApi;
     Options mOptions;
     std::shared_ptr<SchwabStreamer> mStreamer;
+    std::mutex mSymbolMutex;  // guards mSymbols
+    std::map<types::Symbol, types::SymbolInfo> mSymbols;
     std::shared_ptr<const types::MarketHours> mHours;
     // The regular session alone, for the bar stream's filter.
     std::shared_ptr<const types::MarketHours> mRegular;

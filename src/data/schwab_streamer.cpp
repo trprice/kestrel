@@ -21,6 +21,8 @@ constexpr int kSuccess = 0;
 constexpr int kLoginDenied = 3;
 constexpr int kCloseConnection = 12;  // another connection took over
 constexpr int kStopStreaming = 30;
+// How long after a STOP_STREAMING the streamer connects again.
+constexpr std::chrono::seconds kStopStreamingReconnect{30};
 
 // Live, every success is code 0; the document also lists 26 to 29 as a SUBS,
 // UNSUBS, ADD or VIEW that succeeded.
@@ -365,12 +367,14 @@ SchwabStreamer::SchwabStreamer(std::shared_ptr<SchwabApi> api,
                                std::string trader_url,
                                SocketFactory make_socket,
                                std::chrono::milliseconds takeover_reconnect,
-                               Clock clock)
+                               Clock clock,
+                               std::chrono::milliseconds silence_timeout)
     : mApi(std::move(api)),
       mTraderUrl(std::move(trader_url)),
       mMakeSocket(std::move(make_socket)),
       mTakeoverReconnect(takeover_reconnect),
-      mClock(std::move(clock)) {}
+      mClock(std::move(clock)),
+      mSilenceTimeout(silence_timeout) {}
 
 SchwabStreamer::~SchwabStreamer() {
     std::unique_ptr<SchwabStreamerSocket> socket;
@@ -389,6 +393,9 @@ SchwabStreamer::~SchwabStreamer() {
 }
 
 void SchwabStreamer::StartSocket() {
+    if (!mResumer.joinable()) {
+        mResumer = std::thread([this] { ResumeLoop(); });
+    }
     mSocket = mMakeSocket();
     mLoggedIn = false;
     mDenials = 0;
@@ -400,22 +407,57 @@ void SchwabStreamer::StartSocket() {
                    });
 }
 
+void SchwabStreamer::ReconnectAfter(std::chrono::milliseconds delay,
+                                    std::string reason) {
+    mResumeReason = std::move(reason);
+    mLoggedIn = false;
+    mSocket->StopReconnecting();
+    mResumeAt = std::chrono::steady_clock::now() + delay;
+    if (!mResumer.joinable()) {
+        mResumer = std::thread([this] { ResumeLoop(); });
+    }
+    mResumeWake.notify_all();
+}
+
 void SchwabStreamer::ResumeLoop() {
+    using SteadyClock = std::chrono::steady_clock;
     std::unique_lock lock(mMutex);
     while (!mClosing) {
-        if (!mResumeAt) {
+        // Due next: a reconnect, or else the silence check of a logged-in
+        // connection.
+        std::optional<SteadyClock::time_point> deadline = mResumeAt;
+        if (!mResumeAt && mSocket && mLoggedIn && !mHalted) {
+            deadline = SteadyClock::time_point(
+                           SteadyClock::duration(mLastMessage.load())) +
+                       mSilenceTimeout;
+        }
+        if (!deadline) {
             mResumeWake.wait(lock);
             continue;
         }
-        if (std::chrono::steady_clock::now() < *mResumeAt) {
-            mResumeWake.wait_until(lock, *mResumeAt);
+        const auto now = SteadyClock::now();
+        if (now < *deadline) {
+            mResumeWake.wait_until(lock, *deadline);
+            continue;
+        }
+        if (!mResumeAt) {
+            // Not even a heartbeat: the connection is gone though open.
+            spdlog::warn(
+                "schwab streamer: nothing from Schwab for {} s, not even a "
+                "heartbeat; reconnecting",
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    mSilenceTimeout)
+                    .count());
+            mLoggedIn = false;
+            mLastMessage = now.time_since_epoch().count();
+            mSocket->Close();  // it reconnects by itself
             continue;
         }
         mResumeAt.reset();
         if (!mSocket || mHalted) {
             continue;  // nobody is subscribed any more
         }
-        spdlog::info("schwab streamer: reconnecting after the takeover");
+        spdlog::info("schwab streamer: reconnecting after {}", mResumeReason);
         auto old = std::move(mSocket);
         StartSocket();
         // The old socket's thread may be waiting for mMutex.
@@ -610,6 +652,8 @@ void SchwabStreamer::OnEvent(std::uint64_t generation,
             return;
         }
         case SchwabStreamerSocket::Event::kMessage:
+            mLastMessage =
+                std::chrono::steady_clock::now().time_since_epoch().count();
             break;
     }
     auto parsed = util::ParseJson(text);
@@ -701,6 +745,9 @@ void SchwabStreamer::OnResponse(std::uint64_t generation, const json& item) {
         if (code == kSuccess) {
             spdlog::info("schwab streamer: logged in ({})", message);
             mLoggedIn = true;
+            mLastMessage =
+                std::chrono::steady_clock::now().time_since_epoch().count();
+            mResumeWake.notify_all();  // the silence check starts
             mDenials = 0;
             for (const Service service :
                  {Service::kLevelOne, Service::kChart}) {
@@ -750,15 +797,17 @@ void SchwabStreamer::OnNotify(std::uint64_t generation, const json& item) {
             "schwab streamer: another streamer connection for this Schwab user "
             "took over ({}); reconnecting in {} s, which takes it back",
             message, mTakeoverReconnect.count() / 1000.0);
-        mLoggedIn = false;
-        mSocket->StopReconnecting();
-        mResumeAt = std::chrono::steady_clock::now() + mTakeoverReconnect;
-        if (!mResumer.joinable()) {
-            mResumer = std::thread([this] { ResumeLoop(); });
-        }
-        mResumeWake.notify_all();
+        ReconnectAfter(mTakeoverReconnect, "the takeover");
     } else if (code == kStopStreaming) {
-        spdlog::warn("schwab streamer: Schwab stopped streaming: {}", message);
+        // Not seen live. The connection would stay up and deliver nothing,
+        // so close it and connect afresh after a wait (and again if Schwab
+        // stops it again).
+        spdlog::warn(
+            "schwab streamer: Schwab stopped streaming ({}); reconnecting in "
+            "{} s",
+            message, kStopStreamingReconnect.count());
+        ReconnectAfter(kStopStreamingReconnect, "Schwab stopped streaming");
+        mSocket->Close();
     } else {
         spdlog::warn("schwab streamer: notice code {}: {}", code, message);
     }

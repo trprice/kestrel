@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -170,6 +171,14 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket();
 // user is presumed to want the other one. Otherwise the streamer waits that
 // long, without logging in, then connects afresh; if the other one takes
 // over again, so does the next wait.
+//
+// Code 30 (STOP_STREAMING, in the document but not seen live) would leave the
+// connection up and silent, so the streamer closes it and connects afresh
+// 30 s later.
+//
+// Schwab sends a heartbeat about every 10 s, trading or not, so a logged-in
+// connection that hears nothing for `silence_timeout` (60 s) is dead though
+// open (a half-open socket): the streamer logs it, closes it and reconnects.
 class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
    public:
     using SocketFactory =
@@ -178,10 +187,12 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
 
     // `trader_url` is the Trader API's base, e.g.
     // https://api.schwabapi.com/trader/v1.
-    SchwabStreamer(std::shared_ptr<SchwabApi> api, std::string trader_url,
-                   SocketFactory make_socket,
-                   std::chrono::milliseconds takeover_reconnect = {},
-                   Clock clock = types::Now);
+    SchwabStreamer(
+        std::shared_ptr<SchwabApi> api, std::string trader_url,
+        SocketFactory make_socket,
+        std::chrono::milliseconds takeover_reconnect = {},
+        Clock clock = types::Now,
+        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60));
     ~SchwabStreamer();
     SchwabStreamer(const SchwabStreamer&) = delete;
     SchwabStreamer& operator=(const SchwabStreamer&) = delete;
@@ -241,14 +252,24 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     void Halt(const std::string& reason);
     // Makes mSocket a new socket and starts it. Requires mMutex.
     void StartSocket();
-    // The thread that reconnects after a takeover, once mResumeAt comes.
+    // The streamer's timer thread, started with the first connection: it
+    // reconnects after a takeover or a STOP_STREAMING once mResumeAt comes,
+    // and closes a logged-in connection silent for mSilenceTimeout.
     void ResumeLoop();
+    // Stops this connection reconnecting by itself and has the resume thread
+    // connect afresh after `delay`; `reason` is logged then ("after <reason>").
+    // Requires mMutex.
+    void ReconnectAfter(std::chrono::milliseconds delay, std::string reason);
 
     const std::shared_ptr<SchwabApi> mApi;
     const std::string mTraderUrl;
     const SocketFactory mMakeSocket;
     const std::chrono::milliseconds mTakeoverReconnect;
     const Clock mClock;
+    const std::chrono::milliseconds mSilenceTimeout;
+    // When the last message arrived (steady clock ticks); written on the
+    // socket's thread, read by the timer thread.
+    std::atomic<std::chrono::steady_clock::rep> mLastMessage{0};
 
     // Held while quotes are merged and callbacks run, so a subscription that
     // has stopped is never called again. Never taken while holding mMutex.
@@ -270,6 +291,7 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     std::uint64_t mNextRequest = 1;
     // When to reconnect after a takeover; until then nothing logs in.
     std::optional<std::chrono::steady_clock::time_point> mResumeAt;
+    std::string mResumeReason;            // why mResumeAt was set, for the log
     bool mClosing = false;                // the destructor has begun
     std::condition_variable mResumeWake;  // with mMutex
 

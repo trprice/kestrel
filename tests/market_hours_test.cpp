@@ -123,6 +123,25 @@ TEST(MarketHours, CurrentOrNextSessionAndOpenTimeInARange) {
                                 At("2026-11-09T15:01:00Z")));
 }
 
+TEST(MarketHours, OpenDurationCountsOnlyOpenTime) {
+    const MarketHours regular(std::make_shared<UsEquityCalendar>(), false);
+    // Thursday 15:00 to Monday 10:00 New York time: Thursday's last hour,
+    // Friday's 6.5 hours, Monday's first half hour.
+    EXPECT_EQ(regular.OpenDuration(At("2026-11-05T20:00:00Z"),
+                                   At("2026-11-09T15:00:00Z")),
+              std::chrono::minutes(60 + 390 + 30));
+    // Over Thanksgiving and the early close after it.
+    EXPECT_EQ(regular.OpenDuration(At("2026-11-25T21:00:00Z"),
+                                   At("2026-11-28T00:00:00Z")),
+              std::chrono::minutes(210));
+    EXPECT_EQ(regular.OpenDuration(At("2026-11-07T15:00:00Z"),
+                                   At("2026-11-08T15:00:00Z")),
+              Timestamp::duration::zero());  // a weekend
+    EXPECT_EQ(MarketHours::AlwaysOpen()->OpenDuration(
+                  At("2026-11-07T15:00:00Z"), At("2026-11-08T15:00:00Z")),
+              std::chrono::hours(24));
+}
+
 TEST(MarketHours, AlwaysOpen) {
     const auto always = MarketHours::AlwaysOpen();
     EXPECT_TRUE(always->IsAlwaysOpen());

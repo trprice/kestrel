@@ -6,9 +6,11 @@ cp config/kestrel.example.toml config/kestrel.toml
 
 Every command takes the file with `-c/--config`. `config/kestrel.example.toml`
 is a commented Kraken setup with every table except the `[binanceus]` and
-`[schwab]` provider tables (see [Provider tables](#provider-tables); there is
-no Schwab example file). `config/binanceus-zec-marketmaker.example.toml` is a
-complete Binance.US market-making setup. Unknown keys, in any table, and
+`[schwab]` provider tables (see [Provider tables](#provider-tables)).
+`config/schwab.example.toml` is a commented setup for US stocks on Schwab in
+paper mode, with the authorization steps, and
+`config/binanceus-zec-marketmaker.example.toml` a complete Binance.US
+market-making setup. Unknown keys, in any table, and
 unknown tables are errors when the config is loaded, so a misspelled setting
 is never silently replaced by its default. One exception: a config may
 carry all three provider tables, and only its own provider's is read and

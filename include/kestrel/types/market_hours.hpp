@@ -86,6 +86,9 @@ class MarketHours {
 
     // Whether any time in [from, to) is open.
     bool AnyOpen(Timestamp from, Timestamp to) const;
+    // How much of [from, to) is open: all of it on a market that never
+    // closes.
+    Timestamp::duration OpenDuration(Timestamp from, Timestamp to) const;
 
    private:
     // The counted session of one day, if it trades.

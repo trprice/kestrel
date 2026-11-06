@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#include "kestrel/data/recent_bars.hpp"
 #include "kestrel/strategy/run_recorder.hpp"
 #include "kestrel/trading/session_gated_venue.hpp"
 
@@ -14,10 +15,6 @@ using types::ErrorCategory;
 using types::MakeError;
 
 namespace {
-
-// Stand-in bar length for calendar-based timeframes when sizing the warmup
-// request; the request is padded, and only the newest bars are kept.
-constexpr std::chrono::hours kMonthEstimate{24 * 31};
 
 // What a market order should be valued at: the midpoint when both sides of the
 // book are known, otherwise whichever price the quote has.
@@ -255,6 +252,11 @@ void Runner::Guarded(const char* hook, const std::function<void()>& call) {
 
 types::Result<void> Runner::Begin() {
     const Requirements requirements = mStrategy->Needs();
+    if (requirements.quotes) {
+        for (const auto& symbol : requirements.symbols) {
+            mLastQuote[symbol] = mClock();
+        }
+    }
     if (requirements.symbols.empty()) {
         return MakeError(
             ErrorCategory::kInvalidArgument,
@@ -266,6 +268,24 @@ types::Result<void> Runner::Begin() {
                              " subscribes to neither quotes nor bars");
     }
     mWindowSize = std::max<std::size_t>(requirements.warmup_bars, 1);
+
+    // Each symbol's info, now rather than at its first order: an unknown
+    // symbol stops the run before it starts (its bars and quotes would just
+    // never come), and the orders do not wait on the request. Another
+    // failure (a timeout, say) only warns; the first order asks again.
+    for (const auto& symbol : requirements.symbols) {
+        auto info = mData->GetSymbolInfo(symbol);
+        if (!info && info.error().category == ErrorCategory::kNotFound) {
+            types::Error error = info.error();
+            error.message = "strategy " + std::string(mStrategy->Name()) +
+                            ": " + symbol + ": " + error.message;
+            return std::unexpected(std::move(error));
+        }
+        if (!info) {
+            spdlog::warn("strategy {}: no symbol info for {} yet: {}",
+                         mStrategy->Name(), symbol, info.error().ToString());
+        }
+    }
 
     // Orders left by an earlier run, or placed by hand, would hold funds and
     // could fill without the strategy or the risk gate knowing: the runner
@@ -399,6 +419,43 @@ void Runner::CheckSession(types::Timestamp now) {
     }
 }
 
+void Runner::NoteQuote(const types::Symbol& symbol, types::Timestamp now) {
+    const auto it = mLastQuote.find(symbol);
+    if (it == mLastQuote.end()) {
+        return;
+    }
+    if (mStaleQuotes.erase(symbol) > 0) {
+        spdlog::info(
+            "strategy {}: quotes for {} again, after {} s of open market",
+            mName, symbol,
+            std::chrono::duration_cast<std::chrono::seconds>(
+                mHours->OpenDuration(it->second, now))
+                .count());
+    }
+    it->second = now;
+}
+
+void Runner::CheckQuoteFeeds(types::Timestamp now) {
+    if (mLastQuote.empty() ||
+        mOptions.stale_quote_warning <= std::chrono::milliseconds::zero() ||
+        !mHours->IsOpen(now)) {
+        return;
+    }
+    // Only open time counts: quiet from the close to the open is normal.
+    for (const auto& [symbol, last] : mLastQuote) {
+        const auto quiet = mHours->OpenDuration(last, now);
+        if (quiet >= mOptions.stale_quote_warning &&
+            mStaleQuotes.insert(symbol).second) {
+            spdlog::warn(
+                "strategy {}: no quote for {} for {} s of open market; the "
+                "feed may be stale",
+                mName, symbol,
+                std::chrono::duration_cast<std::chrono::seconds>(quiet)
+                    .count());
+        }
+    }
+}
+
 std::optional<types::Timestamp> Runner::NextSessionEvent() const {
     if (!mSession) {
         return std::nullopt;
@@ -455,6 +512,13 @@ types::Result<void> Runner::Run() {
         if (polling) {
             deadline = steady + interval;
         }
+        if (!mLastQuote.empty() &&
+            mOptions.stale_quote_warning > std::chrono::milliseconds::zero()) {
+            // Often enough to notice a feed gone quiet with nothing else
+            // arriving.
+            const SteadyTime check = steady + std::chrono::seconds(10);
+            deadline = deadline ? std::min(*deadline, check) : check;
+        }
         if (const auto due = NextSessionEvent()) {
             // At least every minute, so a session the calendar shortens
             // meanwhile is seen (CheckSession re-reads it).
@@ -466,6 +530,7 @@ types::Result<void> Runner::Run() {
         }
         auto event = Pop(deadline);
         CheckSession(mClock());
+        CheckQuoteFeeds(mClock());
         if (event) {
             running = Handle(*event);
         }
@@ -528,6 +593,7 @@ bool Runner::Handle(const Event& event) {
     } else if (const auto* polled = std::get_if<PolledEvent>(&event)) {
         DeliverPolled(*polled);
     } else if (const auto* quote = std::get_if<QuoteEvent>(&event)) {
+        NoteQuote(quote->quote.symbol, mClock());
         if (mGate || mRecorder) {
             if (auto price = QuotePrice(quote->quote)) {
                 if (mGate) {
@@ -548,24 +614,18 @@ bool Runner::Handle(const Event& event) {
 types::Result<void> Runner::Warmup(const Requirements& requirements) {
     const types::Timestamp now = mClock();
     for (types::Timeframe timeframe : requirements.bar_timeframes) {
-        const std::chrono::seconds step =
-            types::FixedDuration(timeframe).value_or(kMonthEstimate);
         for (const types::Symbol& symbol : requirements.symbols) {
             auto& window = mBars[{symbol, timeframe}];
             if (requirements.warmup_bars == 0) {
                 continue;
             }
-            // One bar of padding in case the newest slot has no bar yet.
-            const types::Timestamp start =
-                now -
-                step * static_cast<std::int64_t>(requirements.warmup_bars + 1);
-            auto bars = mData->GetBars(symbol, timeframe, start, now);
+            // The newest bars, however much closed time lies between them.
+            auto bars = data::RecentBars(*mData, symbol, timeframe,
+                                         requirements.warmup_bars, now);
             if (!bars) {
                 return std::unexpected(bars.error());
             }
-            const std::size_t keep =
-                std::min(bars->size(), requirements.warmup_bars);
-            window.assign(bars->end() - keep, bars->end());
+            window.assign(bars->begin(), bars->end());
             if (!window.empty()) {
                 if (mGate) {
                     mGate->NoteReferencePrice(symbol, window.back().close);

@@ -166,6 +166,10 @@ before then (`authorize --status` shows when).
   trading. See [One trader per account](#one-trader-per-account).
 - With `[recording] enabled = true`, `run` stores its fills, P&L snapshots and
   response times as it goes; see [database.md](database.md#recording-a-run).
+- `run` logs a quote feed that has gone quiet for 2 minutes of open market
+  time (nights and weekends do not count), and again when quotes return. It
+  only logs: the strategy carries on. Schwab's streamer itself reconnects a
+  connection that has sent nothing, not even a heartbeat, for 60 s.
 
 The strategies' parameters, the risk limits and the market maker's protection
 rules are described in [configuration.md](configuration.md). To write your own

@@ -1,5 +1,9 @@
 #include "kestrel/strategy/runner.hpp"
 
+#include <spdlog/sinks/ringbuffer_sink.h>
+#include <spdlog/spdlog.h>
+
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <future>
@@ -79,7 +83,14 @@ class FakeDataSource : public data::DataSource {
     }
     types::Result<types::SymbolInfo> GetSymbolInfo(
         const types::Symbol&) override {
-        return types::MakeError(ErrorCategory::kNotFound, "none");
+        if (unknown_symbol) {
+            return types::MakeError(ErrorCategory::kNotFound, "none");
+        }
+        return types::SymbolInfo{kSymbol,
+                                 types::Decimal(1, 2),
+                                 types::Decimal(1, 3),
+                                 types::Decimal(1, 3),
+                                 {}};
     }
 
     void Close(int hour) { bar_callback(kSymbol, Timeframe::kH1, BarAt(hour)); }
@@ -89,6 +100,7 @@ class FakeDataSource : public data::DataSource {
 
     bool fail_get_bars = false;
     bool fail_stream_bars = false;
+    bool unknown_symbol = false;
     std::vector<types::Bar> history;
     std::shared_ptr<const types::MarketHours> hours =
         types::MarketHours::AlwaysOpen();
@@ -284,6 +296,17 @@ TEST_F(RunnerTest, DoesNotBackfillAGapThatIsAllClosedTime) {
     EXPECT_EQ(strategy->bars,
               (std::vector<types::Timestamp>{Hour(5), Hour(8)}));
     EXPECT_EQ(data->get_bars_ranges.size(), 1u);  // the warmup only
+}
+
+TEST_F(RunnerTest, AnUnknownSymbolStopsTheRunBeforeItStarts) {
+    data->unknown_symbol = true;
+    Build();
+    auto begun = runner->Begin();
+    ASSERT_FALSE(begun.has_value());
+    EXPECT_EQ(begun.error().category, ErrorCategory::kNotFound);
+    EXPECT_NE(begun.error().message.find(kSymbol), std::string::npos);
+    EXPECT_EQ(venue->cancel_all_calls, 0);  // the account was not touched
+    EXPECT_TRUE(data->get_bars_ranges.empty());
 }
 
 TEST_F(RunnerTest, StillDeliversTheBarWhenBackfillFails) {
@@ -933,6 +956,9 @@ class SessionStrategy : public strategy::Strategy {
         return r;
     }
     void OnStart(strategy::Context& context) override {
+        if (on_start) {
+            on_start();
+        }
         hooks.push_back("start");
         open_at_start = context.MarketOpen();
         session_at_start = context.CurrentOrNextSession();
@@ -953,7 +979,8 @@ class SessionStrategy : public strategy::Strategy {
         closes.push_back(close);
     }
 
-    std::function<void()> on_open;  // after an open is recorded
+    std::function<void()> on_open;   // after an open is recorded
+    std::function<void()> on_start;  // first thing in OnStart
     std::vector<std::string> hooks;
     std::vector<types::Timestamp> times;
     std::vector<types::Timestamp> closes;
@@ -1176,6 +1203,71 @@ TEST_F(RunnerSessionTest, ARestrictionLearnedAfterStartingMovesTheHooks) {
     EXPECT_EQ(runner->NextSessionEvent(), Hour(25));
     EXPECT_EQ(strategy->hooks, std::vector<std::string>{"start"});
     runner->End();
+}
+
+// Collects what is logged while it lives.
+class LogCapture {
+   public:
+    LogCapture()
+        : mSink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
+        spdlog::default_logger()->sinks().push_back(mSink);
+    }
+    ~LogCapture() {
+        auto& sinks = spdlog::default_logger()->sinks();
+        sinks.erase(std::remove(sinks.begin(), sinks.end(), mSink),
+                    sinks.end());
+    }
+    bool Saw(const std::string& text) const {
+        for (const auto& line : mSink->last_formatted()) {
+            if (line.find(text) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+   private:
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> mSink;
+};
+
+// Run() logs a quote feed gone quiet while the market is open, counting
+// only open time, and logs it again when quotes come back.
+TEST_F(RunnerSessionTest, AQuietQuoteFeedIsStaleOnlyWhileTheMarketIsOpen) {
+    LogCapture log;
+    std::atomic<std::int64_t> clock_ms{0};  // 00:00, before the 01:00 open
+    const auto set = [&](types::Timestamp t) {
+        clock_ms = types::ToEpochMillis(t);
+    };
+    options.fill_poll_interval = std::chrono::milliseconds(10);
+    options.stale_quote_warning = std::chrono::minutes(1);
+    std::promise<void> started;
+    strategy->on_start = [&started] { started.set_value(); };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&clock_ms] { return types::FromEpochMillis(clock_ms.load()); });
+    std::thread thread([this] { (void)runner->Run(); });
+    started.get_future().wait();
+    // The callback is set once OnStart has run.
+    const auto settle = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    };
+
+    set(Hour(0) + std::chrono::minutes(50));  // closed: not stale
+    settle();
+    set(Hour(1) + std::chrono::seconds(30));  // 30 s into the session
+    settle();
+    EXPECT_FALSE(log.Saw("no quote for"));
+    set(Hour(1) + std::chrono::minutes(2));
+    settle();
+    EXPECT_TRUE(log.Saw("no quote for BTC/USD for 120 s of open market"));
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    data->quote_callback(quote);
+    settle();
+    EXPECT_TRUE(log.Saw("quotes for BTC/USD again, after 120 s of open"));
+    runner->Stop();
+    thread.join();
 }
 
 TEST_F(RunnerSessionTest, ASessionSleptThroughGetsNoHooks) {

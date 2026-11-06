@@ -111,6 +111,7 @@ class SchwabAuth {
     mutable std::mutex mMutex;  // guards the members below
     std::optional<config::SchwabTokens> mTokens;
     bool mRefreshRefused = false;  // Schwab refused the refresh token
+    bool mRefusalLogged = false;   // a 4xx renewal refusal was reported
     types::Timestamp mNextAttempt{};
     std::optional<types::Error> mLastError;  // of the last failed renewal
     bool mSavePending = false;  // mTokens is newer than the token file

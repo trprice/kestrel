@@ -1,0 +1,68 @@
+# US stocks on Schwab: market data from Schwab, trading on the paper venue.
+# Copy to config/schwab.toml and edit. Live trading on Schwab is not
+# implemented yet, so mode stays "paper".
+#
+# Credentials do NOT go in this file. Schwab needs an app (developer.schwab.com,
+# "Market Data" product) even for paper trading, since its market data is
+# behind OAuth:
+#   KESTREL_SCHWAB_APP_KEY / KESTREL_SCHWAB_APP_SECRET in the environment, or
+#   [schwab] app_key / app_secret in secrets.toml next to this file.
+#
+# Then authorize once, and again every 7 days (the refresh token's life):
+#   ./build/kestrel_app -c config/schwab.toml authorize
+#   ./build/kestrel_app -c config/schwab.toml authorize --status
+#
+# Quick checks once authorized:
+#   ./build/kestrel_app -c config/schwab.toml bars 30m 10
+#   ./build/kestrel_app -c config/schwab.toml stream 30         # quotes
+#   ./build/kestrel_app -c config/schwab.toml stream-bars 1m 180
+#   ./build/kestrel_app -c config/schwab.toml backtest sma_crossover \
+#       --from 2026-10-01 --to 2026-11-01
+
+[general]
+provider = "schwab"
+mode     = "paper"
+symbols  = ["SPY", "AAPL"]     # share classes as "BRK.B"
+
+[paper]
+initial_balances = { USD = "10000" }
+maker_fee_bps = 0              # US stocks trade commission-free at Schwab
+taker_fee_bps = 0
+slippage_bps  = 5              # market orders fill 0.05% through the touch
+
+[schwab]
+# Must match the app's callback URL in the Schwab developer portal exactly.
+redirect_uri = "https://127.0.0.1:8182"
+# Where `authorize` keeps the tokens (mode 0600); relative to this file.
+token_file   = "schwab_tokens.json"
+# Bars and orders outside the regular session (09:30 to 16:00 New York time,
+# 13:00 on an early close): pre-market from 07:00 and after hours to 20:00.
+extended_hours = false
+# Schwab allows one streamer connection per user. When another one logs in
+# (thinkorswim, or a second kestrel_app), this one is disconnected: 0 (the
+# default) stops streaming, so the other keeps it; more than 0 reconnects
+# after that many milliseconds, taking it back.
+takeover_reconnect_ms = 0
+
+[risk]                         # optional in paper mode
+# max_order_notional    = "2000"
+# max_position_notional = "5000"
+# max_open_orders       = 5
+# max_daily_loss        = "200"
+# allowed_symbols       = ["SPY", "AAPL"]
+
+[strategy]                     # parameters for the run / backtest subcommands
+symbol    = "SPY"              # must be in [general] symbols
+quantity  = "1"                # shares per order
+# Schwab has 1, 5, 10, 15 and 30 minute bars (and daily and longer for
+# backtests); no hourly ones.
+timeframe = "30m"
+# fast_period = 10
+# slow_period = 30
+
+# [database]                   # optional; needed for --store and [recording]
+# host   = "localhost"
+# port   = 5432
+# dbname = "kestrel"
+# user   = "kestrel"
+# The password comes from KESTREL_DATABASE_PASSWORD or secrets.toml.

@@ -310,10 +310,11 @@ TEST(BacktestTest, TheRiskGateAppliesInBacktests) {
 TEST(BacktestTest, FailsWithoutSymbolInfo) {
     auto data = std::make_shared<ReplayDataSource>();
     data->AddBars(kSymbol, Timeframe::kH1, Series(kCloses));
-    // The buy is rejected for lack of symbol info, so nothing fills.
+    // The runner checks every symbol before it starts.
     auto result = RunBacktest(data, Sma(), Options());
-    ASSERT_OK(result);
-    EXPECT_TRUE(result->fills.empty());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().category, ErrorCategory::kNotFound);
+    EXPECT_NE(result.error().message.find(kSymbol), std::string::npos);
 }
 
 // A market open from 04:30 to 06:30 UTC on 1970-01-01 only.

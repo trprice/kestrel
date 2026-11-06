@@ -503,12 +503,70 @@ types::Result<types::SymbolInfo> SchwabDataSource::GetSymbolInfo(
     if (!normalized) {
         return std::unexpected(normalized.error());
     }
-    if (auto native = ToSchwabSymbol(*normalized); !native) {
+    auto native = ToSchwabSymbol(*normalized);
+    if (!native) {
         return std::unexpected(native.error());
     }
-    return types::SymbolInfo{*normalized, types::Decimal(1, 2),
-                             types::Decimal::FromInt(1),
-                             types::Decimal::FromInt(1), types::Decimal()};
+    {
+        std::lock_guard lock(mSymbolMutex);
+        if (const auto it = mSymbols.find(*normalized); it != mSymbols.end()) {
+            return it->second;
+        }
+    }
+    // A quote says whether Schwab knows the symbol, what it is, and its
+    // price, which sets the tick.
+    net::HttpRequest request;
+    request.url = mOptions.base_url + "/quotes";
+    request.query = {{"symbols", *native}, {"fields", "quote"}};
+    auto response = util::Retry(
+        mOptions.retry, [&] { return mApi->Send(request); }, mOptions.sleeper);
+    if (!response) {
+        auto error = response.error();
+        error.message = "schwab quotes " + *native + ": " + error.message;
+        return std::unexpected(std::move(error));
+    }
+    auto json = util::ParseJson(response->body);
+    if (!json || !json->is_object()) {
+        return MakeError(ErrorCategory::kParse, "schwab quotes: not an object");
+    }
+    const auto entry = json->find(*native);
+    if (entry == json->end() || !entry->is_object()) {
+        // Unknown symbols come back as {"errors":{"invalidSymbols":[...]}}.
+        return MakeError(ErrorCategory::kNotFound,
+                         "Schwab does not know the symbol " + *normalized);
+    }
+    const std::string type = entry->value("assetMainType", "");
+    if (type != "EQUITY") {
+        return MakeError(
+            ErrorCategory::kUnsupported,
+            *normalized + " is " +
+                (type.empty() ? std::string("of unknown type") : "a " + type) +
+                " at Schwab; only stocks and ETFs are supported");
+    }
+    // The last price, or the bid or ask if nothing has traded.
+    std::optional<types::Decimal> price;
+    if (const auto quote = entry->find("quote");
+        quote != entry->end() && quote->is_object()) {
+        for (const char* field : {"lastPrice", "bidPrice", "askPrice"}) {
+            const auto it = quote->find(field);
+            if (it == quote->end()) {
+                continue;
+            }
+            if (auto d = util::JsonDecimal(*it); d && d->Sign() > 0) {
+                price = *d;
+                break;
+            }
+        }
+    }
+    // US stocks quote in cents from $1, in hundredths of a cent below it.
+    const bool sub_dollar = price && *price < types::Decimal::FromInt(1);
+    types::SymbolInfo info{
+        *normalized, sub_dollar ? types::Decimal(1, 4) : types::Decimal(1, 2),
+        types::Decimal::FromInt(1), types::Decimal::FromInt(1),
+        types::Decimal()};
+    std::lock_guard lock(mSymbolMutex);
+    mSymbols.emplace(*normalized, info);
+    return info;
 }
 
 }  // namespace kestrel::data

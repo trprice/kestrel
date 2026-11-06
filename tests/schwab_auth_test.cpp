@@ -333,6 +333,41 @@ TEST_F(SchwabAuthTest, OtherRefusalsAreRetried) {
     EXPECT_EQ(mHttp->requests.size(), 3u);
 }
 
+// A refusal worded in a way RefusesTheRefreshToken does not recognise: once
+// the access token has run out it is an authorization error (the streamer
+// stops on one), but renewal is still tried.
+TEST_F(SchwabAuthTest, AnUnrecognisedRefusalOnceExpiredIsAnAuthError) {
+    SaveTokens(-1min);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    mHttp->PushStatus(400, R"({"error":"unsupported_token","detail":"x"})");
+    auto token = auth->AccessToken();
+    ASSERT_FALSE(token.has_value());
+    EXPECT_EQ(token.error().category, types::ErrorCategory::kAuth);
+    EXPECT_NE(token.error().message.find("re-authorization"),
+              std::string::npos);
+    // Within the retry interval: the same error, no request.
+    auto again = auth->AccessToken();
+    ASSERT_FALSE(again.has_value());
+    EXPECT_EQ(again.error().category, types::ErrorCategory::kAuth);
+    EXPECT_EQ(mHttp->requests.size(), 1u);
+    // Still tried later, and a renewal then works.
+    mNow += SchwabAuth::kRetryInterval;
+    mHttp->Push(TokenReply("access-2", "refresh-1"));
+    auto renewed = auth->AccessToken();
+    ASSERT_OK(renewed);
+    EXPECT_EQ(*renewed, "access-2");
+
+    // A rate limit is not a refusal: its own error, not an auth one.
+    SaveTokens(-1min);
+    auto limited = MakeAuth();
+    ASSERT_OK(limited->Load());
+    mHttp->PushStatus(429, "slow down");
+    auto busy = limited->AccessToken();
+    ASSERT_FALSE(busy.has_value());
+    EXPECT_NE(busy.error().category, types::ErrorCategory::kAuth);
+}
+
 TEST_F(SchwabAuthTest, RetriesSavingARotatedRefreshToken) {
     SaveTokens(1min);
     auto auth = MakeAuth();

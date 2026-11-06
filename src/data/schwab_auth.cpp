@@ -53,6 +53,14 @@ bool RefusesTheRefreshToken(const types::Error& error) {
            m.find("refresh token") != std::string::npos;
 }
 
+// A refusal by the token endpoint (a 4xx other than a rate limit or a
+// timeout): retrying will not change it.
+bool IsRefusal(const types::Error& error) {
+    return error.http_status && *error.http_status >= 400 &&
+           *error.http_status < 500 && *error.http_status != 408 &&
+           *error.http_status != 429;
+}
+
 std::string_view Trim(std::string_view s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) {
         s.remove_prefix(1);
@@ -304,6 +312,26 @@ Result<std::string> SchwabAuth::AccessToken() {
     if (auto refreshed = Refresh(now); !refreshed) {
         mLastError = refreshed.error();
         mNextAttempt = now + kRetryInterval;
+        if (!mRefreshRefused && !usable && IsRefusal(refreshed.error())) {
+            // Schwab's body for a revoked refresh token has not been seen
+            // live, so one RefusesTheRefreshToken does not recognise still
+            // ends here once the access token has run out: say what to do,
+            // and fail as an authorization error (the streamer stops on it).
+            // Renewal is still tried every kRetryInterval.
+            if (!mRefusalLogged) {
+                mRefusalLogged = true;
+                spdlog::error(
+                    "Schwab keeps refusing to renew the access token ({}); "
+                    "the refresh token has probably been revoked",
+                    refreshed.error().ToString());
+                config::SchwabTokenStore::LogReauthorizationInstructions();
+            }
+            mLastError =
+                AuthError("Schwab refuses to renew the access token (" +
+                          refreshed.error().message +
+                          "); re-authorization is probably required");
+            return std::unexpected(*mLastError);
+        }
         if (mRefreshRefused || !usable) {
             return std::unexpected(refreshed.error());
         }
@@ -316,6 +344,7 @@ Result<std::string> SchwabAuth::AccessToken() {
     }
     mLastError.reset();
     mNextAttempt = {};
+    mRefusalLogged = false;
     return mTokens->access_token;
 }
 

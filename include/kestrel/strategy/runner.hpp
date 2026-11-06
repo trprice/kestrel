@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -55,6 +56,11 @@ struct RunnerOptions {
     // Must be positive: at the close itself orders are already refused, so a
     // lead under 1 ms is taken as 1 ms.
     std::chrono::milliseconds session_closing_lead{std::chrono::minutes(5)};
+    // Run() only, for a strategy that takes quotes: a symbol with no quote
+    // for this long while the market is open is logged as stale (once, and
+    // again when quotes come back). Closed time does not count, so a quiet
+    // night or weekend is not stale. Zero turns it off.
+    std::chrono::milliseconds stale_quote_warning{std::chrono::minutes(2)};
 };
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events
@@ -233,6 +239,11 @@ class Runner : private Context {
     void CheckSession(types::Timestamp now);
     // Adopts a restriction the calendar learned of since mSession was read.
     void RefreshSession(types::Timestamp now);
+    // Logs the quote streams that have gone quiet while the market is open
+    // (options.stale_quote_warning). Run() thread only.
+    void CheckQuoteFeeds(types::Timestamp now);
+    // A quote arrived for `symbol` at `now`.
+    void NoteQuote(const types::Symbol& symbol, types::Timestamp now);
     // options.session_closing_lead, at least 1 ms.
     std::chrono::milliseconds Lead() const {
         return std::max(mOptions.session_closing_lead,
@@ -262,6 +273,10 @@ class Runner : private Context {
     std::optional<types::MarketHours::Session> mSession;
     bool mOpenCalled = false;
     bool mClosingCalled = false;
+    // The stale-quote check (Run() thread only): when each quoted symbol's
+    // last quote came (or the run began), and which are reported stale.
+    std::map<types::Symbol, types::Timestamp> mLastQuote;
+    std::set<types::Symbol> mStaleQuotes;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
     std::shared_ptr<OrderTracker> mTracker;
     std::unique_ptr<RunRecorder> mRecorder;  // null without options.trade_log

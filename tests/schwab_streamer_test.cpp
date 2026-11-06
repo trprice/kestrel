@@ -50,7 +50,7 @@ constexpr const char* kUserPreference = R"({
 struct Wire {
     std::atomic<int> started = 0;
     std::atomic<int> stopped = 0;
-    int closes = 0;
+    std::atomic<int> closes = 0;  // also from the streamer's timer thread
     bool reconnecting = true;
     std::string url;
     SchwabStreamerSocket::Handler handler;
@@ -140,11 +140,12 @@ class SchwabStreamerTest : public ::testing::Test {
     }
 
     std::shared_ptr<SchwabStreamer> MakeStreamer(
-        std::chrono::milliseconds takeover_reconnect) {
+        std::chrono::milliseconds takeover_reconnect,
+        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60)) {
         return std::make_shared<SchwabStreamer>(
             mApi, "https://api.test/trader/v1",
             [this] { return std::make_unique<FakeSocket>(mWire); },
-            takeover_reconnect, [this] { return mNow; });
+            takeover_reconnect, [this] { return mNow; }, silence_timeout);
     }
 
     void TakeOver() {
@@ -416,6 +417,50 @@ bool Eventually(Done done) {
         std::this_thread::sleep_for(10ms);
     }
     return done();
+}
+
+// Schwab sends heartbeats whether anything trades or not, so a logged-in
+// connection that hears nothing at all is dead though open: it is closed
+// (and reconnects by itself). One that hears heartbeats is left alone.
+TEST_F(SchwabStreamerTest, ASilentConnectionIsClosedButHeartbeatsKeepItOpen) {
+    mStreamer = MakeStreamer({}, 300ms);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+    for (int i = 0; i < 10; ++i) {  // 500 ms of heartbeats every 50 ms
+        std::this_thread::sleep_for(50ms);
+        mWire->Fire(Event::kMessage, R"({"notify":[{"heartbeat":"1"}]})");
+    }
+    EXPECT_EQ(mWire->closes, 0);
+    // Then silence.
+    EXPECT_TRUE(Eventually([&] { return mWire->closes == 1; }));
+    EXPECT_TRUE(mWire->reconnecting);  // its own reconnect does the rest
+    // Logged out by it: nothing more until the next login.
+    std::this_thread::sleep_for(500ms);
+    EXPECT_EQ(mWire->closes, 1);
+    mWire->Connect();
+    EXPECT_EQ(mWire->Last()["command"], "SUBS");
+}
+
+// STOP_STREAMING (code 30) would leave the connection up and silent: it is
+// closed, and reconnected after a wait rather than at once.
+TEST_F(SchwabStreamerTest, AStopStreamingNoticeReconnectsAfterAWait) {
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+    mWire->Fire(Event::kMessage,
+                R"({"notify":[{"service":"ADMIN","timestamp":1,)"
+                R"("content":{"code":30,"msg":"Stop streaming"}}]})");
+    EXPECT_EQ(mWire->closes, 1);
+    EXPECT_FALSE(mWire->reconnecting);
+    // Not halted: new subscriptions are still taken.
+    std::vector<types::Quote> more;
+    EXPECT_NE(Subscribe({"AAPL"}, more), nullptr);
+    // A reconnect under way does not log in before the wait is over.
+    const auto sent = mWire->sent.size();
+    mWire->Fire(Event::kOpen);
+    EXPECT_EQ(mWire->sent.size(), sent);
+    EXPECT_EQ(mWire->started, 1);  // the new connection comes after 30 s
 }
 
 TEST_F(SchwabStreamerTest, WithADelayATakeoverReconnectsAfterIt) {

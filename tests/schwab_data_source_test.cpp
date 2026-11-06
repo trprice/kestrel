@@ -528,16 +528,60 @@ TEST_F(SchwabDataSourceTest, RefusesTimeframesSchwabLacksAndBadRanges) {
     EXPECT_TRUE(mHttp->requests.empty());
 }
 
-TEST_F(SchwabDataSourceTest, SymbolInfoUsesUsEquityRules) {
-    auto info = Source().GetSymbolInfo("brk.b");
+// /quotes as Schwab answered on Nov 5 2026 (cut down).
+std::string QuoteBody(const std::string& key, const std::string& type,
+                      const std::string& last) {
+    return R"({")" + key + R"(":{"assetMainType":")" + type +
+           R"(","assetSubType":"COE","symbol":")" + key +
+           R"(","quote":{"lastPrice":)" + last +
+           R"(,"bidPrice":1.32,"askPrice":1.36}}})";
+}
+
+TEST_F(SchwabDataSourceTest, SymbolInfoChecksTheSymbolWithAQuote) {
+    Reply(QuoteBody("BRK/B", "EQUITY", "570.5"));
+    auto source = Source();
+    auto info = source.GetSymbolInfo("brk.b");
     ASSERT_OK(info);
     EXPECT_EQ(info->symbol, "BRK.B");
     EXPECT_EQ(info->tick_size, types::Decimal(1, 2));
     EXPECT_EQ(info->lot_size, types::Decimal::FromInt(1));
     EXPECT_EQ(info->min_order_size, types::Decimal::FromInt(1));
     EXPECT_TRUE(info->min_notional.IsZero());
-    EXPECT_FALSE(Source().GetSymbolInfo("BTC/USD").has_value());
-    EXPECT_TRUE(mHttp->requests.empty());  // nothing asked of Schwab
+    ASSERT_EQ(mHttp->requests.size(), 1u);
+    EXPECT_EQ(mHttp->requests[0].url, "https://api.test/marketdata/v1/quotes");
+    EXPECT_EQ(mHttp->requests[0].query.at("symbols"), "BRK/B");
+    // Cached.
+    ASSERT_OK(source.GetSymbolInfo("BRK.B"));
+    EXPECT_EQ(mHttp->requests.size(), 1u);
+    // Not a stock symbol at all: refused before asking.
+    EXPECT_FALSE(source.GetSymbolInfo("BTC/USD").has_value());
+    EXPECT_EQ(mHttp->requests.size(), 1u);
+}
+
+TEST_F(SchwabDataSourceTest, ASubDollarStockQuotesInHundredthsOfACent) {
+    Reply(QuoteBody("TINY", "EQUITY", "0.4321"));
+    auto info = Source().GetSymbolInfo("TINY");
+    ASSERT_OK(info);
+    EXPECT_EQ(info->tick_size, types::Decimal(1, 4));
+}
+
+TEST_F(SchwabDataSourceTest, UnknownSymbolsAndOtherAssetsAreRefused) {
+    Reply(R"({"errors":{"invalidSymbols":["ZZZZQ"]}})");
+    auto unknown = Source().GetSymbolInfo("ZZZZQ");
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_EQ(unknown.error().category, types::ErrorCategory::kNotFound);
+
+    Reply(QuoteBody("VFIAX", "MUTUAL_FUND", "600"));
+    auto fund = Source().GetSymbolInfo("VFIAX");
+    ASSERT_FALSE(fund.has_value());
+    EXPECT_EQ(fund.error().category, types::ErrorCategory::kUnsupported);
+
+    // A failed request is an error, not cached.
+    mHttp->reply = [](const net::HttpRequest&) { return Status(400); };
+    auto source = Source();
+    EXPECT_FALSE(source.GetSymbolInfo("SPY"));
+    Reply(QuoteBody("SPY", "EQUITY", "728.37"));
+    EXPECT_TRUE(source.GetSymbolInfo("SPY"));
 }
 
 }  // namespace

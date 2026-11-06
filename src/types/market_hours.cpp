@@ -184,6 +184,22 @@ std::optional<MarketHours::Session> MarketHours::CurrentOrNext(
     return std::nullopt;
 }
 
+Timestamp::duration MarketHours::OpenDuration(Timestamp from,
+                                              Timestamp to) const {
+    if (from >= to) {
+        return Timestamp::duration::zero();
+    }
+    if (!mCalendar) {
+        return to - from;
+    }
+    Timestamp::duration open{0};
+    for (auto session = CurrentOrNext(from); session && session->start < to;
+         session = CurrentOrNext(session->end)) {
+        open += std::min(session->end, to) - std::max(session->start, from);
+    }
+    return open;
+}
+
 bool MarketHours::AnyOpen(Timestamp from, Timestamp to) const {
     if (from >= to) {
         return false;

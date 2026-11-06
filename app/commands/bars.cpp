@@ -5,6 +5,7 @@
 
 #include "command.hpp"
 #include "common.hpp"
+#include "kestrel/data/recent_bars.hpp"
 #include "kestrel/db/bar_store.hpp"
 #include "kestrel/factory.hpp"
 
@@ -63,11 +64,13 @@ class BarsCommand : public Command {
                       << " min=" << info->min_order_size << '\n';
         } else {
             spdlog::error("{}: {}", symbol, info.error().ToString());
+            if (info.error().category == types::ErrorCategory::kNotFound) {
+                return;  // no bars to look for
+            }
         }
-        const auto length = *types::FixedDuration(mTimeframe);
-        const auto end = types::Now();
-        const auto start = end - length * mCount;
-        auto result = data_source.GetBars(symbol, mTimeframe, start, end);
+        auto result =
+            data::RecentBars(data_source, symbol, mTimeframe,
+                             static_cast<std::size_t>(mCount), types::Now());
         if (!result) {
             spdlog::error("{}: {}", symbol, result.error().ToString());
             return;
