@@ -8,6 +8,7 @@
 
 #include "kestrel/backtest/backtest.hpp"
 #include "kestrel/backtest/replay_data_source.hpp"
+#include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
 namespace kestrel::strategy {
@@ -258,6 +259,156 @@ TEST(Breakout, ATargetReachedAfterTheCloseExitsInTheNextSession) {
     EXPECT_EQ(result->fills[1].side, Side::kSell);
     EXPECT_EQ(result->fills[1].time, Hour(29));
     EXPECT_EQ(result->fills[1].price, D("15.3"));
+}
+
+// Drives the strategy directly against a RecordingVenue, for the venue
+// answers a paper venue never gives: partial fills, failed cancels, fills
+// crossing cancels.
+class FakeContext : public Context {
+   public:
+    FakeContext() {
+        // The NR4 setup of Nr4Then: trigger 13.01, stop 10.98, height 2.
+        for (const auto& b : std::vector<std::array<const char*, 4>>{
+                 {"12", "14", "10", "12"},
+                 {"12", "13", "10", "12"},
+                 {"12", "15", "10", "12"},
+                 {"12", "14", "10", "12"},
+                 {"12", "13", "11", "12"}}) {
+            Add(b);
+        }
+    }
+    types::Timestamp Now() const override { return bars.back().open_time; }
+    trading::TradingVenue& Venue() override { return venue; }
+    types::Result<types::SymbolInfo> SymbolInfo(const types::Symbol&) override {
+        return types::SymbolInfo{
+            kSymbol, D("0.01"), D("0.0001"), D("0.0001"), {}};
+    }
+    std::span<const types::Bar> Bars(const types::Symbol&,
+                                     Timeframe) const override {
+        return bars;
+    }
+    const types::Bar& Add(std::array<const char*, 4> b) {
+        types::Bar bar;
+        bar.open_time = Hour(static_cast<int>(bars.size()));
+        bar.open = D(b[0]);
+        bar.high = D(b[1]);
+        bar.low = D(b[2]);
+        bar.close = D(b[3]);
+        bars.push_back(bar);
+        return bars.back();
+    }
+
+    kestrel::testing::RecordingVenue venue;
+    std::vector<types::Bar> bars;
+};
+
+// Feeds the newest bar, or `next` added first.
+void Feed(Breakout& strategy, FakeContext& context) {
+    strategy.OnBar(context, kSymbol, Timeframe::kH1, context.bars.back());
+}
+void Feed(Breakout& strategy, FakeContext& context,
+          std::array<const char*, 4> next) {
+    strategy.OnBar(context, kSymbol, Timeframe::kH1, context.Add(next));
+}
+
+types::Fill FillOf(const char* order_id, Side side, const char* quantity,
+                   const char* price) {
+    types::Fill fill;
+    fill.order_id = order_id;
+    fill.symbol = kSymbol;
+    fill.side = side;
+    fill.quantity = D(quantity);
+    fill.price = D(price);
+    fill.time = Hour(5);
+    return fill;
+}
+
+constexpr std::array<const char*, 4> kQuietBar = {"12", "12.5", "11.5", "12"};
+
+TEST(Breakout, APartlyFilledEntryThatExpiresIsHeldWithAStop) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);  // armed: order-1
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.4", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    Feed(strategy, context, kQuietBar);  // expires
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-1"});
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    const auto& stop = context.venue.orders[1];
+    EXPECT_EQ(stop.side, Side::kSell);
+    EXPECT_EQ(stop.type, types::OrderType::kStop);
+    EXPECT_EQ(stop.quantity, D("0.4"));
+    EXPECT_EQ(stop.stop_price, D("10.98"));
+}
+
+TEST(Breakout, AnEntryClosingPartlyFilledIsHeldWithAStop) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.4", "13.01"));
+    types::OrderStatus status;
+    status.order_id = "order-1";
+    status.state = types::OrderState::kExpired;
+    status.filled_quantity = D("0.4");
+    strategy.OnOrderUpdate(context, status);
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("0.4"));
+}
+
+TEST(Breakout, AFailedCancelKeepsTheEntryArmedAndTriesAgain) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    // RecordingVenue's default: the cancel fails.
+    Feed(strategy, context, kQuietBar);
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-1", "order-1"}));
+    ASSERT_EQ(context.venue.orders.size(), 1u);  // no new setup meanwhile
+    // It was live after all: its fill is protected.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("1"));
+}
+
+TEST(Breakout, ALateEntryFillResizesTheStop) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.4", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, kQuietBar);  // long 0.4, stop order-2
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.6", "13.01"));
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[2].quantity, D("1"));
+}
+
+TEST(Breakout, TheStopSellingOutCancelsAnExitStillOut) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    // Closes past the target 15.01: the stop (order-2) cancelled, the exit
+    // (order-3) sent.
+    Feed(strategy, context, {"13", "15.5", "13", "15.2"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+    // The stop's cancel had not landed: it sells out first.
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "1", "10.98"));
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-2", "order-3"}));
+    // Flat again: the next setup arms.
+    Feed(strategy, context, {"12", "14", "10", "12"});
+    Feed(strategy, context, {"12", "13", "10", "12"});
+    Feed(strategy, context, {"12", "15", "10", "12"});
+    Feed(strategy, context, {"12", "13", "11", "12"});
+    EXPECT_EQ(context.venue.orders.size(), 4u);
 }
 
 TEST(Breakout, RefusesBadParameters) {

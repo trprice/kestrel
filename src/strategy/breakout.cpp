@@ -16,11 +16,11 @@ using types::Side;
 
 namespace {
 
-bool ClosedUnfilled(const types::OrderStatus& status) {
-    return (status.state == OrderState::kCancelled ||
-            status.state == OrderState::kRejected ||
-            status.state == OrderState::kExpired) &&
-           status.filled_quantity.Sign() == 0;
+// Closed without filling completely (perhaps partly).
+bool ClosedShort(const types::OrderStatus& status) {
+    return status.state == OrderState::kCancelled ||
+           status.state == OrderState::kRejected ||
+           status.state == OrderState::kExpired;
 }
 
 }  // namespace
@@ -121,12 +121,15 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
     }
     switch (mState) {
         case State::kArmed:
-            if (--mBarsLeft > 0) {
+            // Zero already: an earlier cancel failed, or the venue said the
+            // entry filled and its fill is still on the way. Try again.
+            if (mBarsLeft > 0 && --mBarsLeft > 0) {
                 return;
             }
             Disarm(context);
             if (mState != State::kFlat) {
-                return;  // it filled meanwhile
+                return;  // it filled (perhaps partly), or could not be
+                         // cancelled
             }
             break;  // expired: this bar may be a new setup
         case State::kWatching:
@@ -168,6 +171,9 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             return;
         case State::kEntering:
         case State::kExiting:
+            // Waiting on a market order: its fill or final update moves on.
+            // (An exit placed just before a close that has not filled by it
+            // waits here unprotected, its stop cancelled, until then.)
             return;
         case State::kFlat:
             break;
@@ -220,6 +226,48 @@ void Breakout::EnterAtMarket(Context& context) {
     }
 }
 
+void Breakout::GoLong(Context& context) {
+    mState = State::kLong;
+    mBarsHeld = 0;
+    mEntryId.clear();
+    mTarget.reset();
+    if (mParams.target_multiple.Sign() > 0) {
+        mTarget = mEntryPrice + mParams.target_multiple * mLevels->height;
+    }
+    spdlog::info("breakout: long {} {} at {}; stop {}, target {}",
+                 mHeld.ToString(), mParams.symbol, mEntryPrice.ToString(),
+                 mLevels->stop.ToString(),
+                 mTarget ? mTarget->ToString() : std::string("none"));
+    PlaceStop(context);
+}
+
+void Breakout::GoFlat() {
+    mState = State::kFlat;
+    mLevels.reset();
+    mTarget.reset();
+    mEntryId.clear();
+    mStopId.clear();
+    mExitId.clear();
+}
+
+void Breakout::CancelOther(Context& context, std::string& id,
+                           const char* what) {
+    if (id.empty()) {
+        return;
+    }
+    const auto cancelled = context.Venue().CancelOrder(id);
+    if (!cancelled) {
+        spdlog::error("breakout: cannot cancel the {} {} for {}: {}", what, id,
+                      mParams.symbol, cancelled.error().ToString());
+    } else if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
+        spdlog::error(
+            "breakout: the {} {} for {} filled too: sold more "
+            "than was held",
+            what, id, mParams.symbol);
+    }
+    id.clear();
+}
+
 void Breakout::PlaceStop(Context& context) {
     types::OrderRequest request;
     request.symbol = mParams.symbol;
@@ -264,17 +312,24 @@ void Breakout::Exit(Context& context, const char* why) {
 }
 
 void Breakout::Disarm(Context& context) {
+    mBarsLeft = 0;  // if this stays armed, the next bar tries again
     const auto cancelled = context.Venue().CancelOrder(mEntryId);
-    if (cancelled && *cancelled == trading::CancelOutcome::kAlreadyFilled) {
-        return;  // stays armed until the fill arrives
-    }
     if (!cancelled) {
         spdlog::warn("breakout: cannot cancel the entry stop {}: {}", mEntryId,
                      cancelled.error().ToString());
+        return;  // it may still fill: stay armed and keep tracking it
     }
-    mEntryId.clear();
-    mLevels.reset();
-    mState = State::kFlat;
+    if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
+        return;  // stays armed until the fill arrives
+    }
+    if (mHeld.Sign() > 0) {
+        // Partly filled: hold what was bought, protected like a full entry.
+        spdlog::warn("breakout: entry {} closed after filling {} of {}",
+                     mEntryId, mHeld.ToString(), mParams.quantity.ToString());
+        GoLong(context);
+        return;
+    }
+    GoFlat();
 }
 
 std::optional<std::string> Breakout::Place(Context& context,
@@ -301,59 +356,84 @@ void Breakout::OnFill(Context& context, const types::Fill& fill) {
         return;
     }
     if (fill.side == Side::kBuy) {
-        mHeld += fill.quantity;
-        if ((mState == State::kArmed || mState == State::kEntering) &&
-            mHeld >= mParams.quantity) {
-            mState = State::kLong;
-            mBarsHeld = 0;
-            mEntryTime = fill.time;
-            mEntryId.clear();
-            mTarget.reset();
-            if (mParams.target_multiple.Sign() > 0) {
-                mTarget =
-                    fill.price + mParams.target_multiple * mLevels->height;
-            }
-            spdlog::info("breakout: long {} {} at {}; stop {}, target {}",
-                         mHeld.ToString(), mParams.symbol,
-                         fill.price.ToString(), mLevels->stop.ToString(),
-                         mTarget ? mTarget->ToString() : std::string("none"));
+        if (mState == State::kLong) {
+            // A late part of a partly filled entry (its cancel crossed this
+            // fill): the stop must cover it too.
+            spdlog::warn(
+                "breakout: late entry fill of {} {}; resizing the "
+                "stop",
+                fill.quantity.ToString(), mParams.symbol);
+            mHeld += fill.quantity;
+            CancelOther(context, mStopId, "protective stop");
             PlaceStop(context);
+            return;
+        }
+        if (mState != State::kArmed && mState != State::kEntering) {
+            spdlog::error("breakout: unexpected buy of {} {} ({}) while {}",
+                          fill.quantity.ToString(), mParams.symbol,
+                          fill.order_id, StateName());
+            mHeld += fill.quantity;
+            return;
+        }
+        if (mHeld.Sign() == 0) {
+            mEntryPrice = fill.price;  // the target is measured from here
+            mEntryTime = fill.time;
+        }
+        mHeld += fill.quantity;
+        if (mHeld >= mParams.quantity) {
+            GoLong(context);
         }
         return;
     }
+    const bool selling = mState == State::kLong || mState == State::kExiting;
+    if (!selling) {
+        spdlog::error("breakout: unexpected sell of {} {} ({}) while {}",
+                      fill.quantity.ToString(), mParams.symbol, fill.order_id,
+                      StateName());
+    }
     mHeld = std::max(mHeld - fill.quantity, Decimal());
-    if (mHeld.Sign() == 0) {
-        mState = State::kFlat;
-        mLevels.reset();
-        mTarget.reset();
-        mStopId.clear();
-        mExitId.clear();
+    if (selling && mHeld.Sign() == 0) {
+        // Sold out, by the stop or the exit: the other must not sell too
+        // (the exit's cancel of the stop may not have landed yet).
+        if (fill.order_id != mStopId) {
+            CancelOther(context, mStopId, "protective stop");
+        }
+        if (fill.order_id != mExitId) {
+            CancelOther(context, mExitId, "exit");
+        }
+        GoFlat();
     }
 }
 
 void Breakout::OnOrderUpdate(Context& context,
                              const types::OrderStatus& status) {
-    if (!ClosedUnfilled(status)) {
+    if (!ClosedShort(status)) {
         return;
     }
-    // Orders cancelled on purpose have had their IDs cleared already.
+    // Orders cancelled on purpose have had their IDs cleared already. The
+    // runner delivers an update's fills before its state, so mHeld counts
+    // whatever part of the order filled.
     if (status.order_id == mEntryId &&
         (mState == State::kArmed || mState == State::kEntering)) {
-        spdlog::warn("breakout: entry {} closed unfilled: {}", status.order_id,
-                     types::ToString(status.state));
-        mEntryId.clear();
-        mLevels.reset();
-        mState = State::kFlat;
+        spdlog::warn("breakout: entry {} closed: {}, {} of {} filled",
+                     status.order_id, types::ToString(status.state),
+                     mHeld.ToString(), mParams.quantity.ToString());
+        if (mHeld.Sign() > 0) {
+            GoLong(context);  // protect the part bought
+        } else {
+            GoFlat();
+        }
     } else if (status.order_id == mStopId && mState == State::kLong) {
         spdlog::warn(
-            "breakout: protective stop {} closed unfilled: {}; "
-            "placing it again",
-            status.order_id, types::ToString(status.state));
+            "breakout: protective stop {} closed: {}; placing it "
+            "again for {}",
+            status.order_id, types::ToString(status.state), mHeld.ToString());
         mStopId.clear();
         PlaceStop(context);
     } else if (status.order_id == mExitId && mState == State::kExiting) {
-        spdlog::warn("breakout: exit {} closed unfilled: {}", status.order_id,
-                     types::ToString(status.state));
+        spdlog::warn("breakout: exit {} closed: {}; {} still held",
+                     status.order_id, types::ToString(status.state),
+                     mHeld.ToString());
         mExitId.clear();
         mState = State::kLong;
         PlaceStop(context);
@@ -364,6 +444,9 @@ void Breakout::OnSessionClosing(Context& context, types::Timestamp) {
     switch (mState) {
         case State::kArmed:
             Disarm(context);  // not into the next open
+            if (mState == State::kLong && mParams.flatten_at_close) {
+                Exit(context, "session closing");  // it had partly filled
+            }
             break;
         case State::kWatching:
             mState = State::kFlat;
@@ -377,6 +460,24 @@ void Breakout::OnSessionClosing(Context& context, types::Timestamp) {
         default:
             break;
     }
+}
+
+const char* Breakout::StateName() const {
+    switch (mState) {
+        case State::kFlat:
+            return "flat";
+        case State::kArmed:
+            return "armed";
+        case State::kWatching:
+            return "watching";
+        case State::kEntering:
+            return "entering";
+        case State::kLong:
+            return "long";
+        case State::kExiting:
+            return "exiting";
+    }
+    return "?";
 }
 
 }  // namespace kestrel::strategy

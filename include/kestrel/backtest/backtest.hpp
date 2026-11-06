@@ -99,10 +99,10 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // replayed in the order they close.
 //
 // For a strategy without quotes, the paper venue walks each bar of the
-// finest series before the strategy sees it, as quotes (bid = ask = last):
-// the open, the extreme nearer the open, the other extreme and the close, a
-// third of the bar apart, and on each leg every resting order's price it
-// passes. The strategy runs at each point. So:
+// symbol's finest series (of those with bars) before the strategy sees it, as
+// quotes (bid = ask = last): the open, the extreme nearer the open, the other
+// extreme and the close, a third of the bar apart, and on each leg every
+// resting order's price it passes. The strategy runs at each point. So:
 //   - orders a strategy places on a bar fill on that bar's close, plus the
 //     paper venue's slippage and fees;
 //   - a resting stop or limit inside a later bar fills at its own price (at

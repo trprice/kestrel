@@ -73,7 +73,9 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
       limits already trade inside the bar: see Done.)
 - [ ] Optionally drive the paper venue from 1-minute bars while the strategy
       takes longer ones, so the path within a bar is the real one rather
-      than open, nearer extreme, other extreme, close.
+      than open, nearer extreme, other extreme, close. Breakout depends on
+      it most: a wide bar that reaches both its entry and its protective
+      stop is decided by that guess, and the October results inherit it.
 
 ### Schwab data source
 
@@ -800,6 +802,13 @@ the header of the code concerned.
       `percent` confirmation), a protective stop below the setup, a target
       at its height checked on closes, `arm_bars`, `max_hold_bars`, a
       `trend_sma` filter and `flatten_at_close`; market-hours aware.
+- [x] Review fixes for live venues: an entry that closes partly filled is
+      held with a stop for what it bought (and a late part resizes the
+      stop); a failed entry cancel stays armed and retries each bar; when the
+      stop or the exit sells out, the other is cancelled, and a fill the
+      state machine does not expect is logged as an error.
+- [x] Bar-only backtests walk each symbol's own finest series with bars, so
+      a symbol missing the finer data still trades.
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <atomic>
 #include <functional>
-#include <utility>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "kestrel/trading/trade_log.hpp"
@@ -33,7 +35,11 @@ class RecordingVenue : public trading::TradingVenue {
             ack_state, types::FromEpochSeconds(0)};
     }
     types::Result<trading::CancelOutcome> CancelOrder(
-        const std::string&) override {
+        const std::string& order_id) override {
+        cancels.push_back(order_id);
+        if (cancel_result) {
+            return *cancel_result;
+        }
         return types::MakeError(types::ErrorCategory::kNotFound, "none");
     }
     types::Result<std::vector<std::string>> CancelAll() override {
@@ -103,6 +109,9 @@ class RecordingVenue : public trading::TradingVenue {
     bool fail_cancel_all = false;
     std::function<void()> before_get_fills;  // e.g. to hold a poll
     std::vector<std::string> cancel_all_result;  // returned once
+    // What CancelOrder answers; without it, kNotFound.
+    std::optional<types::Result<trading::CancelOutcome>> cancel_result;
+    std::vector<std::string> cancels;  // CancelOrder's IDs, in order
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
     std::vector<types::OrderStatus> open_orders;

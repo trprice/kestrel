@@ -71,8 +71,16 @@ struct BreakoutParams {
 // next session's open; a target or time exit due on a bar that closes with
 // the market (the 15:30 bar, at 16:00) waits for the next bar, the stop
 // resting meanwhile. Orders are tracked through OnFill and OnOrderUpdate: an
-// entry that closes unfilled returns to flat, and a protective stop that
-// closes unfilled, or could not be placed, is placed again (at the next bar).
+// entry that closes unfilled returns to flat, one that closes partly filled
+// is held as a long of what it bought, and a protective stop that closes
+// unfilled, or could not be placed, is placed again (at the next bar). An
+// entry whose cancel fails stays armed, and the cancel is retried each bar.
+// When the stop or the exit sells out the position, the other is cancelled.
+//
+// Two adaptations of the deck: every setup, the inside bar included, triggers
+// one tick above its high (the deck buys an inside bar on an open above its
+// close), and the target is measured from the entry's fill rather than the
+// breakout price, so an open gapping through the trigger raises it.
 class Breakout : public Strategy {
    public:
     // Throws std::invalid_argument for a quantity that is not positive, an
@@ -111,7 +119,15 @@ class Breakout : public Strategy {
     void EnterAtMarket(Context& context);
     void PlaceStop(Context& context);
     void Exit(Context& context, const char* why);
+    // Cancels the entry: flat, or long if it had partly filled; still armed
+    // if the cancel failed or the venue says it filled.
     void Disarm(Context& context);
+    // On the entry's (whole or partial) fill: long mHeld, the stop placed.
+    void GoLong(Context& context);
+    void GoFlat();
+    // Best effort: cancels the order `id` and clears it.
+    void CancelOther(Context& context, std::string& id, const char* what);
+    const char* StateName() const;
     // Places an order; the ID if the venue took it and it is still active.
     std::optional<std::string> Place(Context& context,
                                      const types::OrderRequest& request,
@@ -123,7 +139,8 @@ class Breakout : public Strategy {
     std::size_t mBarsLeft = 0;      // kArmed / kWatching: bars still allowed
     std::size_t mCloses = 0;        // kWatching: closes above so far
     std::size_t mBarsHeld = 0;      // kLong: whole bars since the entry
-    types::Timestamp mEntryTime;    // kLong: when the entry filled
+    types::Timestamp mEntryTime;    // kLong: when the entry first filled
+    types::Decimal mEntryPrice;     // the entry's first fill price
     types::Decimal mHeld;           // base asset bought and not yet sold
     std::optional<types::Decimal> mTarget;
     std::string mEntryId;

@@ -165,6 +165,13 @@ protective stop rests at the venue, since a spot account cannot hold the same
 shares for two sell orders. A bar-only backtest fills the entry and the stop
 inside the bar at their own prices (see `RunBacktest`).
 
+Two departures from the deck: every setup triggers one tick above its high
+(the deck buys an inside bar on an open above the inside bar's close), and
+the target is measured from the entry's fill price rather than the breakout
+level, so an open gapping through the trigger raises the target with it. An
+entry that closes partly filled (a live venue) is held as a smaller long, with
+its stop.
+
 **`market_maker`**:
 
 | Key | Meaning |

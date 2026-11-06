@@ -527,13 +527,16 @@ std::shared_ptr<ReplayDataSource> OhlcData(
 class BarOrders : public strategy::Strategy {
    public:
     BarOrders(std::vector<types::OrderRequest> orders,
-              std::optional<const char*> protect = std::nullopt)
-        : mOrders(std::move(orders)), mProtect(protect) {}
+              std::optional<const char*> protect = std::nullopt,
+              std::vector<Timeframe> timeframes = {Timeframe::kH1})
+        : mOrders(std::move(orders)),
+          mProtect(protect),
+          mTimeframes(std::move(timeframes)) {}
     std::string_view Name() const override { return "bar-orders"; }
     strategy::Requirements Needs() const override {
         strategy::Requirements r;
         r.symbols = {kSymbol};
-        r.bar_timeframes = {Timeframe::kH1};
+        r.bar_timeframes = mTimeframes;
         r.warmup_bars = 1;
         return r;
     }
@@ -560,6 +563,7 @@ class BarOrders : public strategy::Strategy {
    private:
     std::vector<types::OrderRequest> mOrders;
     std::optional<const char*> mProtect;
+    std::vector<Timeframe> mTimeframes;
 };
 
 types::OrderRequest Stop(types::Side side, const char* price) {
@@ -635,6 +639,20 @@ TEST(BacktestTest, AStopPlacedOnAFillTradesInTheRestOfTheBar) {
     EXPECT_EQ(result->fills[1].side, types::Side::kSell);
     EXPECT_EQ(result->fills[1].price, D("14"));
     EXPECT_EQ(result->fills[1].time, Hour(5) + std::chrono::minutes(40));
+}
+
+// The walk uses each symbol's finest series that has bars: a strategy asking
+// for 30-minute bars it does not get still trades on the hourly ones.
+TEST(BacktestTest, ASymbolWithoutTheFinestSeriesWalksItsCoarserOne) {
+    auto result = RunBacktest(
+        OhlcData(WithBar5({"10", "20", "9", "12"})),
+        std::make_unique<BarOrders>(
+            std::vector{Stop(types::Side::kBuy, "15")}, std::nullopt,
+            std::vector{Timeframe::kM30, Timeframe::kH1}),
+        Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("15"));
 }
 
 TEST(BacktestTest, ARestingLimitFillsWhenTheBarReachesIt) {

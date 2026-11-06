@@ -276,13 +276,19 @@ types::Result<BacktestResult> RunBacktest(
             runner.Drain();
         }
     };
-    // Without recorded quotes the venue trades on the bars of the finest
-    // series (a coarser one would replay prices it has already seen).
-    std::optional<types::Timeframe> driving;
-    for (types::Timeframe timeframe : needs.bar_timeframes) {
-        if (!driving || *types::FixedDuration(timeframe) <
-                            *types::FixedDuration(*driving)) {
-            driving = timeframe;
+    // Without recorded quotes the venue trades on the bars of each symbol's
+    // finest series that has any (a coarser one would replay prices it has
+    // already seen), so a symbol missing the finer data still trades.
+    std::vector<std::optional<types::Timeframe>> driving(needs.symbols.size());
+    for (const Replayed& item : timeline) {
+        if (item.is_quote) {
+            continue;
+        }
+        auto& finest = driving[static_cast<std::size_t>(item.symbol -
+                                                        needs.symbols.data())];
+        if (!finest || *types::FixedDuration(item.timeframe) <
+                           *types::FixedDuration(*finest)) {
+            finest = item.timeframe;
         }
     }
     // A quote at `price` for the venue at `t`, then the strategy runs.
@@ -343,7 +349,9 @@ types::Result<BacktestResult> RunBacktest(
         }
     };
     for (const Replayed& item : timeline) {
-        if (!item.is_quote && !needs.quotes && item.timeframe == driving) {
+        if (!item.is_quote && !needs.quotes &&
+            item.timeframe == driving[static_cast<std::size_t>(
+                                  item.symbol - needs.symbols.data())]) {
             walk(*item.symbol, item.bar, item.time);  // ends at item.time
         }
         run_sessions(item.time);
