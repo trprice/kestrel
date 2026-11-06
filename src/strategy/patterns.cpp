@@ -79,6 +79,41 @@ std::optional<Rectangle> RectangleOf(std::span<const types::Bar> bars,
     return rect;
 }
 
+std::optional<PipeBottom> PipeBottomOf(std::span<const types::Bar> bars,
+                                       std::size_t lookback) {
+    if (lookback == 0 || bars.size() < lookback + 2) {
+        return std::nullopt;
+    }
+    const types::Bar& first = bars[bars.size() - 2];
+    const types::Bar& second = bars.back();
+    const auto before = bars.last(lookback + 2).first(lookback);
+    const Decimal first_range = Range(first);
+    const Decimal second_range = Range(second);
+    if (first_range.Sign() <= 0 || second_range.Sign() <= 0) {
+        return std::nullopt;
+    }
+    Decimal ranges;
+    for (const types::Bar& bar : before) {
+        if (bar.low <= first.low) {
+            return std::nullopt;  // not a new low: no decline into it
+        }
+        ranges += Range(bar);
+    }
+    // Wider than the average: range * lookback above the sum of the ranges.
+    const Decimal n = Decimal::FromInt(static_cast<std::int64_t>(lookback));
+    if (first_range * n <= ranges || second_range * n <= ranges) {
+        return std::nullopt;
+    }
+    // The first closes in its lower quarter, the second in its upper half.
+    if ((first.close - first.low) * Decimal::FromInt(4) > first_range ||
+        (second.close - second.low) * Decimal::FromInt(2) < second_range) {
+        return std::nullopt;
+    }
+    return PipeBottom{
+        {std::max(first.high, second.high), std::min(first.low, second.low)},
+        second.high};
+}
+
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            std::size_t back) {
     if (period == 0 || bars.size() < period + back) {

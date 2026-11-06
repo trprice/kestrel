@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 #include "kestrel/strategy/patterns.hpp"
+#include "kestrel/types/timeframe.hpp"
 
 namespace kestrel::strategy {
 
@@ -38,8 +40,9 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
             "range_bars, arm_bars, confirm_closes and throwback_bars must be "
             "positive");
     }
-    if (mParams.min_touches == 0) {
-        throw std::invalid_argument("min_touches must be positive");
+    if (mParams.min_touches == 0 || mParams.decline_bars == 0) {
+        throw std::invalid_argument(
+            "min_touches and decline_bars must be positive");
     }
     if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
         throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
@@ -63,6 +66,8 @@ Requirements Breakout::Needs() const {
     } else if (mParams.setup == BreakoutParams::Setup::kRange ||
                mParams.setup == BreakoutParams::Setup::kRectangle) {
         setup_bars = mParams.range_bars;
+    } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
+        setup_bars = mParams.decline_bars + 2;
     }
     needs.warmup_bars = std::max(setup_bars, mParams.trend_sma);
     return needs;
@@ -71,6 +76,7 @@ Requirements Breakout::Needs() const {
 std::optional<Breakout::Levels> Breakout::FindSetup(
     Context& context, std::span<const types::Bar> bars) const {
     std::optional<PriceRange> range;
+    std::optional<Decimal> breakout;  // the level to break; else range->high
     switch (mParams.setup) {
         case BreakoutParams::Setup::kNarrowRange:
             if (IsNarrowRange(bars, mParams.nr_bars)) {
@@ -94,6 +100,12 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                 range = rect->range;
             }
             break;
+        case BreakoutParams::Setup::kPipeBottom:
+            if (const auto pipe = PipeBottomOf(bars, mParams.decline_bars)) {
+                range = pipe->range;
+                breakout = pipe->breakout;
+            }
+            break;
     }
     if (!range || range->Height().Sign() <= 0) {
         return std::nullopt;  // no setup, or a flat one with no height
@@ -114,15 +126,16 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     const Decimal one = Decimal::FromInt(1);
     Levels levels;
     levels.height = range->Height();
-    levels.high = range->high;
-    levels.trigger = range->high + tick;
+    const Decimal level = breakout.value_or(range->high);
+    levels.high = level;
+    levels.trigger = level + tick;
     if (mParams.confirm == BreakoutParams::Confirm::kPercent) {
         const Decimal raise =
             Decimal::Divide(mParams.confirm_percent, Decimal::FromInt(100), 8,
                             Rounding::kNearest);
-        levels.trigger = std::max(levels.trigger,
-                                  (range->high * (one + raise))
-                                      .RoundToIncrement(tick, Rounding::kUp));
+        levels.trigger = std::max(
+            levels.trigger,
+            (level * (one + raise)).RoundToIncrement(tick, Rounding::kUp));
     }
     const Decimal buffer =
         Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
@@ -156,7 +169,14 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
         case State::kWatching:
             if (bar.close > mLevels->trigger) {
                 if (++mCloses >= ClosesNeeded()) {
-                    if (mParams.entry == BreakoutParams::Entry::kThrowback) {
+                    const bool throwback =
+                        mParams.entry == BreakoutParams::Entry::kThrowback;
+                    if (!context.MarketOpen() && CarriesOver()) {
+                        Pend(throwback ? Due::kThrowback : Due::kMarket,
+                             throwback ? mParams.throwback_bars : 1);
+                        return;
+                    }
+                    if (throwback) {
                         ArmThrowback(context);
                     } else {
                         EnterAtMarket(context);
@@ -174,24 +194,44 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             mState = State::kFlat;
             mLevels.reset();
             break;
+        case State::kPending:
+            // Normally placed at the open before another bar closes.
+            if (mBarsLeft > 0) {
+                --mBarsLeft;
+                if (mBarsLeft > 0) {
+                    return;
+                }
+            }
+            GoFlat();
+            break;
         case State::kLong:
             // Whole bars only: not the one the entry filled inside.
             if (bar.open_time >= mEntryTime) {
                 ++mBarsHeld;
             }
-            // Orders are refused while closed: the resting stop protects
-            // until the next bar in the session.
-            if (!context.MarketOpen()) {
-                return;
-            }
-            if (mStopId.empty()) {
-                PlaceStop(context);  // an earlier attempt failed
-            }
-            if (mTarget && bar.close >= *mTarget) {
-                Exit(context, "target");
-            } else if (mParams.max_hold_bars > 0 &&
-                       mBarsHeld >= mParams.max_hold_bars) {
-                Exit(context, "held long enough");
+            {
+                const char* due = nullptr;
+                if (mTarget && bar.close >= *mTarget) {
+                    due = "target";
+                } else if (mParams.max_hold_bars > 0 &&
+                           mBarsHeld >= mParams.max_hold_bars) {
+                    due = "held long enough";
+                }
+                // Orders are refused while closed: the resting stop
+                // protects until the next bar in the session, or with daily
+                // bars until the open, where a due exit sells.
+                if (!context.MarketOpen()) {
+                    if (due && CarriesOver()) {
+                        mExitDue = due;
+                    }
+                    return;
+                }
+                if (mStopId.empty()) {
+                    PlaceStop(context);  // an earlier attempt failed
+                }
+                if (due) {
+                    Exit(context, due);
+                }
             }
             return;
         case State::kEntering:
@@ -204,9 +244,12 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             break;
     }
 
-    // Flat: look for a setup. Not while the market is closed: an order then
-    // is refused, and an entry must not rest into the next open.
-    if (!context.MarketOpen()) {
+    // Flat: look for a setup. On intraday bars, not while the market is
+    // closed: an order then is refused, and an entry must not rest into the
+    // next open. Daily bars always close after it: the entry waits for the
+    // open.
+    const bool open = context.MarketOpen();
+    if (!open && !CarriesOver()) {
         return;
     }
     const auto levels = FindSetup(context, context.Bars(symbol, timeframe));
@@ -222,7 +265,23 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
         mBarsLeft = mParams.arm_bars + ClosesNeeded() - 1;
         return;
     }
-    Arm(context, *levels);
+    if (open) {
+        Arm(context, *levels);
+    } else {
+        mLevels = levels;
+        Pend(Due::kStop, mParams.arm_bars);
+    }
+}
+
+void Breakout::Pend(Due due, std::size_t bars) {
+    mDue = due;
+    mState = State::kPending;
+    mBarsLeft = bars;
+}
+
+bool Breakout::CarriesOver() const {
+    const auto bar = types::FixedDuration(mParams.timeframe);
+    return !bar || *bar >= std::chrono::hours(24);
 }
 
 void Breakout::Arm(Context& context, const Levels& levels) {
@@ -233,6 +292,7 @@ void Breakout::Arm(Context& context, const Levels& levels) {
     request.quantity = mParams.quantity;
     request.stop_price = levels.trigger;
     if (auto id = Place(context, request, "entry stop")) {
+        mDue = Due::kStop;
         mEntryId = *id;
         mLevels = levels;
         mState = State::kArmed;
@@ -254,11 +314,14 @@ void Breakout::ArmThrowback(Context& context) {
     request.quantity = mParams.quantity;
     request.limit_price = mLevels->high;
     // Only ever a maker: if the price is already back at the level, the
-    // venue refuses it rather than buying at market.
+    // venue refuses it rather than buying at market, and the setup is
+    // dropped (the throwback came and went; on daily bars, an open below
+    // the level), where a buy-stop would be placed again.
     request.post_only = true;
     if (auto id = Place(context, request, "throwback limit")) {
-        spdlog::info("breakout: {} broke out; buying a throwback to {}",
-                     mParams.symbol, mLevels->high.ToString());
+        spdlog::info("breakout: {} throwback limit at {}", mParams.symbol,
+                     mLevels->high.ToString());
+        mDue = Due::kThrowback;
         mEntryId = *id;
         mState = State::kArmed;
         mBarsLeft = mParams.throwback_bars;
@@ -282,6 +345,7 @@ void Breakout::EnterAtMarket(Context& context) {
 
 void Breakout::GoLong(Context& context) {
     mState = State::kLong;
+    mExitDue = nullptr;
     mBarsHeld = 0;
     mEntryId.clear();
     mTarget.reset();
@@ -297,6 +361,7 @@ void Breakout::GoLong(Context& context) {
 
 void Breakout::GoFlat() {
     mState = State::kFlat;
+    mExitDue = nullptr;
     mLevels.reset();
     mTarget.reset();
     mEntryId.clear();
@@ -494,17 +559,61 @@ void Breakout::OnOrderUpdate(Context& context,
     }
 }
 
+void Breakout::OnSessionOpen(Context& context) {
+    if (mState == State::kPending) {
+        const std::size_t left = mBarsLeft;
+        const Levels levels = *mLevels;
+        switch (mDue) {
+            case Due::kStop:
+                Arm(context, levels);
+                break;
+            case Due::kMarket:
+                EnterAtMarket(context);
+                break;
+            case Due::kThrowback:
+                ArmThrowback(context);
+                break;
+        }
+        if (mState == State::kArmed) {
+            mBarsLeft = left;
+        } else if (mState == State::kPending) {
+            GoFlat();  // the order was refused
+        }
+    } else if (mState == State::kLong) {
+        if (mStopId.empty()) {
+            PlaceStop(context);
+        }
+        if (mExitDue) {
+            Exit(context, std::exchange(mExitDue, nullptr));
+        }
+    }
+}
+
 void Breakout::OnSessionClosing(Context& context, types::Timestamp) {
     switch (mState) {
-        case State::kArmed:
+        case State::kArmed: {
+            const std::size_t left = mBarsLeft;
+            const auto levels = mLevels;
+            const Due due = mDue;
             Disarm(context);  // not into the next open
+            // Daily bars: placed again at the next open while bars remain
+            // (the bar closing after this close counts one).
+            if (mState == State::kFlat && CarriesOver() && left > 1 && levels) {
+                mLevels = levels;
+                Pend(due, left);
+            }
             if (mState == State::kLong && mParams.flatten_at_close) {
                 Exit(context, "session closing");  // it had partly filled
             }
             break;
+        }
         case State::kWatching:
-            mState = State::kFlat;
-            mLevels.reset();
+            // Intraday, a watch does not span the night; daily bars count
+            // their closes across sessions.
+            if (!CarriesOver()) {
+                mState = State::kFlat;
+                mLevels.reset();
+            }
             break;
         case State::kLong:
             if (mParams.flatten_at_close) {
@@ -530,6 +639,8 @@ const char* Breakout::StateName() const {
             return "long";
         case State::kExiting:
             return "exiting";
+        case State::kPending:
+            return "pending";
     }
     return "?";
 }

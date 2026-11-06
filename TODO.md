@@ -816,6 +816,13 @@ the header of the code concerned.
       bounds have been touched `min_touches` times (within `touch_zone` of
       the height), optionally after a `shortfall`; `RectangleOf` in
       `patterns.hpp`.
+- [x] `setup = "pipe"`: the deck's pipe bottom (two-bar reversal) after a
+      `decline_bars` low, entered above the second bar; `PipeBottomOf` in
+      `patterns.hpp`.
+- [x] Daily bars on a market that closes: breakout places a daily setup's
+      entry, and sells a target or time exit, at the next open (it never
+      traded on daily stock bars before), and the backtest walks a daily
+      bar through its session with the open's hooks after the open quote.
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

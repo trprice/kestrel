@@ -117,6 +117,41 @@ TEST(Patterns, RectangleNeedsBarsAndHeight) {
     EXPECT_FALSE(RectangleOf(flat, 2, D("0.1")).has_value());
 }
 
+// Three bars of range 1 (lows 11), then a wide bar to a new low of 9 that
+// closes near it (9.2), then a wide bar closing in its upper half (10.5).
+std::vector<types::Bar> Pipe() {
+    return {B("12", "11", "11.5"), B("12", "11", "11.5"), B("12", "11", "11.5"),
+            B("11.5", "9", "9.2"), B("11", "9.1", "10.5")};
+}
+
+TEST(Patterns, PipeBottom) {
+    const auto pipe = PipeBottomOf(Pipe(), 3);
+    ASSERT_TRUE(pipe.has_value());
+    EXPECT_EQ(pipe->range.high, D("11.5"));
+    EXPECT_EQ(pipe->range.low, D("9"));
+    EXPECT_EQ(pipe->breakout, D("11"));  // the second bar's high
+    // A shorter look back still sees the decline.
+    EXPECT_TRUE(PipeBottomOf(Pipe(), 1).has_value());
+}
+
+TEST(Patterns, PipeBottomNeedsEachPart) {
+    auto bars = Pipe();
+    bars[3] = B("11.5", "9", "10");  // the first closes mid-bar
+    EXPECT_FALSE(PipeBottomOf(bars, 3).has_value());
+    bars = Pipe();
+    bars[4] = B("11", "9.1", "9.5");  // the second closes in its lower half
+    EXPECT_FALSE(PipeBottomOf(bars, 3).has_value());
+    bars = Pipe();
+    bars[4] = B("9.6", "9.1", "9.5");  // the second no wider than average
+    EXPECT_FALSE(PipeBottomOf(bars, 3).has_value());
+    bars = Pipe();
+    bars[1] = B("12", "8.9", "11.5");  // an earlier low below: no new low
+    EXPECT_FALSE(PipeBottomOf(bars, 3).has_value());
+    // Too few bars, or no look back.
+    EXPECT_FALSE(PipeBottomOf(Pipe(), 4).has_value());
+    EXPECT_FALSE(PipeBottomOf(Pipe(), 0).has_value());
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

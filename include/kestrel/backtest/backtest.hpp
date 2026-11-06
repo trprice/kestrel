@@ -110,6 +110,10 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 //     order placed on that fill (a protective stop) can fill later in the
 //     same bar. Which extreme came first is a guess (the nearer one), so a bar
 //     that reaches both an entry and its stop is decided by it;
+//   - on a market that closes, a bar is walked only through the part of it
+//     in its session (a daily bar from the open to the close), and session
+//     hooks due at the open run right after the open's quote, so an order
+//     placed in OnSessionOpen trades against the open;
 //   - an order placed in OnStart is rejected, as no quote exists yet.
 // A strategy that asks for quotes is also replayed through the stored quotes
 // in [start, end) (AddQuotes), in arrival order and ahead of any bar closing at

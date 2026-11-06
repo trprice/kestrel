@@ -148,11 +148,12 @@ the entry, checked on closes.
 | Key | Meaning |
 |---|---|
 | `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
-| `timeframe` | the bars it trades (default `1h`; on Schwab, `30m` or shorter) |
-| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before), `range` (the high and low of the last `range_bars` bars) or `rectangle` (that range, once the price has touched both its high and its low `min_touches` times) (default `nr`) |
+| `timeframe` | the bars it trades (default `1h`; Schwab streams `30m` or shorter for `run`, and backtests also take `1d`) |
+| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before), `range` (the high and low of the last `range_bars` bars), `rectangle` (that range, once the price has touched both its high and its low `min_touches` times) or `pipe` (a pipe bottom: after a decline, a wide bar closing in the lower quarter of its range, then a wide bar closing in the upper half of its range; the entry is above the second bar's high, the stop below the lower low) (default `nr`) |
 | `nr_bars`, `range_bars` | 4 (NR4) and 20 |
 | `touch_zone` | `rectangle`: a bar touches a bound when it comes within this fraction of the range's height of it; consecutive touching bars count once (default 0.1) |
 | `min_touches` | `rectangle`: touches needed of each bound (default 2) |
+| `decline_bars` | `pipe`: the first bar's low must be below all of these bars before it, and both bars wider than their average range (default 10) |
 | `shortfall` | `rectangle`: also require the deck's shortfall: since the last touch of the top, a fall below the middle that turned before reaching the bottom (default `false`) |
 | `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
 | `confirm_closes`, `confirm_percent` | 2 and 0.5 |
@@ -169,6 +170,12 @@ The target and the time exit sell at market on a bar's close; only the
 protective stop rests at the venue, since a spot account cannot hold the same
 shares for two sell orders. A bar-only backtest fills the entry and the stop
 inside the bar at their own prices (see `RunBacktest`).
+
+On a market that closes (Schwab), daily bars close after the market, so the
+entry a daily setup calls for is placed at the next open (a buy-stop the open
+gaps through fills at the open), and a target or time exit is sold at the next
+open. An untriggered entry is cancelled at each close and placed again at the
+next open while `arm_bars` remain. Intraday bars never carry a setup overnight.
 
 A throwback entry fills only if the price comes back to the broken level, and
 then as a maker: no slippage, and the maker fee (zero on many Binance.US

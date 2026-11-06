@@ -221,6 +221,9 @@ TEST(Breakout, FlattensBeforeTheCloseWhenAsked) {
     EXPECT_EQ(result->fills[1].side, Side::kSell);
     // At the closing hook, 5 minutes before 06:30.
     EXPECT_EQ(result->fills[1].time, Hour(6) + std::chrono::minutes(25));
+    // Hour 6 is walked only to the 06:30 close, a leg every 10 minutes:
+    // 13.8 at 06:00, 14 at 06:10, 13.5 at 06:20, so the hook sells at 13.5.
+    EXPECT_EQ(result->fills[1].price, D("13.5"));
 }
 
 // A market open from 04:30 to 06:30 UTC every day.
@@ -551,6 +554,130 @@ TEST(Breakout, ARectangleCanRequireAShortfall) {
     EXPECT_EQ(orders[0].stop_price, D("20.01"));
 }
 
+TEST(Breakout, APipeBottomBreaksAboveItsSecondBar) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kPipeBottom;
+    params.decline_bars = 3;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    for (int i = 0; i < 3; ++i) {
+        context.Add({"11.5", "12", "11", "11.5"});
+    }
+    context.Add({"11.5", "11.5", "9", "9.2"});              // down to a new low
+    Feed(strategy, context, {"9.2", "11", "9.1", "10.5"});  // and back up
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("11.01"));
+    // Filled: the stop is under the lower low, 9 less 10 bps.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "11.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("8.99"));
+}
+
+types::Timestamp Day(int d) { return types::FromEpochSeconds(d * 86400); }
+
+// Daily bars, day 0 first, on DailySession (open 04:30 to 06:30 UTC): every
+// bar closes at midnight, after the market. Days 0-4 are Nr4Then's setup.
+backtest::BacktestResult Daily(std::vector<std::array<const char*, 4>> after,
+                               int end_day, BreakoutParams params = Params()) {
+    std::vector<std::array<const char*, 4>> bars = {{"12", "14", "10", "12"},
+                                                    {"12", "13", "10", "12"},
+                                                    {"12", "15", "10", "12"},
+                                                    {"12", "14", "10", "12"},
+                                                    {"12", "13", "11", "12"}};
+    bars.insert(bars.end(), after.begin(), after.end());
+    auto data = std::make_shared<ReplayDataSource>();
+    std::vector<types::Bar> series;
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        types::Bar bar;
+        bar.open_time = Day(static_cast<int>(i));
+        bar.open = D(bars[i][0]);
+        bar.high = D(bars[i][1]);
+        bar.low = D(bars[i][2]);
+        bar.close = D(bars[i][3]);
+        series.push_back(bar);
+    }
+    data->AddBars(kSymbol, Timeframe::kD1, std::move(series));
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.0001"), D("0.0001"), {}});
+    data->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<DailySession>(), false));
+    params.timeframe = Timeframe::kD1;
+    auto options = Options(0);
+    options.start = Day(4);
+    options.end = Day(end_day);
+    auto result = backtest::RunBacktest(
+        data, std::make_unique<Breakout>(params), options);
+    EXPECT_TRUE(result.has_value()) << result.error().ToString();
+    return result ? *result : backtest::BacktestResult{};
+}
+
+// Day 4's NR4 closes at midnight: the buy-stop at 13.01 goes in at day 5's
+// open, which is above it, so it fills there (13.5; the target 15.5). Day 6
+// closes at 15.6, past the target, after the market: sold at day 7's open.
+TEST(Breakout, DailyBarsEnterAndExitAtTheNextOpen) {
+    const auto result = Daily({{"13.5", "14", "13.4", "13.8"},
+                               {"13.8", "15.7", "13.5", "15.6"},
+                               {"15.8", "16", "15.7", "15.9"}},
+                              8);
+    ASSERT_EQ(result.fills.size(), 2u);
+    EXPECT_EQ(result.fills[0].side, Side::kBuy);
+    EXPECT_EQ(result.fills[0].price, D("13.5"));
+    EXPECT_EQ(result.fills[0].time, Day(5) + std::chrono::minutes(270));
+    EXPECT_EQ(result.fills[1].side, Side::kSell);
+    EXPECT_EQ(result.fills[1].price, D("15.8"));
+    EXPECT_EQ(result.fills[1].time, Day(7) + std::chrono::minutes(270));
+}
+
+TEST(Breakout, ADailyEntryLastsOneSession) {
+    // Day 5 stays under 13.01 (and, wide, is no new setup); the entry is
+    // cancelled at its close, so day 6's rise through it buys nothing.
+    const auto result =
+        Daily({{"12.5", "12.9", "9", "10"}, {"10", "14", "9.8", "13.9"}}, 7);
+    EXPECT_TRUE(result.fills.empty());
+}
+
+TEST(Breakout, ADailyEntryWithArmBarsLeftIsPlacedAgainAtTheNextOpen) {
+    // Cancelled at day 5's close untriggered, placed again at day 6's open
+    // (one of its two bars left), and filled on the way up through 13.01.
+    auto params = Params();
+    params.arm_bars = 2;
+    const auto result = Daily(
+        {{"12.5", "12.9", "9", "10"}, {"12.5", "14", "12", "13.5"}}, 7, params);
+    ASSERT_EQ(result.fills.size(), 1u);
+    EXPECT_EQ(result.fills[0].price, D("13.01"));
+    EXPECT_GE(result.fills[0].time, Day(6));
+}
+
+TEST(Breakout, DailyConfirmingClosesBuyAtTheNextOpen) {
+    // Days 5 and 6 close above 13.01; the watch spans the closes between,
+    // and the market buy goes at day 7's open.
+    auto params = Params();
+    params.confirm = BreakoutParams::Confirm::kCloses;
+    params.confirm_closes = 2;
+    const auto result = Daily({{"12.5", "13.5", "12.4", "13.2"},
+                               {"13.2", "13.8", "13.1", "13.6"},
+                               {"14.2", "14.5", "14", "14.3"}},
+                              8, params);
+    ASSERT_EQ(result.fills.size(), 1u);
+    EXPECT_EQ(result.fills[0].side, Side::kBuy);
+    EXPECT_EQ(result.fills[0].price, D("14.2"));
+    EXPECT_EQ(result.fills[0].time, Day(7) + std::chrono::minutes(270));
+}
+
+TEST(Breakout, ADailyThrowbackRestsFromTheNextOpen) {
+    // Day 5 closes above 13.01: the limit at 13 goes in at day 6's open
+    // (13.6, above it) and fills as a maker on day 6's dip to 12.9.
+    auto params = Params();
+    params.entry = BreakoutParams::Entry::kThrowback;
+    const auto result = Daily(
+        {{"12.5", "14", "12.4", "13.8"}, {"13.6", "13.9", "12.9", "13.5"}}, 7,
+        params);
+    ASSERT_EQ(result.fills.size(), 1u);
+    EXPECT_EQ(result.fills[0].price, D("13"));
+    EXPECT_EQ(result.fills[0].liquidity, types::Liquidity::kMaker);
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -566,6 +693,9 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Throwback();
     bad.throwback_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.decline_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = RectangleParams();
     bad.min_touches = 0;

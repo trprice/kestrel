@@ -607,6 +607,10 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_EQ((*rectangle)->Needs().warmup_bars, 30u);
     EXPECT_FALSE(make("setup='rectangle'\ntouch_zone=0.5\n").has_value());
     EXPECT_FALSE(make("min_touches=0\n").has_value());
+    auto pipe = make("setup='pipe'\ndecline_bars=15\n");
+    ASSERT_OK(pipe);
+    EXPECT_EQ((*pipe)->Needs().warmup_bars, 17u);  // the look back and two
+    EXPECT_FALSE(make("decline_bars=0\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

@@ -311,15 +311,31 @@ types::Result<BacktestResult> RunBacktest(
     // at its own price (and one the open gaps through, at the open). The
     // strategy runs at each point, so an order it places after a fill there
     // takes part in the rest of the bar.
+    // On a market that closes, only the part of the bar in its first session
+    // is walked (a daily bar trades between the open and the close, not
+    // across the whole day), and session hooks due at its start run just
+    // after its open: an order placed there trades against the open (a
+    // buy-stop it gapped through fills at it, as does a market order).
+    const auto hours = data->Hours();
     const auto walk = [&](const types::Symbol& symbol, const types::Bar& bar,
                           types::Timestamp close) {
-        const types::Timestamp open = bar.open_time;
+        types::Timestamp open = bar.open_time;
+        if (hours && !hours->IsAlwaysOpen()) {
+            if (const auto session = hours->CurrentOrNext(open);
+                session && session->start < close) {
+                open = std::max(open, session->start);
+                close = std::min(close, session->end);
+            }
+        }
         const bool high_first = bar.high - bar.open <= bar.open - bar.low;
         const std::array<Decimal, 4> points = {
             bar.open, high_first ? bar.high : bar.low,
             high_first ? bar.low : bar.high, bar.close};
         const auto leg_length = (close - open) / 3;
         quote_at(symbol, points[0], open);
+        if (hours && !hours->IsAlwaysOpen()) {
+            run_sessions(open + types::Timestamp::duration{1});
+        }
         for (std::size_t leg = 0; leg < 3; ++leg) {
             const Decimal& from = points[leg];
             const Decimal& to = points[leg + 1];

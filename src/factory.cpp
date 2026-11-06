@@ -476,17 +476,20 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Quantity("quantity"), params.quantity, error);
     Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
     std::string setup = "nr";
-    Take(p.Word("setup", setup, {"nr", "inside", "range", "rectangle"}), setup,
-         error);
+    Take(p.Word("setup", setup, {"nr", "inside", "range", "rectangle", "pipe"}),
+         setup, error);
     params.setup = setup == "inside"      ? Params::Setup::kInsideBar
                    : setup == "range"     ? Params::Setup::kRange
                    : setup == "rectangle" ? Params::Setup::kRectangle
+                   : setup == "pipe"      ? Params::Setup::kPipeBottom
                                           : Params::Setup::kNarrowRange;
     Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
     Take(p.Count("range_bars", params.range_bars), params.range_bars, error);
     Take(p.Number("touch_zone", params.touch_zone), params.touch_zone, error);
     Take(p.Count("min_touches", params.min_touches), params.min_touches, error);
     Take(p.Flag("shortfall", params.shortfall), params.shortfall, error);
+    Take(p.Count("decline_bars", params.decline_bars), params.decline_bars,
+         error);
     std::string confirm = "none";
     Take(p.Word("confirm", confirm, {"none", "closes", "percent"}), confirm,
          error);

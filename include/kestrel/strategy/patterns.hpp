@@ -51,6 +51,19 @@ struct Rectangle {
 std::optional<Rectangle> RectangleOf(std::span<const types::Bar> bars,
                                      std::size_t n, const types::Decimal& zone);
 
+// A pipe bottom, or two-bar reversal, at the newest two bars: after a decline
+// (the first makes a lower low than any of the `lookback` bars before it), the
+// first closes in the lower quarter of its range and the second in the upper
+// half of its own, and both are wider than those bars' average range. Its
+// range spans both bars; the break is through the second bar's high. Nullopt
+// when it is not one, or with lookback = 0 or fewer than lookback + 2 bars.
+struct PipeBottom {
+    PriceRange range;         // the higher high and lower low of the two
+    types::Decimal breakout;  // the second bar's high
+};
+std::optional<PipeBottom> PipeBottomOf(std::span<const types::Bar> bars,
+                                       std::size_t lookback);
+
 // The average close of the `period` bars ending `back` bars before the newest
 // (back = 0: ending with it), to 8 decimal places.
 std::optional<types::Decimal> Sma(std::span<const types::Bar> bars,
