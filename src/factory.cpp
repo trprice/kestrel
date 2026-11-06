@@ -478,7 +478,7 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     std::string setup = "nr";
     Take(p.Word("setup", setup,
                 {"nr", "inside", "range", "rectangle", "pipe",
-                 "failed_breakdown"}),
+                 "failed_breakdown", "double_bottom", "triple_bottom"}),
          setup, error);
     params.setup = setup == "inside"      ? Params::Setup::kInsideBar
                    : setup == "range"     ? Params::Setup::kRange
@@ -486,7 +486,10 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
                    : setup == "pipe"      ? Params::Setup::kPipeBottom
                    : setup == "failed_breakdown"
                        ? Params::Setup::kFailedBreakdown
+                   : setup == "double_bottom" || setup == "triple_bottom"
+                       ? Params::Setup::kMultipleBottom
                        : Params::Setup::kNarrowRange;
+    params.bottoms = setup == "triple_bottom" ? 3 : 2;
     Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
     Take(p.Count("range_bars", params.range_bars), params.range_bars, error);
     Take(p.Number("touch_zone", params.touch_zone), params.touch_zone, error);
@@ -496,6 +499,7 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
          error);
     Take(p.Count("reclaim_bars", params.reclaim_bars), params.reclaim_bars,
          error);
+    Take(p.Count("swing_bars", params.swing_bars), params.swing_bars, error);
     std::string confirm = "none";
     Take(p.Word("confirm", confirm, {"none", "closes", "percent"}), confirm,
          error);

@@ -17,6 +17,8 @@ struct BreakoutParams {
         kRectangle,    // kRange, touched min_touches times at each bound
         kPipeBottom,   // a two-bar reversal after decline_bars bars
         kFailedBreakdown,  // a close back above a broken range_bars low
+        kMultipleBottom,   // a double or triple bottom (bottoms) in
+                           // range_bars bars
     };
     enum class Confirm {
         kNone,     // a buy-stop just above the setup's high
@@ -47,6 +49,11 @@ struct BreakoutParams {
     // kFailedBreakdown: bars the close back above the low may come within,
     // after the first close below it.
     std::size_t reclaim_bars = 3;
+    // kMultipleBottom: 2 (double) or 3 (triple) swing lows within touch_zone
+    // of the height of each other; swing_bars is how many bars on each side
+    // a swing low must beat.
+    std::size_t bottoms = 2;
+    std::size_t swing_bars = 2;
     Confirm confirm = Confirm::kNone;
     std::size_t confirm_closes = 2;
     types::Decimal confirm_percent{5, 1};  // 0.5 (%)
@@ -76,7 +83,8 @@ struct BreakoutParams {
 // Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, the last
 // N bars' range, a rectangle: that range when the price has tested both its
 // support and its resistance, see RectangleOf, a pipe bottom, see
-// PipeBottomOf, or a failed breakdown, see FailedBreakdownOf), enter on a break
+// PipeBottomOf, a failed breakdown, see FailedBreakdownOf, or a double or
+// triple bottom, see MultipleBottomOf), enter on a break
 // above its high, protect with a stop below its low, and take profit at the
 // setup's height above the entry.
 //
@@ -122,7 +130,8 @@ struct BreakoutParams {
 // through second bar"); its stop is below the lower of its two lows, and its
 // height spans both bars. A failed breakdown triggers above the bar that
 // closed back inside the range, its stop is below the false low, and its height
-// is the range's.
+// is the range's. A double or triple bottom triggers above its neckline, with
+// the stop below its lowest low and its height from the one to the other.
 //
 // Two adaptations of the deck: every setup, the inside bar included, triggers
 // one tick above its high (the deck buys an inside bar on an open above its
@@ -132,8 +141,10 @@ class Breakout : public Strategy {
    public:
     // Throws std::invalid_argument for a quantity that is not positive, an
     // nr_bars under 2, a negative buffer, percent or multiple, zero
-    // arm_bars, confirm_closes, throwback_bars, min_touches, decline_bars or
-    // reclaim_bars, or a touch_zone outside (0, 0.5).
+    // arm_bars, confirm_closes, throwback_bars, min_touches, decline_bars,
+    // reclaim_bars or swing_bars, bottoms other than 2 or 3, a touch_zone
+    // outside (0, 0.5), or with kMultipleBottom a range_bars too few to hold
+    // the pattern (MultipleBottomBars).
     explicit Breakout(BreakoutParams params);
 
     std::string_view Name() const override { return "breakout"; }

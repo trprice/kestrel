@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/market.hpp"
@@ -79,6 +80,42 @@ struct FailedBreakdown {
 };
 std::optional<FailedBreakdown> FailedBreakdownOf(
     std::span<const types::Bar> bars, std::size_t n, std::size_t within);
+
+// The swing points (pivots) of a window of bars, oldest first: a bar whose low
+// is below the lows of the `strength` bars before it and no higher than those
+// of the `strength` after it is a swing low, and likewise a swing high with
+// its high (so a run of equal extremes counts once, at its first bar). The
+// newest `strength` bars cannot be swings yet. Empty for strength = 0.
+struct Swing {
+    std::size_t index;     // in `bars`
+    types::Decimal price;  // the bar's low, or its high
+    bool high = false;
+};
+std::vector<Swing> SwingPoints(std::span<const types::Bar> bars,
+                               std::size_t strength);
+
+// A double (bottoms = 2) or triple (3) bottom in the newest `n` bars: its
+// newest `bottoms` swing lows (SwingPoints, `strength`), each pair separated
+// by a swing high, lie within `zone` of the pattern's height of each other.
+// The neckline is the highest high strictly between the first and the last
+// low (for a triple, the higher of its peaks, as the deck has it), and the
+// height is the neckline less the lowest low. It has not broken out yet (no
+// bar since the last low went above the neckline) nor failed (none fell below
+// the lowest low by more than the zone; a smaller dip is allowed, and does not
+// move the low). With bottoms = 2, a formed triple counts as its newest two
+// lows. No prior decline is required. Nullopt when it is not one, or for
+// bottoms < 2.
+struct MultipleBottom {
+    PriceRange range;  // the neckline and the lowest low
+};
+// The fewest bars that can hold `bottoms` swing lows of `strength` with a
+// swing high between each pair.
+std::size_t MultipleBottomBars(std::size_t bottoms, std::size_t strength);
+std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
+                                               std::size_t n,
+                                               std::size_t bottoms,
+                                               std::size_t strength,
+                                               const types::Decimal& zone);
 
 // The average close of the `period` bars ending `back` bars before the newest
 // (back = 0: ending with it), to 8 decimal places.

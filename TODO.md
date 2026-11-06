@@ -825,6 +825,10 @@ the header of the code concerned.
       `patterns.hpp`. On daily bars for 33 stocks and ETFs since 2016:
       +0.9% a trade pooled (+2.3% in 2016-2021, -0.4% since); only broad
       index ETFs stayed positive in both halves.
+- [x] `setup = "double_bottom"` / `"triple_bottom"`: 2 or 3 swing lows
+      within `touch_zone` of the height, entered above the neckline;
+      `SwingPoints` and `MultipleBottomOf` in `patterns.hpp` (swing points
+      also underlie triangles, head-and-shoulders and cup-and-handle).
 - [x] Daily bars on a market that closes: breakout places a daily setup's
       entry, and sells a target or time exit, at the next open (it never
       traded on daily stock bars before), and the backtest walks a daily

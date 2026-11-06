@@ -133,6 +133,97 @@ std::optional<FailedBreakdown> FailedBreakdownOf(
     return FailedBreakdown{*range, false_low, newest.high};
 }
 
+std::vector<Swing> SwingPoints(std::span<const types::Bar> bars,
+                               std::size_t strength) {
+    std::vector<Swing> swings;
+    if (strength == 0 || bars.size() < 2 * strength + 1) {
+        return swings;
+    }
+    for (std::size_t i = strength; i + strength < bars.size(); ++i) {
+        bool low = true;
+        bool high = true;
+        for (std::size_t k = 1; k <= strength; ++k) {
+            low = low && bars[i].low < bars[i - k].low &&
+                  bars[i].low <= bars[i + k].low;
+            high = high && bars[i].high > bars[i - k].high &&
+                   bars[i].high >= bars[i + k].high;
+        }
+        if (high) {
+            swings.push_back({i, bars[i].high, true});
+        }
+        if (low) {
+            swings.push_back({i, bars[i].low, false});
+        }
+    }
+    return swings;
+}
+
+std::size_t MultipleBottomBars(std::size_t bottoms, std::size_t strength) {
+    // The first low needs `strength` bars before it and the last `strength`
+    // after, and two swing lows are more than `strength` bars apart (each
+    // must beat the other otherwise); a swing high fits between them.
+    return 2 * strength + 1 + (bottoms - 1) * (strength + 1);
+}
+
+std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
+                                               std::size_t n,
+                                               std::size_t bottoms,
+                                               std::size_t strength,
+                                               const Decimal& zone) {
+    if (bottoms < 2 || n == 0 || bars.size() < n) {
+        return std::nullopt;
+    }
+    const auto window = bars.last(n);
+    const std::vector<Swing> swings = SwingPoints(window, strength);
+    std::vector<Swing> lows;
+    for (const Swing& swing : swings) {
+        if (!swing.high) {
+            lows.push_back(swing);
+        }
+    }
+    if (lows.size() < bottoms) {
+        return std::nullopt;
+    }
+    const auto chosen = std::span(lows).last(bottoms);
+    const std::size_t first = chosen.front().index;
+    const std::size_t last = chosen.back().index;
+    // Each pair of lows must be separated by a peak: a swing high between.
+    for (std::size_t k = 0; k + 1 < chosen.size(); ++k) {
+        const std::size_t from = chosen[k].index;
+        const std::size_t to = chosen[k + 1].index;
+        const bool peak = std::ranges::any_of(swings, [&](const Swing& s) {
+            return s.high && s.index > from && s.index < to;
+        });
+        if (!peak) {
+            return std::nullopt;
+        }
+    }
+    // The neckline: the highest high strictly between the first and the last
+    // low (not the low bars' own highs: a wide bar into the first low would
+    // put it where the rally between never went).
+    Decimal neckline = window[first + 1].high;
+    for (std::size_t i = first + 1; i < last; ++i) {
+        neckline = std::max(neckline, window[i].high);
+    }
+    Decimal lowest = chosen.front().price;
+    Decimal highest = chosen.front().price;
+    for (const Swing& swing : chosen) {
+        lowest = std::min(lowest, swing.price);
+        highest = std::max(highest, swing.price);
+    }
+    const Decimal height = neckline - lowest;
+    if (height.Sign() <= 0 || highest - lowest > height * zone) {
+        return std::nullopt;  // no peak between, or bottoms too far apart
+    }
+    const Decimal floor = lowest - height * zone;
+    for (const types::Bar& bar : window.subspan(last + 1)) {
+        if (bar.high > neckline || bar.low < floor) {
+            return std::nullopt;  // already broken out, or failed
+        }
+    }
+    return MultipleBottom{{neckline, lowest}};
+}
+
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            std::size_t back) {
     if (period == 0 || bars.size() < period + back) {

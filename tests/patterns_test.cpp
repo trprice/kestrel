@@ -196,6 +196,132 @@ TEST(Patterns, FailedBreakdownNeedsACloseBelowThenAbove) {
     EXPECT_FALSE(FailedBreakdownOf(Failed(), 4, 1).has_value());
 }
 
+TEST(Patterns, SwingPoints) {
+    // Lows 12, 10, 11, 13, 12, 10.2, 11; highs 14, 12, 13, 15, 14, 11.5, 12.5.
+    const std::vector<types::Bar> bars = {
+        B("14", "12"), B("12", "10"),     B("13", "11"),  B("15", "13"),
+        B("14", "12"), B("11.5", "10.2"), B("12.5", "11")};
+    const auto swings = SwingPoints(bars, 1);
+    ASSERT_EQ(swings.size(), 3u);
+    EXPECT_EQ(swings[0].index, 1u);  // the low of 10
+    EXPECT_FALSE(swings[0].high);
+    EXPECT_EQ(swings[1].index, 3u);  // the high of 15
+    EXPECT_TRUE(swings[1].high);
+    EXPECT_EQ(swings[2].index, 5u);  // the low of 10.2
+    EXPECT_EQ(swings[2].price, D("10.2"));
+    // With two bars a side, only the high of 15 is beaten on both.
+    const auto wider = SwingPoints(bars, 2);
+    ASSERT_EQ(wider.size(), 1u);
+    EXPECT_EQ(wider[0].index, 3u);
+    // Equal lows count once, at the first.
+    const std::vector<types::Bar> flat = {B("12", "11"), B("12", "10"),
+                                          B("12", "10"), B("12", "11")};
+    const auto once = SwingPoints(flat, 1);
+    ASSERT_EQ(once.size(), 1u);
+    EXPECT_EQ(once[0].index, 1u);
+    EXPECT_TRUE(SwingPoints(bars, 0).empty());
+    EXPECT_TRUE(SwingPoints(bars, 4).empty());  // too few bars
+}
+
+// Two swing lows (10, then 10.2) with a peak of 15 between them, and the
+// price since still under 15 and above the lows. With a zone of 0.1 the
+// height is 5, so the lows may be 0.5 apart.
+std::vector<types::Bar> DoubleBottom() {
+    return {B("14", "12"),   B("12", "10"),          B("13", "11"),
+            B("15", "13"),   B("14", "12"),          B("11.5", "10.2"),
+            B("12.5", "11"), B("13", "11.5", "12.8")};
+}
+
+TEST(Patterns, DoubleBottom) {
+    const auto bottom = MultipleBottomOf(DoubleBottom(), 8, 2, 1, D("0.1"));
+    ASSERT_TRUE(bottom.has_value());
+    EXPECT_EQ(bottom->range.high, D("15"));  // the neckline
+    EXPECT_EQ(bottom->range.low, D("10"));
+    EXPECT_FALSE(MultipleBottomOf(DoubleBottom(), 8, 3, 1, D("0.1")));
+}
+
+TEST(Patterns, DoubleBottomNeedsEachPart) {
+    auto bars = DoubleBottom();
+    bars[5] = B("11.5", "11");  // lows 1 apart, more than 0.5
+    EXPECT_FALSE(MultipleBottomOf(bars, 8, 2, 1, D("0.1")).has_value());
+    bars = DoubleBottom();
+    bars[7] = B("15.5", "11.5");  // already above the neckline
+    EXPECT_FALSE(MultipleBottomOf(bars, 8, 2, 1, D("0.1")).has_value());
+    bars = DoubleBottom();
+    bars[7] = B("11", "9.4");  // under the lows by more than 0.5: failed
+    EXPECT_FALSE(MultipleBottomOf(bars, 8, 2, 1, D("0.1")).has_value());
+    // The first low outside the window: one low only.
+    EXPECT_FALSE(MultipleBottomOf(DoubleBottom(), 6, 2, 1, D("0.1")));
+    EXPECT_FALSE(MultipleBottomOf(DoubleBottom(), 9, 2, 1, D("0.1")));
+    EXPECT_FALSE(MultipleBottomOf(DoubleBottom(), 8, 1, 1, D("0.1")));
+}
+
+TEST(Patterns, TheNecklineIsBetweenTheLows) {
+    // A wide bar into the first low (high 20): the neckline is the rally
+    // between the lows, 13, not that bar's high.
+    const std::vector<types::Bar> bars = {
+        B("21", "12"), B("20", "10"),     B("12", "11"), B("13", "11.5"),
+        B("12", "11"), B("11.5", "10.1"), B("12", "11")};
+    const auto bottom = MultipleBottomOf(bars, 7, 2, 1, D("0.1"));
+    ASSERT_TRUE(bottom.has_value());
+    EXPECT_EQ(bottom->range.high, D("13"));
+    EXPECT_EQ(bottom->range.low, D("10"));
+}
+
+TEST(Patterns, DoubleBottomLowsNeedAPeakBetween) {
+    // Two swing lows (10, 10.1) with highs only falling between them: no
+    // swing high, so no pattern.
+    const std::vector<types::Bar> bars = {B("14", "12"),     B("12", "10"),
+                                          B("11.8", "10.5"), B("11.6", "10.4"),
+                                          B("11.5", "10.1"), B("12", "11")};
+    EXPECT_FALSE(MultipleBottomOf(bars, 6, 2, 1, D("0.1")).has_value());
+}
+
+TEST(Patterns, DoubleBottomAllowsADipInsideTheZone) {
+    // Down to 9.7 after the second low: below 10 but above the failure
+    // floor of 9.5; the low stays 10 until the dip is itself a swing.
+    auto bars = DoubleBottom();
+    bars[7] = B("12", "9.7", "11.5");
+    const auto bottom = MultipleBottomOf(bars, 8, 2, 1, D("0.1"));
+    ASSERT_TRUE(bottom.has_value());
+    EXPECT_EQ(bottom->range.low, D("10"));
+}
+
+TEST(Patterns, DoubleBottomWithWiderSwings) {
+    // DoubleBottom with each bar twice: at a strength of 2 the lows are the
+    // first of each pair, and the peak of 15 the first of its pair.
+    std::vector<types::Bar> bars;
+    for (const types::Bar& bar : DoubleBottom()) {
+        bars.push_back(bar);
+        bars.push_back(bar);
+    }
+    const auto bottom = MultipleBottomOf(bars, 16, 2, 2, D("0.1"));
+    ASSERT_TRUE(bottom.has_value());
+    EXPECT_EQ(bottom->range.high, D("15"));
+    EXPECT_EQ(bottom->range.low, D("10"));
+}
+
+TEST(Patterns, MultipleBottomBars) {
+    EXPECT_EQ(MultipleBottomBars(2, 1), 5u);  // low, high, low and a side each
+    EXPECT_EQ(MultipleBottomBars(2, 2), 8u);
+    EXPECT_EQ(MultipleBottomBars(3, 2), 11u);
+}
+
+TEST(Patterns, TripleBottom) {
+    // Lows of 10, 10.1 and 10.2 with peaks of 14 and 15 between.
+    const std::vector<types::Bar> bars = {
+        B("13", "12"), B("12", "10"),   B("14", "11"), B("12", "10.1"),
+        B("15", "11"), B("12", "10.2"), B("13", "11")};
+    const auto triple = MultipleBottomOf(bars, 7, 3, 1, D("0.1"));
+    ASSERT_TRUE(triple.has_value());
+    EXPECT_EQ(triple->range.high, D("15"));  // the higher of the peaks
+    EXPECT_EQ(triple->range.low, D("10"));
+    // As a double bottom, the newest two lows and the peak of 15 between.
+    const auto twice = MultipleBottomOf(bars, 7, 2, 1, D("0.1"));
+    ASSERT_TRUE(twice.has_value());
+    EXPECT_EQ(twice->range.low, D("10.1"));
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

@@ -41,9 +41,19 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
             "positive");
     }
     if (mParams.min_touches == 0 || mParams.decline_bars == 0 ||
-        mParams.reclaim_bars == 0) {
+        mParams.reclaim_bars == 0 || mParams.swing_bars == 0) {
         throw std::invalid_argument(
-            "min_touches, decline_bars and reclaim_bars must be positive");
+            "min_touches, decline_bars, reclaim_bars and swing_bars must be "
+            "positive");
+    }
+    if (mParams.bottoms != 2 && mParams.bottoms != 3) {
+        throw std::invalid_argument("bottoms must be 2 or 3");
+    }
+    if (mParams.setup == BreakoutParams::Setup::kMultipleBottom &&
+        mParams.range_bars <
+            MultipleBottomBars(mParams.bottoms, mParams.swing_bars)) {
+        throw std::invalid_argument(
+            "range_bars is too few to hold the bottoms at this swing_bars");
     }
     if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
         throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
@@ -65,7 +75,8 @@ Requirements Breakout::Needs() const {
     if (mParams.setup == BreakoutParams::Setup::kNarrowRange) {
         setup_bars = mParams.nr_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kRange ||
-               mParams.setup == BreakoutParams::Setup::kRectangle) {
+               mParams.setup == BreakoutParams::Setup::kRectangle ||
+               mParams.setup == BreakoutParams::Setup::kMultipleBottom) {
         setup_bars = mParams.range_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
         setup_bars = mParams.decline_bars + 2;
@@ -116,6 +127,13 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                 range = failed->range;
                 breakout = failed->reclaim_high;
                 floor = failed->false_low;
+            }
+            break;
+        case BreakoutParams::Setup::kMultipleBottom:
+            if (const auto bottom =
+                    MultipleBottomOf(bars, mParams.range_bars, mParams.bottoms,
+                                     mParams.swing_bars, mParams.touch_zone)) {
+                range = bottom->range;
             }
             break;
     }

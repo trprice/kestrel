@@ -149,11 +149,12 @@ the entry, checked on closes.
 |---|---|
 | `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
 | `timeframe` | the bars it trades (default `1h`; Schwab streams `30m` or shorter for `run`, and backtests also take `1d`) |
-| `setup` | `nr`, `inside`, `range`, `rectangle`, `pipe` or `failed_breakdown` (default `nr`); see the setups below |
+| `setup` | `nr`, `inside`, `range`, `rectangle`, `pipe`, `failed_breakdown`, `double_bottom` or `triple_bottom` (default `nr`); see the setups below |
 | `nr_bars`, `range_bars` | 4 (NR4) and 20 |
-| `touch_zone` | `rectangle`: a bar touches a bound when it comes within this fraction of the range's height of it; consecutive touching bars count once (default 0.1) |
+| `touch_zone` | a fraction of the pattern's height (default 0.1). `rectangle`: a bar touches a bound when it comes within it of the bound (consecutive touching bars count once). `double_bottom`, `triple_bottom`: how far apart the lows may be, and how far below them the price may go before the pattern has failed |
 | `min_touches` | `rectangle`: touches needed of each bound (default 2) |
 | `decline_bars` | `pipe`: the first bar's low must be below all of these bars before it, and both bars wider than their average range (default 10) |
+| `swing_bars` | `double_bottom`, `triple_bottom`: a swing point is beyond this many bars before it and no less extreme than this many after (default 2), so it is seen that many bars late. `range_bars` must be at least `2·swing_bars + 1 + (bottoms − 1)·(swing_bars + 1)` (8 for a double, 11 for a triple at the default) |
 | `reclaim_bars` | `failed_breakdown`: the range is the `range_bars` bars before the newest `reclaim_bars + 1`, so the break below it must start within these bars (default 3) |
 | `shortfall` | `rectangle`: also require the deck's shortfall: since the last touch of the top, a fall below the middle that turned before reaching the bottom (default `false`) |
 | `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
@@ -179,6 +180,7 @@ height shown above the fill:
 | `rectangle` | that range, once the price has touched its high and its low `min_touches` times each | the high | the low | the range |
 | `pipe` | a pipe bottom: after a `decline_bars` low, a wide bar closing in the lower quarter of its range, then a wide bar closing in the upper half of its own | the second bar's high | the lower low | both bars |
 | `failed_breakdown` | the long side of the deck's false breakout: a close back above the low of the `range_bars` range, the bar after a close below it | that bar's high | the false low | the range |
+| `double_bottom`, `triple_bottom` | in the last `range_bars` bars, the newest 2 (or 3) swing lows, each pair separated by a swing high and all within `touch_zone` of the pattern's height of each other, not yet broken out above the neckline (the highest high between the first and last low; for a triple, the higher peak) nor failed below the lows; no prior decline is required, and a formed triple also counts as a `double_bottom` of its newest two lows | the neckline | the lowest low | neckline to lowest low |
 
 The target and the time exit sell at market on a bar's close; only the
 protective stop rests at the venue, since a spot account cannot hold the same
