@@ -678,6 +678,29 @@ TEST(Breakout, ADailyThrowbackRestsFromTheNextOpen) {
     EXPECT_EQ(result.fills[0].liquidity, types::Liquidity::kMaker);
 }
 
+TEST(Breakout, AFailedBreakdownBuysAboveTheBarBackInside) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kFailedBreakdown;
+    params.range_bars = 4;
+    params.reclaim_bars = 2;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    for (int i = 0; i < 4; ++i) {
+        context.Add({"11", "12", "10", "11"});  // the range: 10 to 12
+    }
+    context.Add({"10.5", "10.5", "9.5", "9.6"});  // closes below 10
+    context.Add({"9.6", "10.2", "9.4", "9.8"});   // the false low, 9.4
+    Feed(strategy, context, {"9.8", "10.6", "9.9", "10.4"});  // back inside
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("10.61"));
+    // Filled: the stop is under the false low, 9.4 less 10 bps.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "10.61"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("9.39"));
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -693,6 +716,9 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Throwback();
     bad.throwback_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.reclaim_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Params();
     bad.decline_bars = 0;

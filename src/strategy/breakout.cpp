@@ -40,9 +40,10 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
             "range_bars, arm_bars, confirm_closes and throwback_bars must be "
             "positive");
     }
-    if (mParams.min_touches == 0 || mParams.decline_bars == 0) {
+    if (mParams.min_touches == 0 || mParams.decline_bars == 0 ||
+        mParams.reclaim_bars == 0) {
         throw std::invalid_argument(
-            "min_touches and decline_bars must be positive");
+            "min_touches, decline_bars and reclaim_bars must be positive");
     }
     if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
         throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
@@ -68,6 +69,8 @@ Requirements Breakout::Needs() const {
         setup_bars = mParams.range_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
         setup_bars = mParams.decline_bars + 2;
+    } else if (mParams.setup == BreakoutParams::Setup::kFailedBreakdown) {
+        setup_bars = mParams.range_bars + mParams.reclaim_bars + 1;
     }
     needs.warmup_bars = std::max(setup_bars, mParams.trend_sma);
     return needs;
@@ -77,6 +80,7 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     Context& context, std::span<const types::Bar> bars) const {
     std::optional<PriceRange> range;
     std::optional<Decimal> breakout;  // the level to break; else range->high
+    std::optional<Decimal> floor;     // the stop's base; else range->low
     switch (mParams.setup) {
         case BreakoutParams::Setup::kNarrowRange:
             if (IsNarrowRange(bars, mParams.nr_bars)) {
@@ -104,6 +108,14 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
             if (const auto pipe = PipeBottomOf(bars, mParams.decline_bars)) {
                 range = pipe->range;
                 breakout = pipe->breakout;
+            }
+            break;
+        case BreakoutParams::Setup::kFailedBreakdown:
+            if (const auto failed = FailedBreakdownOf(bars, mParams.range_bars,
+                                                      mParams.reclaim_bars)) {
+                range = failed->range;
+                breakout = failed->reclaim_high;
+                floor = failed->false_low;
             }
             break;
     }
@@ -140,8 +152,8 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     const Decimal buffer =
         Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
                         Rounding::kNearest);
-    levels.stop =
-        (range->low * (one - buffer)).RoundToIncrement(tick, Rounding::kDown);
+    levels.stop = (floor.value_or(range->low) * (one - buffer))
+                      .RoundToIncrement(tick, Rounding::kDown);
     return levels;
 }
 

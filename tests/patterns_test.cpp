@@ -152,6 +152,50 @@ TEST(Patterns, PipeBottomNeedsEachPart) {
     EXPECT_FALSE(PipeBottomOf(Pipe(), 0).has_value());
 }
 
+// A range of 4 bars (high 12, low 10), two bars closing below 10 (lows 9.5 and
+// 9.4), then a close back above it.
+std::vector<types::Bar> Failed() {
+    return {B("12", "10", "11"),     B("12", "10", "11"),
+            B("12", "10", "11"),     B("12", "10", "11"),
+            B("10.5", "9.5", "9.6"), B("10.2", "9.4", "9.8"),
+            B("10.6", "9.9", "10.4")};
+}
+
+TEST(Patterns, FailedBreakdown) {
+    const auto failed = FailedBreakdownOf(Failed(), 4, 2);
+    ASSERT_TRUE(failed.has_value());
+    EXPECT_EQ(failed->range.high, D("12"));
+    EXPECT_EQ(failed->range.low, D("10"));
+    EXPECT_EQ(failed->false_low, D("9.4"));
+    EXPECT_EQ(failed->reclaim_high, D("10.6"));
+    // A break one bar long, after a bar still inside, counts too.
+    auto bars = Failed();
+    bars[4] = B("11", "10.5", "11");
+    const auto short_break = FailedBreakdownOf(bars, 4, 2);
+    ASSERT_TRUE(short_break.has_value());
+    EXPECT_EQ(short_break->false_low, D("9.4"));
+}
+
+TEST(Patterns, FailedBreakdownNeedsACloseBelowThenAbove) {
+    auto bars = Failed();
+    bars[6] = B("10.1", "9.7", "9.9");  // still below: no reclaim yet
+    EXPECT_FALSE(FailedBreakdownOf(bars, 4, 2).has_value());
+    bars = Failed();
+    bars[5] = B("10.4", "9.6", "10.1");  // back inside a bar earlier
+    EXPECT_FALSE(FailedBreakdownOf(bars, 4, 2).has_value());
+    bars = Failed();
+    bars[4] = B("10.5", "9.5", "10.2");  // lows below, closes above: no
+    bars[5] = B("10.4", "9.4", "10.1");  // break by close
+    EXPECT_FALSE(FailedBreakdownOf(bars, 4, 2).has_value());
+    // Too few bars, or n or within of zero.
+    EXPECT_FALSE(FailedBreakdownOf(Failed(), 5, 2).has_value());
+    EXPECT_FALSE(FailedBreakdownOf(Failed(), 0, 2).has_value());
+    EXPECT_FALSE(FailedBreakdownOf(Failed(), 4, 0).has_value());
+    // A break longer than `within`: its first bar (low 9.5) falls in the
+    // range, whose low the bar before the newest (close 9.8) is not below.
+    EXPECT_FALSE(FailedBreakdownOf(Failed(), 4, 1).has_value());
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

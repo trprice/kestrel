@@ -64,6 +64,22 @@ struct PipeBottom {
 std::optional<PipeBottom> PipeBottomOf(std::span<const types::Bar> bars,
                                        std::size_t lookback);
 
+// A failed breakdown (the long side of the deck's false breakout, or trap) at
+// the newest bar: the bar before closed below the low of the `n` bars before
+// the newest `within + 1`, and the newest closes back above that low, the
+// first close back inside. The break must have started within those `within`
+// bars, as the range's own closes are never below its low: the bars of a break
+// that started earlier fall inside the range and lower its low, so the break
+// is measured from a level it never closed below. Nullopt when it is
+// not one, or with n or within = 0 or fewer than n + within + 1 bars.
+struct FailedBreakdown {
+    PriceRange range;             // the range that was broken
+    types::Decimal false_low;     // the lowest low since the break
+    types::Decimal reclaim_high;  // the newest bar's high
+};
+std::optional<FailedBreakdown> FailedBreakdownOf(
+    std::span<const types::Bar> bars, std::size_t n, std::size_t within);
+
 // The average close of the `period` bars ending `back` bars before the newest
 // (back = 0: ending with it), to 8 decimal places.
 std::optional<types::Decimal> Sma(std::span<const types::Bar> bars,

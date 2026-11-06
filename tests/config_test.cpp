@@ -611,6 +611,11 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     ASSERT_OK(pipe);
     EXPECT_EQ((*pipe)->Needs().warmup_bars, 17u);  // the look back and two
     EXPECT_FALSE(make("decline_bars=0\n").has_value());
+    auto failed =
+        make("setup='failed_breakdown'\nrange_bars=20\nreclaim_bars=2\n");
+    ASSERT_OK(failed);
+    EXPECT_EQ((*failed)->Needs().warmup_bars, 23u);  // range, break, newest
+    EXPECT_FALSE(make("reclaim_bars=0\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

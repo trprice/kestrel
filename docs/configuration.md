@@ -149,15 +149,16 @@ the entry, checked on closes.
 |---|---|
 | `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
 | `timeframe` | the bars it trades (default `1h`; Schwab streams `30m` or shorter for `run`, and backtests also take `1d`) |
-| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before), `range` (the high and low of the last `range_bars` bars), `rectangle` (that range, once the price has touched both its high and its low `min_touches` times) or `pipe` (a pipe bottom: after a decline, a wide bar closing in the lower quarter of its range, then a wide bar closing in the upper half of its range; the entry is above the second bar's high, the stop below the lower low) (default `nr`) |
+| `setup` | `nr`, `inside`, `range`, `rectangle`, `pipe` or `failed_breakdown` (default `nr`); see the setups below |
 | `nr_bars`, `range_bars` | 4 (NR4) and 20 |
 | `touch_zone` | `rectangle`: a bar touches a bound when it comes within this fraction of the range's height of it; consecutive touching bars count once (default 0.1) |
 | `min_touches` | `rectangle`: touches needed of each bound (default 2) |
 | `decline_bars` | `pipe`: the first bar's low must be below all of these bars before it, and both bars wider than their average range (default 10) |
+| `reclaim_bars` | `failed_breakdown`: the range is the `range_bars` bars before the newest `reclaim_bars + 1`, so the break below it must start within these bars (default 3) |
 | `shortfall` | `rectangle`: also require the deck's shortfall: since the last touch of the top, a fall below the middle that turned before reaching the bottom (default `false`) |
 | `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
 | `confirm_closes`, `confirm_percent` | 2 and 0.5 |
-| `entry` | `stop` (enter as `confirm` says) or `throwback` (after a close above the trigger, rest a post-only limit buy at the setup's high, the broken level, for `throwback_bars` bars) (default `stop`). With `throwback`, `confirm` decides the close: with `closes`, `confirm_closes` of them in a row; with `percent`, above the raised trigger. The first must come within `arm_bars` bars of the setup, so with the default of 1 a breakout that closes above it only two bars later is missed: raise `arm_bars` to wait longer |
+| `entry` | `stop` (enter as `confirm` says) or `throwback` (after a close above the trigger, rest a post-only limit buy at the level broken (the setup's high; for `pipe` and `failed_breakdown`, the high of the bar the entry triggers above) for `throwback_bars` bars) (default `stop`). With `throwback`, `confirm` decides the close: with `closes`, `confirm_closes` of them in a row; with `percent`, above the raised trigger. The first must come within `arm_bars` bars of the setup, so with the default of 1 a breakout that closes above it only two bars later is missed: raise `arm_bars` to wait longer |
 | `throwback_bars` | bars the throwback's limit rests before it is cancelled (default 3) |
 | `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
 | `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
@@ -165,6 +166,19 @@ the entry, checked on closes.
 | `max_hold_bars` | exit after this many whole bars held (default 0: never) |
 | `trend_sma` | enter only while the close is above this many bars' average close (default 0: off) |
 | `flatten_at_close` | sell in the closing hook, before the session closes (default `false`) |
+
+The setups. Each arms a buy-stop one tick above the level shown, with the
+protective stop `stop_buffer_bps` below the low shown and the target the
+height shown above the fill:
+
+| Setup | Pattern | Level | Low | Height |
+|---|---|---|---|---|
+| `nr` | the newest bar narrower than each of the `nr_bars - 1` before it | its high | its low | its range |
+| `inside` | the newest bar inside the bar before | its high | its low | its range |
+| `range` | the high and low of the last `range_bars` bars | the high | the low | the range |
+| `rectangle` | that range, once the price has touched its high and its low `min_touches` times each | the high | the low | the range |
+| `pipe` | a pipe bottom: after a `decline_bars` low, a wide bar closing in the lower quarter of its range, then a wide bar closing in the upper half of its own | the second bar's high | the lower low | both bars |
+| `failed_breakdown` | the long side of the deck's false breakout: a close back above the low of the `range_bars` range, the bar after a close below it | that bar's high | the false low | the range |
 
 The target and the time exit sell at market on a bar's close; only the
 protective stop rests at the venue, since a spot account cannot hold the same

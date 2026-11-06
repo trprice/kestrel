@@ -819,6 +819,12 @@ the header of the code concerned.
 - [x] `setup = "pipe"`: the deck's pipe bottom (two-bar reversal) after a
       `decline_bars` low, entered above the second bar; `PipeBottomOf` in
       `patterns.hpp`.
+- [x] `setup = "failed_breakdown"`: the long side of the deck's false
+      breakout (a close back above a broken range low within
+      `reclaim_bars`), stopped below the false low; `FailedBreakdownOf` in
+      `patterns.hpp`. On daily bars for 33 stocks and ETFs since 2016:
+      +0.9% a trade pooled (+2.3% in 2016-2021, -0.4% since); only broad
+      index ETFs stayed positive in both halves.
 - [x] Daily bars on a market that closes: breakout places a daily setup's
       entry, and sells a target or time exit, at the next open (it never
       traded on daily stock bars before), and the backtest walks a daily

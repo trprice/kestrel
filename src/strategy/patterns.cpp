@@ -114,6 +114,25 @@ std::optional<PipeBottom> PipeBottomOf(std::span<const types::Bar> bars,
         second.high};
 }
 
+std::optional<FailedBreakdown> FailedBreakdownOf(
+    std::span<const types::Bar> bars, std::size_t n, std::size_t within) {
+    if (n == 0 || within == 0 || bars.size() < n + within + 1) {
+        return std::nullopt;
+    }
+    const auto recent = bars.last(within + 1);  // the break, then the newest
+    const auto range = RangeOf(bars.first(bars.size() - within - 1), n);
+    const types::Bar& newest = recent.back();
+    const types::Bar& before = recent[recent.size() - 2];
+    if (!range || before.close >= range->low || newest.close <= range->low) {
+        return std::nullopt;
+    }
+    Decimal false_low = newest.low;
+    for (const types::Bar& bar : recent) {
+        false_low = std::min(false_low, bar.low);
+    }
+    return FailedBreakdown{*range, false_low, newest.high};
+}
+
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            std::size_t back) {
     if (period == 0 || bars.size() < period + back) {
