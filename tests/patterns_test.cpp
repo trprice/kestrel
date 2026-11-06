@@ -64,6 +64,59 @@ TEST(Patterns, RangeOfTheNewestBars) {
     EXPECT_FALSE(RangeOf(bars, 0));
 }
 
+// High 20, low 10, a zone of 0.1: touches come at 19 and above, and at 11
+// and below; the middle is 15.
+std::vector<types::Bar> Rect() {
+    return {B("20", "15"),     // top 1
+            B("19.5", "14"),   // still top 1: the same run
+            B("16", "10"),     // bottom 1
+            B("18", "12"),     // neither
+            B("19", "13"),     // top 2 (exactly at the zone)
+            B("15", "11"),     // bottom 2
+            B("17", "12"),     // neither
+            B("19.2", "16")};  // top 3
+}
+
+TEST(Patterns, RectangleCountsSeparateTouchesOfEachBound) {
+    const auto rect = RectangleOf(Rect(), 8, D("0.1"));
+    ASSERT_TRUE(rect.has_value());
+    EXPECT_EQ(rect->range.high, D("20"));
+    EXPECT_EQ(rect->range.low, D("10"));
+    EXPECT_EQ(rect->top_touches, 3u);
+    EXPECT_EQ(rect->bottom_touches, 2u);
+    EXPECT_FALSE(rect->shortfall_up);  // nothing after the last top touch
+    // A narrower zone (19.5 and 10.5) counts fewer touches.
+    const auto narrow = RectangleOf(Rect(), 8, D("0.05"));
+    ASSERT_TRUE(narrow.has_value());
+    EXPECT_EQ(narrow->top_touches, 1u);
+    EXPECT_EQ(narrow->bottom_touches, 1u);
+    // Only the newest n bars: without the first, the high is 19.5.
+    const auto newer = RectangleOf(Rect(), 7, D("0.1"));
+    ASSERT_TRUE(newer.has_value());
+    EXPECT_EQ(newer->range.high, D("19.5"));
+}
+
+TEST(Patterns, RectangleShortfall) {
+    auto bars = Rect();
+    bars.push_back(B("17", "14.5"));  // below the middle, short of the bottom
+    auto rect = RectangleOf(bars, 9, D("0.1"));
+    ASSERT_TRUE(rect.has_value());
+    EXPECT_TRUE(rect->shortfall_up);
+    bars.back() = B("18", "15.5");  // not down to the middle
+    EXPECT_FALSE(RectangleOf(bars, 9, D("0.1"))->shortfall_up);
+    bars.back() = B("16", "11");  // down to the bottom: a touch, no shortfall
+    rect = RectangleOf(bars, 9, D("0.1"));
+    EXPECT_FALSE(rect->shortfall_up);
+    EXPECT_EQ(rect->bottom_touches, 3u);
+}
+
+TEST(Patterns, RectangleNeedsBarsAndHeight) {
+    EXPECT_FALSE(RectangleOf(Rect(), 9, D("0.1")).has_value());
+    EXPECT_FALSE(RectangleOf(Rect(), 0, D("0.1")).has_value());
+    const std::vector<types::Bar> flat = {B("10", "10"), B("10", "10")};
+    EXPECT_FALSE(RectangleOf(flat, 2, D("0.1")).has_value());
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

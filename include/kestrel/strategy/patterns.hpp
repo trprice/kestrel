@@ -34,6 +34,23 @@ struct PriceRange {
 std::optional<PriceRange> RangeOf(std::span<const types::Bar> bars,
                                   std::size_t n);
 
+// A trading range over the newest `n` bars (the deck's rectangle): its high
+// (resistance) and low (support), and how many separate times the price came
+// within `zone` of the height of each. A run of bars in a zone is one touch,
+// and one wide bar can touch both. Nullopt with fewer than n bars, n = 0, or
+// no height.
+struct Rectangle {
+    PriceRange range;
+    std::size_t top_touches = 0;
+    std::size_t bottom_touches = 0;
+    // The "shortfall" that often precedes an upward break: since the last top
+    // touch the price fell below the middle, but turned before touching the
+    // bottom.
+    bool shortfall_up = false;
+};
+std::optional<Rectangle> RectangleOf(std::span<const types::Bar> bars,
+                                     std::size_t n, const types::Decimal& zone);
+
 // The average close of the `period` bars ending `back` bars before the newest
 // (back = 0: ending with it), to 8 decimal places.
 std::optional<types::Decimal> Sma(std::span<const types::Bar> bars,

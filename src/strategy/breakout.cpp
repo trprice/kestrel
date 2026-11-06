@@ -38,6 +38,12 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
             "range_bars, arm_bars, confirm_closes and throwback_bars must be "
             "positive");
     }
+    if (mParams.min_touches == 0) {
+        throw std::invalid_argument("min_touches must be positive");
+    }
+    if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
+        throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
+    }
     if (mParams.stop_buffer_bps.IsNegative() ||
         mParams.confirm_percent.IsNegative() ||
         mParams.target_multiple.IsNegative()) {
@@ -54,7 +60,8 @@ Requirements Breakout::Needs() const {
     std::size_t setup_bars = 2;
     if (mParams.setup == BreakoutParams::Setup::kNarrowRange) {
         setup_bars = mParams.nr_bars;
-    } else if (mParams.setup == BreakoutParams::Setup::kRange) {
+    } else if (mParams.setup == BreakoutParams::Setup::kRange ||
+               mParams.setup == BreakoutParams::Setup::kRectangle) {
         setup_bars = mParams.range_bars;
     }
     needs.warmup_bars = std::max(setup_bars, mParams.trend_sma);
@@ -77,6 +84,15 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
             break;
         case BreakoutParams::Setup::kRange:
             range = RangeOf(bars, mParams.range_bars);
+            break;
+        case BreakoutParams::Setup::kRectangle:
+            if (const auto rect =
+                    RectangleOf(bars, mParams.range_bars, mParams.touch_zone);
+                rect && rect->top_touches >= mParams.min_touches &&
+                rect->bottom_touches >= mParams.min_touches &&
+                (!mParams.shortfall || rect->shortfall_up)) {
+                range = rect->range;
+            }
             break;
     }
     if (!range || range->Height().Sign() <= 0) {

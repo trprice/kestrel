@@ -149,8 +149,11 @@ the entry, checked on closes.
 |---|---|
 | `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
 | `timeframe` | the bars it trades (default `1h`; on Schwab, `30m` or shorter) |
-| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before) or `range` (the high and low of the last `range_bars` bars) (default `nr`) |
+| `setup` | `nr` (the newest bar narrower than the `nr_bars - 1` before it), `inside` (inside the bar before), `range` (the high and low of the last `range_bars` bars) or `rectangle` (that range, once the price has touched both its high and its low `min_touches` times) (default `nr`) |
 | `nr_bars`, `range_bars` | 4 (NR4) and 20 |
+| `touch_zone` | `rectangle`: a bar touches a bound when it comes within this fraction of the range's height of it; consecutive touching bars count once (default 0.1) |
+| `min_touches` | `rectangle`: touches needed of each bound (default 2) |
+| `shortfall` | `rectangle`: also require the deck's shortfall: since the last touch of the top, a fall below the middle that turned before reaching the bottom (default `false`) |
 | `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
 | `confirm_closes`, `confirm_percent` | 2 and 0.5 |
 | `entry` | `stop` (enter as `confirm` says) or `throwback` (after a close above the trigger, rest a post-only limit buy at the setup's high, the broken level, for `throwback_bars` bars) (default `stop`). With `throwback`, `confirm` decides the close: with `closes`, `confirm_closes` of them in a row; with `percent`, above the raised trigger. The first must come within `arm_bars` bars of the setup, so with the default of 1 a breakout that closes above it only two bars later is missed: raise `arm_bars` to wait longer |

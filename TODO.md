@@ -812,6 +812,10 @@ the header of the code concerned.
 - [x] `entry = "throwback"`: after a confirming close above the trigger, a
       post-only limit buy at the broken level for `throwback_bars` bars, for
       every setup (the deck's throwback; a maker fill, no slippage).
+- [x] `setup = "rectangle"`: the last `range_bars` bars' range once both
+      bounds have been touched `min_touches` times (within `touch_zone` of
+      the height), optionally after a `shortfall`; `RectangleOf` in
+      `patterns.hpp`.
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

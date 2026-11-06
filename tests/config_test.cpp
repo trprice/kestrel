@@ -600,6 +600,13 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_TRUE(make("setup='inside'\nconfirm='percent'\nconfirm_percent=1\n")
                     .has_value());
     EXPECT_TRUE(make("entry='throwback'\nthrowback_bars=5\n").has_value());
+    auto rectangle = make(
+        "setup='rectangle'\nrange_bars=30\ntouch_zone=0.15\n"
+        "min_touches=3\nshortfall=true\n");
+    ASSERT_OK(rectangle);
+    EXPECT_EQ((*rectangle)->Needs().warmup_bars, 30u);
+    EXPECT_FALSE(make("setup='rectangle'\ntouch_zone=0.5\n").has_value());
+    EXPECT_FALSE(make("min_touches=0\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

@@ -14,6 +14,7 @@ struct BreakoutParams {
         kNarrowRange,  // the newest bar narrower than the nr_bars - 1 before
         kInsideBar,    // the newest bar inside the one before
         kRange,        // the high and low of the last range_bars bars
+        kRectangle,    // kRange, touched min_touches times at each bound
     };
     enum class Confirm {
         kNone,     // a buy-stop just above the setup's high
@@ -30,7 +31,14 @@ struct BreakoutParams {
     types::Timeframe timeframe = types::Timeframe::kH1;
     Setup setup = Setup::kNarrowRange;
     std::size_t nr_bars = 4;      // kNarrowRange: 4 is NR4
-    std::size_t range_bars = 20;  // kRange
+    std::size_t range_bars = 20;  // kRange and kRectangle: the window
+    // kRectangle: a bar touches a bound within this fraction of the height
+    // of it; runs of touching bars count once.
+    types::Decimal touch_zone{1, 1};  // 0.1
+    std::size_t min_touches = 2;      // of each bound
+    // kRectangle: also require the deck's shortfall (since the last top
+    // touch, a fall below the middle that turned short of the bottom).
+    bool shortfall = false;
     Confirm confirm = Confirm::kNone;
     std::size_t confirm_closes = 2;
     types::Decimal confirm_percent{5, 1};  // 0.5 (%)
@@ -57,9 +65,11 @@ struct BreakoutParams {
 };
 
 // Long-only breakout of a bar setup, after Fidelity's "Identifying Chart
-// Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, or the
-// last N bars' range), enter on a break above its high, protect with a stop
-// below its low, and take profit at the setup's height above the entry.
+// Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, the last
+// N bars' range, or a rectangle: that range when the price has tested both its
+// support and its resistance, see RectangleOf), enter on a break above its
+// high, protect with a stop below its low, and take profit at the setup's
+// height above the entry.
 //
 // Flat: on each closed bar, a setup (and, with trend_sma, a close above the
 // average) arms an entry: a buy-stop one tick above the setup's high (raised
@@ -101,8 +111,9 @@ struct BreakoutParams {
 class Breakout : public Strategy {
    public:
     // Throws std::invalid_argument for a quantity that is not positive, an
-    // nr_bars under 2, a negative buffer, percent or multiple, or zero
-    // arm_bars, confirm_closes or throwback_bars.
+    // nr_bars under 2, a negative buffer, percent or multiple, zero
+    // arm_bars, confirm_closes, throwback_bars or min_touches, or a
+    // touch_zone outside (0, 0.5).
     explicit Breakout(BreakoutParams params);
 
     std::string_view Name() const override { return "breakout"; }

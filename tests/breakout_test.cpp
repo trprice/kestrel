@@ -488,6 +488,69 @@ TEST(Breakout, AThrowbackWithConfirmingClosesWaitsForAllOfThem) {
     EXPECT_TRUE(context.venue.orders[0].post_only);
 }
 
+// A rectangle over 8 bars: high 20, low 10 (zones at 19 and 11, the middle
+// 15), touched at the top three times and at the bottom twice.
+void RectangleBars(FakeContext& context) {
+    context.bars.clear();
+    for (const auto& b :
+         std::vector<std::array<const char*, 4>>{{"16", "20", "15", "16"},
+                                                 {"16", "19.5", "14", "15"},
+                                                 {"15", "16", "10", "12"},
+                                                 {"12", "18", "12", "17"},
+                                                 {"17", "19", "13", "14"},
+                                                 {"14", "15", "11", "13"},
+                                                 {"13", "17", "12", "16"},
+                                                 {"16", "19.2", "16", "18"}}) {
+        context.Add(b);
+    }
+}
+
+BreakoutParams RectangleParams() {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kRectangle;
+    params.range_bars = 8;
+    return params;
+}
+
+TEST(Breakout, ARectangleArmsAboveItsResistance) {
+    Breakout strategy(RectangleParams());
+    FakeContext context;
+    RectangleBars(context);
+    Feed(strategy, context);
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("20.01"));
+}
+
+TEST(Breakout, ARectangleNeedsItsTouches) {
+    auto params = RectangleParams();
+    params.min_touches = 3;  // the bottom has only two
+    Breakout strategy(params);
+    FakeContext context;
+    RectangleBars(context);
+    Feed(strategy, context);
+    EXPECT_TRUE(context.venue.orders.empty());
+}
+
+TEST(Breakout, ARectangleCanRequireAShortfall) {
+    auto params = RectangleParams();
+    params.range_bars = 9;
+    params.shortfall = true;
+    const auto orders_after = [&](std::array<const char*, 4> last) {
+        Breakout strategy(params);
+        FakeContext context;
+        RectangleBars(context);
+        Feed(strategy, context, last);
+        return context.venue.orders;
+    };
+    // Down to 15.5 after the last top touch: not below the middle.
+    EXPECT_TRUE(orders_after({"18", "18", "15.5", "16"}).empty());
+    // Down to 14.5, short of the bottom: a shortfall.
+    const auto orders = orders_after({"18", "18", "14.5", "16"});
+    ASSERT_EQ(orders.size(), 1u);
+    EXPECT_EQ(orders[0].stop_price, D("20.01"));
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -503,6 +566,12 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Throwback();
     bad.throwback_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = RectangleParams();
+    bad.min_touches = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = RectangleParams();
+    bad.touch_zone = D("0");
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
 }
 
