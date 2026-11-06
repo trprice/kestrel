@@ -153,6 +153,8 @@ the entry, checked on closes.
 | `nr_bars`, `range_bars` | 4 (NR4) and 20 |
 | `confirm` | `none` (a buy-stop one tick above the high), `closes` (buy at market after `confirm_closes` closes above it) or `percent` (a buy-stop `confirm_percent` % above the high) (default `none`) |
 | `confirm_closes`, `confirm_percent` | 2 and 0.5 |
+| `entry` | `stop` (enter as `confirm` says) or `throwback` (after a close above the trigger, rest a post-only limit buy at the setup's high, the broken level, for `throwback_bars` bars) (default `stop`). With `throwback`, `confirm` decides the close: with `closes`, `confirm_closes` of them in a row; with `percent`, above the raised trigger. The first must come within `arm_bars` bars of the setup, so with the default of 1 a breakout that closes above it only two bars later is missed: raise `arm_bars` to wait longer |
+| `throwback_bars` | bars the throwback's limit rests before it is cancelled (default 3) |
 | `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
 | `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
 | `arm_bars` | bars an untriggered entry stays (default 1); with `closes`, bars for the closes to start |
@@ -164,6 +166,12 @@ The target and the time exit sell at market on a bar's close; only the
 protective stop rests at the venue, since a spot account cannot hold the same
 shares for two sell orders. A bar-only backtest fills the entry and the stop
 inside the bar at their own prices (see `RunBacktest`).
+
+A throwback entry fills only if the price comes back to the broken level, and
+then as a maker: no slippage, and the maker fee (zero on many Binance.US
+pairs) instead of the taker fee. Breakouts that never look back are missed.
+The stop and target sit where they would for a stop entry, so the target is
+the same height above the (lower) fill.
 
 Two departures from the deck: every setup triggers one tick above its high
 (the deck buys an inside bar on an open above the inside bar's close), and

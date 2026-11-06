@@ -809,6 +809,9 @@ the header of the code concerned.
       state machine does not expect is logged as an error.
 - [x] Bar-only backtests walk each symbol's own finest series with bars, so
       a symbol missing the finer data still trades.
+- [x] `entry = "throwback"`: after a confirming close above the trigger, a
+      post-only limit buy at the broken level for `throwback_bars` bars, for
+      every setup (the deck's throwback; a maker fill, no slippage).
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

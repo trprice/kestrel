@@ -20,6 +20,10 @@ struct BreakoutParams {
         kCloses,   // a market buy after confirm_closes closes above it
         kPercent,  // a buy-stop confirm_percent above the setup's high
     };
+    enum class Entry {
+        kStop,       // as confirm says: a buy-stop, or a market buy
+        kThrowback,  // after a close above the trigger, a limit at the high
+    };
 
     types::Symbol symbol;
     types::Decimal quantity;  // base-asset units per entry
@@ -30,6 +34,10 @@ struct BreakoutParams {
     Confirm confirm = Confirm::kNone;
     std::size_t confirm_closes = 2;
     types::Decimal confirm_percent{5, 1};  // 0.5 (%)
+    Entry entry = Entry::kStop;
+    // kThrowback: bars the limit rests at the setup's high after the
+    // breakout's confirming close.
+    std::size_t throwback_bars = 3;
     // The protective stop: this far below the setup's low.
     types::Decimal stop_buffer_bps{10, 0};
     // The target: the entry plus this many times the setup's height; zero
@@ -59,6 +67,15 @@ struct BreakoutParams {
 // market once confirm_closes closes in a row are above it. An entry not
 // triggered within arm_bars is cancelled, and the next setup can arm.
 //
+// With entry kThrowback, the breakout is not bought but waited for: a close
+// above the trigger (confirm_closes of them with kCloses; above the raised
+// trigger with kPercent) within arm_bars, and then a post-only limit buy at the
+// setup's high, the broken level, resting for throwback_bars bars. It fills
+// only if the price comes back to that level, and then as a maker (no
+// slippage, and on Binance.US no fee), from where the stop and target are the
+// same distance as before. A breakout that runs without looking back is
+// missed: the deck's caveat that throwbacks do not always occur.
+//
 // Long: on the entry's fill, a sell-stop rests at the setup's low less
 // stop_buffer_bps. The target is checked on closes: a bar closing at or above
 // it sells at market (the stop is cancelled first; one order cannot hold the
@@ -85,7 +102,7 @@ class Breakout : public Strategy {
    public:
     // Throws std::invalid_argument for a quantity that is not positive, an
     // nr_bars under 2, a negative buffer, percent or multiple, or zero
-    // arm_bars or confirm_closes.
+    // arm_bars, confirm_closes or throwback_bars.
     explicit Breakout(BreakoutParams params);
 
     std::string_view Name() const override { return "breakout"; }
@@ -103,11 +120,14 @@ class Breakout : public Strategy {
         types::Decimal trigger;  // buy above this
         types::Decimal stop;     // protective stop
         types::Decimal height;   // the setup's high minus its low
+        types::Decimal high;     // the setup's high: the throwback's limit
     };
     enum class State {
         kFlat,
-        kArmed,     // a buy-stop rests (mEntryId)
-        kWatching,  // kCloses: counting closes above mLevels->trigger
+        kArmed,     // an entry rests (mEntryId): a buy-stop, or the
+                    // throwback's limit
+        kWatching,  // kCloses or kThrowback: counting closes above
+                    // mLevels->trigger
         kEntering,  // a market buy is out (mEntryId)
         kLong,      // holding; the protective stop rests (mStopId)
         kExiting,   // a market sell is out (mExitId)
@@ -116,6 +136,9 @@ class Breakout : public Strategy {
     std::optional<Levels> FindSetup(Context& context,
                                     std::span<const types::Bar> bars) const;
     void Arm(Context& context, const Levels& levels);
+    void ArmThrowback(Context& context);
+    // Closes above the trigger that confirm the breakout.
+    std::size_t ClosesNeeded() const;
     void EnterAtMarket(Context& context);
     void PlaceStop(Context& context);
     void Exit(Context& context, const char* why);

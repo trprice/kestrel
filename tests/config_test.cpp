@@ -599,7 +599,10 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
               std::vector<types::Timeframe>{types::Timeframe::kM30});
     EXPECT_TRUE(make("setup='inside'\nconfirm='percent'\nconfirm_percent=1\n")
                     .has_value());
+    EXPECT_TRUE(make("entry='throwback'\nthrowback_bars=5\n").has_value());
     // Unknown words, bad numbers and typos are errors.
+    EXPECT_FALSE(make("entry='pullback'\n").has_value());
+    EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());
     EXPECT_FALSE(make("setup='triangle'\n").has_value());
     EXPECT_FALSE(make("confirm='maybe'\n").has_value());
     EXPECT_FALSE(make("nr_bars=1\n").has_value());

@@ -492,6 +492,12 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
          params.confirm_closes, error);
     Take(p.Number("confirm_percent", params.confirm_percent),
          params.confirm_percent, error);
+    std::string entry = "stop";
+    Take(p.Word("entry", entry, {"stop", "throwback"}), entry, error);
+    params.entry =
+        entry == "throwback" ? Params::Entry::kThrowback : Params::Entry::kStop;
+    Take(p.Count("throwback_bars", params.throwback_bars),
+         params.throwback_bars, error);
     Take(p.Number("stop_buffer_bps", params.stop_buffer_bps),
          params.stop_buffer_bps, error);
     Take(p.Number("target_multiple", params.target_multiple),

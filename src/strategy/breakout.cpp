@@ -33,9 +33,10 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
         throw std::invalid_argument("nr_bars must be at least 2");
     }
     if (mParams.range_bars == 0 || mParams.arm_bars == 0 ||
-        mParams.confirm_closes == 0) {
+        mParams.confirm_closes == 0 || mParams.throwback_bars == 0) {
         throw std::invalid_argument(
-            "range_bars, arm_bars and confirm_closes must be positive");
+            "range_bars, arm_bars, confirm_closes and throwback_bars must be "
+            "positive");
     }
     if (mParams.stop_buffer_bps.IsNegative() ||
         mParams.confirm_percent.IsNegative() ||
@@ -97,6 +98,7 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     const Decimal one = Decimal::FromInt(1);
     Levels levels;
     levels.height = range->Height();
+    levels.high = range->high;
     levels.trigger = range->high + tick;
     if (mParams.confirm == BreakoutParams::Confirm::kPercent) {
         const Decimal raise =
@@ -123,8 +125,11 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
         case State::kArmed:
             // Zero already: an earlier cancel failed, or the venue said the
             // entry filled and its fill is still on the way. Try again.
-            if (mBarsLeft > 0 && --mBarsLeft > 0) {
-                return;
+            if (mBarsLeft > 0) {
+                --mBarsLeft;
+                if (mBarsLeft > 0) {
+                    return;
+                }
             }
             Disarm(context);
             if (mState != State::kFlat) {
@@ -134,8 +139,12 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             break;  // expired: this bar may be a new setup
         case State::kWatching:
             if (bar.close > mLevels->trigger) {
-                if (++mCloses >= mParams.confirm_closes) {
-                    EnterAtMarket(context);
+                if (++mCloses >= ClosesNeeded()) {
+                    if (mParams.entry == BreakoutParams::Entry::kThrowback) {
+                        ArmThrowback(context);
+                    } else {
+                        EnterAtMarket(context);
+                    }
                 }
                 if (mState != State::kWatching || --mBarsLeft > 0) {
                     return;
@@ -188,12 +197,13 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
     if (!levels) {
         return;
     }
-    if (mParams.confirm == BreakoutParams::Confirm::kCloses) {
+    if (mParams.confirm == BreakoutParams::Confirm::kCloses ||
+        mParams.entry == BreakoutParams::Entry::kThrowback) {
         mLevels = levels;
         mState = State::kWatching;
         mCloses = 0;
         // The closes must start within arm_bars bars.
-        mBarsLeft = mParams.arm_bars + mParams.confirm_closes - 1;
+        mBarsLeft = mParams.arm_bars + ClosesNeeded() - 1;
         return;
     }
     Arm(context, *levels);
@@ -211,6 +221,34 @@ void Breakout::Arm(Context& context, const Levels& levels) {
         mLevels = levels;
         mState = State::kArmed;
         mBarsLeft = mParams.arm_bars;
+    }
+}
+
+std::size_t Breakout::ClosesNeeded() const {
+    return mParams.confirm == BreakoutParams::Confirm::kCloses
+               ? mParams.confirm_closes
+               : 1;
+}
+
+void Breakout::ArmThrowback(Context& context) {
+    types::OrderRequest request;
+    request.symbol = mParams.symbol;
+    request.side = Side::kBuy;
+    request.type = types::OrderType::kLimit;
+    request.quantity = mParams.quantity;
+    request.limit_price = mLevels->high;
+    // Only ever a maker: if the price is already back at the level, the
+    // venue refuses it rather than buying at market.
+    request.post_only = true;
+    if (auto id = Place(context, request, "throwback limit")) {
+        spdlog::info("breakout: {} broke out; buying a throwback to {}",
+                     mParams.symbol, mLevels->high.ToString());
+        mEntryId = *id;
+        mState = State::kArmed;
+        mBarsLeft = mParams.throwback_bars;
+    } else {
+        mLevels.reset();
+        mState = State::kFlat;
     }
 }
 
@@ -315,7 +353,7 @@ void Breakout::Disarm(Context& context) {
     mBarsLeft = 0;  // if this stays armed, the next bar tries again
     const auto cancelled = context.Venue().CancelOrder(mEntryId);
     if (!cancelled) {
-        spdlog::warn("breakout: cannot cancel the entry stop {}: {}", mEntryId,
+        spdlog::warn("breakout: cannot cancel the entry {}: {}", mEntryId,
                      cancelled.error().ToString());
         return;  // it may still fill: stay armed and keep tracking it
     }

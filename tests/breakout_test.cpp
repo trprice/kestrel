@@ -261,6 +261,52 @@ TEST(Breakout, ATargetReachedAfterTheCloseExitsInTheNextSession) {
     EXPECT_EQ(result->fills[1].price, D("15.3"));
 }
 
+BreakoutParams Throwback() {
+    auto params = Params();
+    params.entry = BreakoutParams::Entry::kThrowback;
+    params.throwback_bars = 2;
+    return params;
+}
+
+TEST(Breakout, AThrowbackBuysTheBrokenLevelAsAMaker) {
+    // Hour 5 closes at 13.8, above the trigger 13.01: a limit at the setup's
+    // high, 13. Hour 6 comes back to 12.9: bought at 13, a maker. Hour 7
+    // closes at 15.2, past the target 13 + 2 = 15.
+    auto result = backtest::RunBacktest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                                 {"13.8", "14.2", "12.9", "14"},
+                                                 {"14", "15.5", "14", "15.2"}}),
+                                        std::make_unique<Breakout>(Throwback()),
+                                        Options(8));
+    ASSERT_TRUE(result.has_value()) << result.error().ToString();
+    ASSERT_EQ(result->fills.size(), 2u);
+    EXPECT_EQ(result->fills[0].side, Side::kBuy);
+    EXPECT_EQ(result->fills[0].price, D("13"));
+    EXPECT_EQ(result->fills[0].liquidity, types::Liquidity::kMaker);
+    EXPECT_EQ(result->fills[1].side, Side::kSell);
+    EXPECT_EQ(result->fills[1].price, D("15.2"));
+}
+
+TEST(Breakout, ABreakoutThatNeverLooksBackIsMissed) {
+    // The limit at 13 rests through hours 6 and 7, which stay above it, and
+    // is cancelled; hour 8 comes back to 13 too late.
+    const auto trades = Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                          {"13.8", "15", "13.5", "14.5"},
+                                          {"14.5", "15", "14.2", "14.8"},
+                                          {"14.8", "14.8", "13", "13.5"}}),
+                                 Throwback(), 9);
+    EXPECT_TRUE(trades.empty());
+}
+
+TEST(Breakout, AThrowbackNeedsACloseAboveTheTrigger) {
+    // Hour 5 trades through 13.01 but closes back below it: no breakout,
+    // so nothing rests for hour 6's dip to 13.
+    const auto trades = Backtest(Nr4Then({{"12.5", "14", "12.4", "12.8"},
+                                          {"12.8", "13.5", "12.5", "13.2"},
+                                          {"13.2", "13.5", "13", "13.4"}}),
+                                 Throwback());
+    EXPECT_TRUE(trades.empty());
+}
+
 // Drives the strategy directly against a RecordingVenue, for the venue
 // answers a paper venue never gives: partial fills, failed cancels, fills
 // crossing cancels.
@@ -411,6 +457,37 @@ TEST(Breakout, TheStopSellingOutCancelsAnExitStillOut) {
     EXPECT_EQ(context.venue.orders.size(), 4u);
 }
 
+TEST(Breakout, TheThrowbackLimitIsPostOnlyAtTheSetupsHigh) {
+    Breakout strategy(Throwback());
+    FakeContext context;
+    Feed(strategy, context);  // the setup: watching, nothing placed
+    EXPECT_TRUE(context.venue.orders.empty());
+    Feed(strategy, context, {"12.5", "14", "12.4", "13.8"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    const auto& limit = context.venue.orders[0];
+    EXPECT_EQ(limit.side, Side::kBuy);
+    EXPECT_EQ(limit.type, types::OrderType::kLimit);
+    EXPECT_EQ(limit.limit_price, D("13"));
+    EXPECT_TRUE(limit.post_only);
+    EXPECT_EQ(limit.quantity, D("1"));
+}
+
+TEST(Breakout, AThrowbackWithConfirmingClosesWaitsForAllOfThem) {
+    auto params = Throwback();
+    params.confirm = BreakoutParams::Confirm::kCloses;
+    params.confirm_closes = 2;
+    Breakout strategy(params);
+    FakeContext context;
+    Feed(strategy, context);
+    Feed(strategy, context, {"12.5", "13.6", "12.4", "13.5"});  // one close
+    EXPECT_TRUE(context.venue.orders.empty());
+    Feed(strategy, context, {"13.5", "13.8", "13.2", "13.6"});  // two
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kLimit);
+    EXPECT_EQ(context.venue.orders[0].limit_price, D("13"));
+    EXPECT_TRUE(context.venue.orders[0].post_only);
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -423,6 +500,9 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Params();
     bad.arm_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Throwback();
+    bad.throwback_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
 }
 
