@@ -4,28 +4,12 @@
 
 #include <stdexcept>
 
+#include "kestrel/strategy/patterns.hpp"
+
 namespace kestrel::strategy {
 
 using types::Decimal;
-using types::Rounding;
 using types::Side;
-
-namespace {
-
-// Average close of the `period` bars ending `back` bars before the newest.
-Decimal Sma(std::span<const types::Bar> bars, std::size_t back,
-            std::size_t period) {
-    Decimal sum;
-    for (std::size_t i = bars.size() - back - period; i < bars.size() - back;
-         ++i) {
-        sum += bars[i].close;
-    }
-    return Decimal::Divide(sum,
-                           Decimal::FromInt(static_cast<std::int64_t>(period)),
-                           8, Rounding::kNearest);
-}
-
-}  // namespace
 
 SmaCrossover::SmaCrossover(SmaCrossoverParams params)
     : mParams(std::move(params)) {
@@ -58,10 +42,11 @@ void SmaCrossover::OnBar(Context& context, const types::Symbol& symbol,
         return;
     }
 
-    const Decimal fast = Sma(bars, 0, mParams.fast_period);
-    const Decimal slow = Sma(bars, 0, mParams.slow_period);
-    const Decimal prev_fast = Sma(bars, 1, mParams.fast_period);
-    const Decimal prev_slow = Sma(bars, 1, mParams.slow_period);
+    // The window holds slow_period + 1 bars (checked above).
+    const Decimal fast = *Sma(bars, mParams.fast_period);
+    const Decimal slow = *Sma(bars, mParams.slow_period);
+    const Decimal prev_fast = *Sma(bars, mParams.fast_period, 1);
+    const Decimal prev_slow = *Sma(bars, mParams.slow_period, 1);
 
     if (!mLong && prev_fast <= prev_slow && fast > slow) {
         Trade(context, Side::kBuy);

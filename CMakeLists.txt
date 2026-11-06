@@ -102,6 +102,7 @@ add_library(kestrel
   src/strategy/runner.cpp
   src/strategy/run_recorder.cpp
   src/strategy/sma_crossover.cpp
+  src/strategy/patterns.cpp
   src/strategy/market_maker.cpp
   src/config/configuration.cpp
   src/config/schwab_token_store.cpp
@@ -204,6 +205,7 @@ if(KESTREL_BUILD_TESTS)
     tests/timeframe_test.cpp
     tests/market_hours_test.cpp
     tests/recent_bars_test.cpp
+    tests/patterns_test.cpp
     tests/util_test.cpp
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp

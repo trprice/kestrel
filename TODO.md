@@ -257,8 +257,13 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
-- [ ] Indicators library (SMA/EMA, RSI, ATR, Bollinger, MACD) as small
-      reusable pieces so strategies do not each reimplement them
+- [ ] Indicators library (EMA, RSI, ATR, Bollinger, MACD) as small
+      reusable pieces so strategies do not each reimplement them, in
+      `strategy/patterns.hpp` beside the SMA and the bar patterns (NR,
+      inside bar, range) already there
+- [ ] A `breakout` strategy on those patterns: buy-stop above the setup,
+      protective stop below it, target at the setup's height (the design
+      from Fidelity's "Identifying Chart Patterns" deck; long only for now)
 - [ ] EMA crossover and RSI mean-reversion
 - [ ] Breakout / Donchian channel with an ATR stop
 - [ ] Grid trading and dollar-cost averaging
@@ -781,6 +786,11 @@ the header of the code concerned.
       `CurrentOrNextSession`. Backtests step their clock through the session
       events. The paper venue fills nothing while closed. The bar stream's
       regular-session filter uses the calendar (early closes, holidays).
+
+### Bar patterns
+- [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),
+      `IsInsideBar`, `RangeOf` (the last N bars' high and low) and `Sma`,
+      which `SmaCrossover` now uses instead of its own.
 
 ### Backtest fills within a bar
 - [x] Bar-only backtests walk each bar of the finest series for the paper
