@@ -146,6 +146,35 @@ TEST(PaperMarket, BuyFillsAtAskPlusSlippageWithTakerFee) {
     EXPECT_EQ((*positions)[0].average_price, D("50025.0"));
 }
 
+// A long run keeps the newest max_fills fills and max_closed_orders closed
+// orders; balances and positions still count everything.
+TEST(PaperMarket, KeepsABoundedHistory) {
+    Fixture f;
+    f.options.max_fills = 2;
+    f.options.max_closed_orders = 2;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    std::vector<std::string> ids;
+    for (int i = 0; i < 3; ++i) {
+        auto ack =
+            venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.01"));
+        ASSERT_OK(ack);
+        ASSERT_EQ(ack->state, OrderState::kFilled);
+        ids.push_back(ack->order_id);
+    }
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 2u);
+    EXPECT_EQ((*fills)[0].order_id, ids[1]);
+    EXPECT_EQ((*fills)[1].order_id, ids[2]);
+    auto first = venue->GetOrder(ids[0]);
+    ASSERT_FALSE(first);
+    EXPECT_EQ(first.error().category, types::ErrorCategory::kNotFound);
+    EXPECT_TRUE(venue->GetOrder(ids[1]).has_value());
+    EXPECT_TRUE(venue->GetOrder(ids[2]).has_value());
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0.03"));
+}
+
 TEST(PaperMarket, DeferredMatchingWaitsForTheNextQuote) {
     Fixture f;
     f.options.slippage = D("0");

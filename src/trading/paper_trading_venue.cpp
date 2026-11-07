@@ -394,6 +394,9 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     mPnl.Apply(fill);
     Notice(order, fill);
     mFills.push_back(std::move(fill));
+    if (mOptions.max_fills > 0 && mFills.size() > mOptions.max_fills) {
+        mFills.pop_front();
+    }
     return true;
 }
 
@@ -425,8 +428,22 @@ void PaperTradingVenue::ExpireDayOrders() {
             Close(*order, OrderState::kExpired,
                   "day order expired at end of UTC day");
         }
-        return !types::IsActive(order->status.state);
+        if (types::IsActive(order->status.state)) {
+            return false;
+        }
+        if (mOptions.max_closed_orders > 0) {
+            mClosed.push_back(order->status.order_id);
+        }
+        return true;
     });
+    // Only closed orders, out of mActive, are forgotten; an order or cancel
+    // still in flight for one finds it gone and skips it, as for a closed
+    // one.
+    while (mOptions.max_closed_orders > 0 &&
+           mClosed.size() > mOptions.max_closed_orders) {
+        mOrders.erase(mClosed.front());
+        mClosed.pop_front();
+    }
 }
 
 void PaperTradingVenue::ProcessPending() {
@@ -712,6 +729,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                 "fill-or-kill order could not be filled in full";
             const auto [it, _] =
                 mOrders.emplace(order.status.order_id, std::move(order));
+            if (mOptions.max_closed_orders > 0) {
+                mClosed.push_back(it->first);  // closed already
+            }
             return types::OrderAcknowledgement{
                 it->first, it->second.status.client_order_id,
                 it->second.status.state, now};

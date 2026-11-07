@@ -84,6 +84,14 @@ struct PaperOptions {
     // StreamExecutions. Queries (GetOrder, GetFills, GetOpenOrders,
     // GetBalances) answer with the venue's state at once.
     std::chrono::milliseconds report_latency{0};
+    // How much history a long run keeps: the newest max_fills fills (for
+    // GetFills) and max_closed_orders closed orders (for GetOrder); older
+    // ones are forgotten, so GetFills from before them returns what is kept
+    // and GetOrder of a forgotten order is kNotFound. Zero keeps everything,
+    // as a backtest needs; `run` keeps 100,000 of each. Balances and
+    // positions are unaffected.
+    std::size_t max_fills = 0;
+    std::size_t max_closed_orders = 0;
 };
 
 // Simulated venue that works with any DataSource. Nothing fills while the
@@ -243,7 +251,10 @@ class PaperTradingVenue : public TradingVenue {
     // (map nodes are stable). Closed orders are dropped by ExpireDayOrders(),
     // so scans do not grow with the number of orders ever placed.
     std::vector<Order*> mActive;
-    std::vector<types::Fill> mFills;
+    std::deque<types::Fill> mFills;  // the newest options.max_fills
+    // Closed orders still in mOrders, oldest closed first, for
+    // options.max_closed_orders.
+    std::deque<std::string> mClosed;
     std::map<std::string, types::Decimal> mTotal;
     std::map<std::string, types::Decimal> mLocked;
     PnlTracker mPnl;  // positions and realized P&L, from the fills

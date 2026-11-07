@@ -190,9 +190,51 @@ void Runner::PushQuote(const types::Quote& quote) {
     mWake.notify_one();
 }
 
+void Runner::PushBar(BarEvent event) {
+    std::size_t recovered = 0;
+    bool dropped = false;
+    bool first_drop = false;
+    {
+        std::lock_guard lock(mMutex);
+        if (mOptions.max_queued_bars > 0 &&
+            mQueuedBars >= mOptions.max_queued_bars) {
+            ++mDroppedBars;
+            dropped = true;
+            first_drop = mDropping++ == 0;
+        } else {
+            recovered = std::exchange(mDropping, 0);
+            mEvents.push_back(std::move(event));
+            ++mQueuedBars;
+        }
+    }
+    // Logged outside the lock, which the strategy thread waits on.
+    if (dropped) {
+        if (first_drop) {
+            spdlog::warn(
+                "strategy {}: {} bars queued, the limit: dropping new ones "
+                "until it catches up (the gap is backfilled)",
+                mName, mOptions.max_queued_bars);
+        }
+        return;
+    }
+    if (recovered > 0) {
+        spdlog::info("strategy {}: bar queue has room again after dropping {}",
+                     mName, recovered);
+    }
+    mWake.notify_one();
+}
+
+std::size_t Runner::DroppedBars() const {
+    std::lock_guard lock(mMutex);
+    return mDroppedBars;
+}
+
 Runner::Event Runner::TakeFront() {
     Event event = std::move(mEvents.front());
     mEvents.pop_front();
+    if (std::holds_alternative<BarEvent>(event)) {
+        --mQueuedBars;
+    }
     if (auto* quote = std::get_if<QuoteEvent>(&event)) {
         auto pending = mPendingQuotes.extract(quote->symbol);
         quote->quote = std::move(pending.mapped());
@@ -312,7 +354,9 @@ types::Result<void> Runner::Begin() {
         auto sub = mData->StreamBars(
             requirements.symbols, timeframe,
             [this](const types::Symbol& symbol, types::Timeframe tf,
-                   const types::Bar& bar) { Push(BarEvent{symbol, tf, bar}); });
+                   const types::Bar& bar) {
+                PushBar(BarEvent{symbol, tf, bar});
+            });
         if (!sub) {
             mSubscriptions.clear();
             return std::unexpected(sub.error());

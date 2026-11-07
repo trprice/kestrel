@@ -329,6 +329,7 @@ types::Result<BacktestResult> RunBacktest(
 
     strategy::RunnerOptions runner_options;
     runner_options.risk = options.risk;
+    runner_options.max_queued_bars = 0;  // each bar is drained as it is emitted
     strategy::Runner runner(data, venue, std::move(strategy), runner_options,
                             clock);
     if (auto begun = runner.Begin(); !begun) {

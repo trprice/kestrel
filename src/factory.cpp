@@ -33,8 +33,12 @@ using VenuePtr = std::unique_ptr<trading::TradingVenue>;
 
 Result<VenuePtr> MakePaper(const config::Configuration& cfg,
                            std::shared_ptr<data::DataSource> ds) {
-    auto venue = std::make_unique<trading::PaperTradingVenue>(
-        std::move(ds), cfg.GetPaperOptions());
+    // A paper run can last for days: keep its history bounded.
+    trading::PaperOptions options = cfg.GetPaperOptions();
+    options.max_fills = 100'000;
+    options.max_closed_orders = 100'000;
+    auto venue =
+        std::make_unique<trading::PaperTradingVenue>(std::move(ds), options);
     if (auto started = venue->Start(cfg.GetSymbols()); !started) {
         return std::unexpected(started.error());
     }

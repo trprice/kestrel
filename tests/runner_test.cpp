@@ -286,6 +286,40 @@ class MorningCalendar : public types::TradingCalendar {
     }
 };
 
+// Bars past max_queued_bars are dropped, and the backfill fetches them once
+// the next bar shows the gap.
+TEST_F(RunnerTest, ABarPastTheQueueLimitIsDroppedThenBackfilled) {
+    options.max_queued_bars = 2;
+    Build();
+    ASSERT_OK(runner->Begin());
+    for (int h = 5; h <= 8; ++h) {
+        data->Close(h);  // 7 and 8 find the queue full
+    }
+    EXPECT_EQ(runner->DroppedBars(), 2u);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->bars,
+              (std::vector<types::Timestamp>{Hour(5), Hour(6)}));
+    data->Close(9);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->bars,
+              (std::vector<types::Timestamp>{Hour(5), Hour(6), Hour(7), Hour(8),
+                                             Hour(9)}));
+    runner->End();
+}
+
+TEST_F(RunnerTest, ZeroQueuedBarsMeansNoLimit) {
+    options.max_queued_bars = 0;
+    Build();
+    ASSERT_OK(runner->Begin());
+    for (int h = 5; h <= 9; ++h) {
+        data->Close(h);
+    }
+    EXPECT_EQ(runner->DroppedBars(), 0u);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->bars.size(), 5u);
+    runner->End();
+}
+
 TEST_F(RunnerTest, DoesNotBackfillAGapThatIsAllClosedTime) {
     data->hours = std::make_shared<types::MarketHours>(
         std::make_shared<MorningCalendar>(), false);

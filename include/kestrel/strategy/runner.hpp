@@ -68,6 +68,15 @@ struct RunnerOptions {
     // OnFill (where a strategy places its stop). See EntriesToCancel. `run`
     // sets it; a backtest does not.
     bool cancel_entries_on_stop = false;
+    // At most this many bars wait in the queue; zero for no limit. A bar
+    // arriving while it is full is dropped (and logged), and the backfill
+    // fetches it from the data source once the strategy catches up and the
+    // next bar of its series shows the gap, so bars stay in order and are
+    // not lost while the source can serve them. Until that next bar comes (a
+    // quiet market, the next session) the newest bar dropped is not seen,
+    // nor its price by the risk gate; one dropped just before a stop is
+    // lost, as is one the backfill cannot fetch. A backtest sets zero.
+    std::size_t max_queued_bars = 1000;
 };
 
 // Which of `open` (the orders open on the venue) are entries, to cancel when a
@@ -129,8 +138,8 @@ EntryCancels EntriesToCancel(
 // quotes for it are merged into it (Quote::MergeFrom) instead of queueing
 // behind it, so the strategy never sees a quote older than the last one that
 // arrived, and a slow strategy cannot fall behind on quotes. Intermediate
-// quotes are skipped. Bars are never dropped, so the queue still grows if bars
-// outpace the strategy.
+// quotes are skipped. Queued bars are bounded by options.max_queued_bars: one
+// arriving past it is dropped, and recovered by the gap backfill.
 //
 // On a market that closes (the data source's Hours), the strategy trades
 // through a trading::SessionGatedVenue, which refuses orders while it is
@@ -165,6 +174,9 @@ class Runner : private Context {
     // Quotes merged into an already queued one instead of being delivered
     // separately. Thread-safe.
     std::size_t ConflatedQuotes() const;
+    // Bars dropped because the queue was full (options.max_queued_bars).
+    // Thread-safe.
+    std::size_t DroppedBars() const;
 
     // The risk gate the strategy trades through, if options.risk was set; use
     // it to halt trading from outside the strategy.
@@ -218,6 +230,8 @@ class Runner : private Context {
 
     void Push(Event event);
     void PushQuote(const types::Quote& quote);
+    // A bar, unless options.max_queued_bars are queued already.
+    void PushBar(BarEvent event);
     // Both require mMutex and a non-empty queue.
     Event TakeFront();
     // Waits for an event until `deadline` (forever if unset).
@@ -324,6 +338,9 @@ class Runner : private Context {
     // is queued, and it takes the quote from here when popped.
     std::map<types::Symbol, types::Quote> mPendingQuotes;
     std::size_t mConflated = 0;
+    std::size_t mQueuedBars = 0;   // BarEvents in mEvents
+    std::size_t mDroppedBars = 0;  // ever
+    std::size_t mDropping = 0;     // dropped since the queue was last full
 
     // The poller thread, and what stops it.
     std::thread mPoller;
