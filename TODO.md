@@ -61,9 +61,6 @@ Built and tested with fakes, and reachable from `kestrel_app run` and
 market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 
 #### To finish
-- [ ] `run` does not cancel open orders on shutdown; decide whether it should.
-      (`MarketMaker` cancels its own quotes in `OnStop`; `SmaCrossover` and
-      other strategies leave theirs resting.)
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
@@ -707,6 +704,9 @@ the header of the code concerned.
       next price replayed (the next bar's open), not at that close
       (`PaperTradingVenue::SetDeferMatching`); `backtest --fill-at-close`
       keeps the old model.
+- [x] `run` cancels entries when it stops and keeps the orders that close a
+      position, so a protective stop stays (`RunnerOptions::
+      cancel_entries_on_stop`, `EntriesToCancel`).
 - [x] `backtest --fill-timeframe 1m` (`BacktestOptions::fill_timeframe`):
       the paper venue walks finer bars than the strategy takes, so the path
       within a strategy bar is the recorded one rather than the open,

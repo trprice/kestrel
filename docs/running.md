@@ -185,6 +185,18 @@ before then (`authorize --status` shows when).
   `run` cancels every order open on the `[general] symbols`, whoever placed
   it, and logs the IDs it cancelled. If the cancel fails, `run` exits without
   trading. See [One trader per account](#one-trader-per-account).
+- **On stop, `run` cancels entries and keeps exits.** Before the strategy's
+  `OnStop`, `run` cancels the orders open on its symbols that would open or
+  add to a position (a breakout's buy-stop, a resting buy) and leaves those
+  that close one: sells up to what is held when long (buys when short),
+  stops first. So a position keeps its protective stop while nothing runs,
+  and no entry fills unwatched. An entry that filled first still reaches the
+  strategy's `OnFill`, which places its stop, before `OnStop`. It logs what
+  it cancelled and what it left, and warns about a symbol held with no
+  closing order left. A sell beyond what is held is cancelled. If the
+  holdings cannot be read, it keeps every sell and cancels every buy. The next `run` cancels what was
+  left before it starts, and does not know the position it protected: close
+  that position or watch it.
 - With `[recording] enabled = true`, `run` stores its fills, P&L snapshots and
   response times as it goes; see [database.md](database.md#recording-a-run).
 - `run` logs a quote feed that has gone quiet for 2 minutes of open market
@@ -232,7 +244,8 @@ invisible to the gate (a halted gate will not let them be sold; `order
 --no-risk` can): start from an empty account or sub-account.
 
 If `run` dies without stopping cleanly (a crash, `kill -9`, or a second
-Ctrl-C), its strategy's orders stay open until the next `run` cancels them;
+Ctrl-C), all its strategy's orders stay open, entries too, until the next
+`run` cancels them;
 `cancel --all --confirm` clears them by hand.
 
 A cancel clears the order book, not history. An order that filled moments

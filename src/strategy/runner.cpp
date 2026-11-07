@@ -469,6 +469,150 @@ std::optional<types::Timestamp> Runner::NextSessionEvent() const {
     return mSession->end;  // then the next session is found
 }
 
+EntryCancels EntriesToCancel(
+    const std::vector<types::OrderStatus>& open,
+    const std::vector<types::Symbol>& symbols,
+    const std::optional<std::vector<types::Position>>& positions,
+    const std::optional<std::vector<types::Balance>>& balances) {
+    EntryCancels result;
+    std::vector<types::Symbol> seen;
+    for (const types::Symbol& symbol : symbols) {
+        if (std::ranges::find(seen, symbol) != seen.end()) {
+            continue;
+        }
+        seen.push_back(symbol);
+        std::vector<const types::OrderStatus*> orders;
+        for (const auto& order : open) {
+            if (order.symbol == symbol) {
+                orders.push_back(&order);
+            }
+        }
+        // Held: the venue's position, or else the base asset held.
+        std::optional<Decimal> held;
+        if (positions && balances) {
+            held = Decimal();
+            bool found = false;
+            for (const auto& position : *positions) {
+                if (position.symbol == symbol) {
+                    held = position.quantity;
+                    found = true;
+                }
+            }
+            if (!found) {
+                if (const auto parts = types::SplitSymbol(symbol)) {
+                    for (const auto& balance : *balances) {
+                        if (balance.asset == parts->base) {
+                            held = balance.total;
+                        }
+                    }
+                } else {
+                    held.reset();  // unknown, not flat
+                }
+            }
+        }
+        // Stops first (the protection), then oldest first.
+        std::ranges::stable_sort(orders, [](const types::OrderStatus* a,
+                                            const types::OrderStatus* b) {
+            const bool a_stop = a->type == types::OrderType::kStop;
+            const bool b_stop = b->type == types::OrderType::kStop;
+            return a_stop != b_stop ? a_stop
+                                    : a->created_time < b->created_time;
+        });
+        Decimal room = held ? held->Abs() : Decimal();
+        const auto reducing = !held              ? types::Side::kSell
+                              : held->Sign() < 0 ? types::Side::kBuy
+                                                 : types::Side::kSell;
+        bool closing = false;
+        for (const types::OrderStatus* order : orders) {
+            const Decimal remaining = order->quantity - order->filled_quantity;
+            bool keep = false;
+            if (order->side == reducing && (!held || held->Sign() != 0)) {
+                if (!held) {
+                    keep = true;
+                } else if (remaining <= room) {
+                    keep = true;
+                    room = room - remaining;
+                }
+            }
+            if (keep) {
+                closing = true;
+            } else {
+                result.ids.push_back(order->order_id);
+            }
+        }
+        if (held && held->Sign() != 0 && !closing) {
+            result.unprotected.push_back(symbol);
+        }
+    }
+    return result;
+}
+
+void Runner::CancelEntries() {
+    const auto symbols = mStrategy->Needs().symbols;
+    auto open = mVenue->GetOpenOrders();
+    if (!open) {
+        spdlog::error(
+            "strategy {}: could not read open orders to cancel entries on "
+            "stop; any left open stay open: {}",
+            mName, open.error().ToString());
+        return;
+    }
+    std::optional<std::vector<types::Position>> positions;
+    std::optional<std::vector<types::Balance>> balances;
+    auto fetched_positions = mVenue->GetPositions();
+    auto fetched_balances = mVenue->GetBalances();
+    if (fetched_positions && fetched_balances) {
+        positions = std::move(*fetched_positions);
+        balances = std::move(*fetched_balances);
+    } else {
+        spdlog::warn(
+            "strategy {}: could not read holdings on stop; keeping open sells "
+            "and cancelling open buys: {}",
+            mName,
+            (fetched_positions ? fetched_balances.error()
+                               : fetched_positions.error())
+                .ToString());
+    }
+    const auto plan = EntriesToCancel(*open, symbols, positions, balances);
+    const auto& ids = plan.ids;
+    std::size_t kept = 0;
+    for (const auto& order : *open) {
+        if (std::ranges::find(symbols, order.symbol) != symbols.end() &&
+            std::ranges::find(ids, order.order_id) == ids.end()) {
+            ++kept;
+            spdlog::info("strategy {}: left open on stop: {} {} {} {}", mName,
+                         order.order_id, order.symbol,
+                         order.side == types::Side::kBuy ? "buy" : "sell",
+                         (order.quantity - order.filled_quantity).ToString());
+        }
+    }
+    std::size_t cancelled = 0;
+    for (const auto& id : ids) {
+        if (auto outcome = mVenue->CancelOrder(id); !outcome) {
+            spdlog::error("strategy {}: could not cancel order {} on stop: {}",
+                          mName, id, outcome.error().ToString());
+        } else if (*outcome == trading::CancelOutcome::kCancelled) {
+            ++cancelled;
+        } else if (*outcome == trading::CancelOutcome::kAlreadyFilled) {
+            spdlog::warn(
+                "strategy {}: order {} filled before it could be cancelled on "
+                "stop; the strategy hears of the fill before it stops",
+                mName, id);
+        }
+    }
+    for (const auto& symbol : plan.unprotected) {
+        spdlog::warn(
+            "strategy {}: {} is held with no order left open to close it",
+            mName, symbol);
+    }
+    if (cancelled > 0 || kept > 0) {
+        spdlog::info(
+            "strategy {}: on stop, cancelled {} entry order(s), left {} "
+            "closing order(s) open",
+            mName, cancelled, kept);
+    }
+}
+
 void Runner::End() {
     if (!mBegun) {
         return;
@@ -476,10 +620,16 @@ void Runner::End() {
     mBegun = false;
     // Nothing is queued by the poller from here on. A poll it queued behind
     // the StopEvent is never handled: its fills are found again by the poll
-    // below (only with a recorder), its order changes are dropped, since the
-    // strategy is stopping.
+    // below (only with a recorder or the entry cancel), its order changes
+    // are dropped, since the strategy is stopping.
     StopPoller();
-    if (mRecorder) {
+    // Entries are cancelled before the last poll, so an entry that filled
+    // first still reaches OnFill, where a strategy places its protective
+    // stop.
+    if (mOptions.cancel_entries_on_stop) {
+        Guarded("the entry cancel", [this] { CancelEntries(); });
+    }
+    if (mRecorder || mOptions.cancel_entries_on_stop) {
         PollFills();  // fills that landed since the last poll
     }
     // Stop the streams first so nothing is enqueued after the last hook.

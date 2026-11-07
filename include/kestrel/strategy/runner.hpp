@@ -61,7 +61,33 @@ struct RunnerOptions {
     // again when quotes come back). Closed time does not count, so a quiet
     // night or weekend is not stale. Zero turns it off.
     std::chrono::milliseconds stale_quote_warning{std::chrono::minutes(2)};
+    // End() cancels the orders open on the strategy's symbols that would open
+    // or add to a position (entries), and leaves those that close it (a
+    // protective stop), so a position stays protected while nothing runs. It
+    // then polls fills before OnStop, so an entry that filled first reaches
+    // OnFill (where a strategy places its stop). See EntriesToCancel. `run`
+    // sets it; a backtest does not.
+    bool cancel_entries_on_stop = false;
 };
+
+// Which of `open` (the orders open on the venue) are entries, to cancel when a
+// run stops: those on `symbols` that do not reduce the position. Held is the
+// symbol's entry in `positions`, or else the base asset's total in
+// `balances` (a spot venue reports no positions); nullopt for either means it
+// could not be read, and then every sell is taken to reduce and every buy is
+// an entry (a spot account cannot be short). Orders that reduce it (sells
+// when long, buys when short) are kept while their remaining quantities fit
+// within it, stops first, then oldest first; the rest are entries too.
+// `unprotected` lists the symbols held with no order kept to close them.
+struct EntryCancels {
+    std::vector<std::string> ids;
+    std::vector<types::Symbol> unprotected;
+};
+EntryCancels EntriesToCancel(
+    const std::vector<types::OrderStatus>& open,
+    const std::vector<types::Symbol>& symbols,
+    const std::optional<std::vector<types::Position>>& positions,
+    const std::optional<std::vector<types::Balance>>& balances);
 
 // Drives one strategy: subscribes to what it asks for, then feeds the events
 // to it one at a time on the thread that called Run().
@@ -231,6 +257,8 @@ class Runner : private Context {
     // when no poller runs.
     void StartPoller(std::chrono::milliseconds interval);
     void StopPoller();
+    // End(), with options.cancel_entries_on_stop.
+    void CancelEntries();
     // Runs a strategy hook, logging instead of propagating an exception.
     void Guarded(const char* hook, const std::function<void()>& call);
     // Calls the session hooks that are due at `now`, moving to the next

@@ -884,6 +884,151 @@ TEST_F(RunnerTest, CancelsOrdersAlreadyOpenBeforeOnStart) {
     runner->End();
 }
 
+types::OrderStatus OpenOrder(const char* id, types::Side side,
+                             types::OrderType type, const char* quantity,
+                             int created_hour = 0,
+                             const char* symbol = kSymbol) {
+    types::OrderStatus order;
+    order.order_id = id;
+    order.symbol = symbol;
+    order.side = side;
+    order.type = type;
+    order.quantity = kestrel::testing::D(quantity);
+    order.created_time = Hour(created_hour);
+    return order;
+}
+
+types::Position PositionOf(const char* quantity) {
+    types::Position position;
+    position.symbol = kSymbol;
+    position.quantity = kestrel::testing::D(quantity);
+    return position;
+}
+
+using types::OrderType;
+using types::Side;
+using Ids = std::vector<std::string>;
+
+// Long 1: the sell-stop protects it and stays; the buy-stop is an entry, and
+// the target, a second full-size sell, would sell what the stop sells. Other
+// symbols are not the strategy's.
+TEST(EntriesToCancelTest, KeepsWhatClosesALongAndCancelsEntries) {
+    const std::vector open = {
+        OpenOrder("target", Side::kSell, OrderType::kLimit, "1", 0),
+        OpenOrder("entry", Side::kBuy, OrderType::kStop, "1", 1),
+        OpenOrder("stop", Side::kSell, OrderType::kStop, "1", 2),
+        OpenOrder("other", Side::kBuy, OrderType::kLimit, "1", 0, "ETH/USD")};
+    const auto cancel =
+        strategy::EntriesToCancel(open, {kSymbol}, std::vector{PositionOf("1")},
+                                  std::vector<types::Balance>{});
+    EXPECT_EQ(cancel.ids, (Ids{"entry", "target"}));
+}
+
+TEST(EntriesToCancelTest, KeepsSellsThatFitAndCountsWhatIsLeftToFill) {
+    auto partly = OpenOrder("partly", Side::kSell, OrderType::kLimit, "1", 0);
+    partly.filled_quantity = kestrel::testing::D("0.6");
+    const std::vector open = {
+        partly, OpenOrder("half", Side::kSell, OrderType::kLimit, "0.5", 1),
+        OpenOrder("late", Side::kSell, OrderType::kLimit, "0.2", 2)};
+    // 0.4 left on the first and 0.5 fit within 1; 0.2 more does not.
+    const auto cancel =
+        strategy::EntriesToCancel(open, {kSymbol}, std::vector{PositionOf("1")},
+                                  std::vector<types::Balance>{});
+    EXPECT_EQ(cancel.ids, (Ids{"late"}));
+}
+
+// A spot venue reports no positions: the base asset held counts instead.
+TEST(EntriesToCancelTest, UsesTheBaseAssetWithoutAPosition) {
+    const std::vector open = {
+        OpenOrder("stop", Side::kSell, OrderType::kStop, "0.5"),
+        OpenOrder("entry", Side::kBuy, OrderType::kLimit, "0.5")};
+    types::Balance btc;
+    btc.asset = "BTC";
+    btc.total = kestrel::testing::D("0.5");
+    const auto cancel = strategy::EntriesToCancel(
+        open, {kSymbol}, std::vector<types::Position>{}, std::vector{btc});
+    EXPECT_EQ(cancel.ids, (Ids{"entry"}));
+}
+
+TEST(EntriesToCancelTest, CancelsEverythingWhenFlat) {
+    const std::vector open = {
+        OpenOrder("sell", Side::kSell, OrderType::kStop, "1"),
+        OpenOrder("buy", Side::kBuy, OrderType::kStop, "1")};
+    const auto cancel =
+        strategy::EntriesToCancel(open, {kSymbol}, std::vector{PositionOf("0")},
+                                  std::vector<types::Balance>{});
+    EXPECT_EQ(cancel.ids, (Ids{"sell", "buy"}));
+}
+
+TEST(EntriesToCancelTest, KeepsTheBuyStopOfAShort) {
+    const std::vector open = {
+        OpenOrder("cover", Side::kBuy, OrderType::kStop, "1"),
+        OpenOrder("more", Side::kSell, OrderType::kStop, "1")};
+    const auto cancel = strategy::EntriesToCancel(
+        open, {kSymbol}, std::vector{PositionOf("-1")},
+        std::vector<types::Balance>{});
+    EXPECT_EQ(cancel.ids, (Ids{"more"}));
+}
+
+// Holdings that could not be read: as on a spot account, sells close and
+// buys open.
+TEST(EntriesToCancelTest, WithoutHoldingsKeepsSellsAndCancelsBuys) {
+    const std::vector open = {
+        OpenOrder("sell", Side::kSell, OrderType::kStop, "5"),
+        OpenOrder("buy", Side::kBuy, OrderType::kStop, "1")};
+    const auto cancel =
+        strategy::EntriesToCancel(open, {kSymbol}, std::nullopt, std::nullopt);
+    EXPECT_EQ(cancel.ids, (Ids{"buy"}));
+}
+
+TEST_F(RunnerTest, CancelsEntriesButNotProtectiveStopsOnStop) {
+    options.cancel_entries_on_stop = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->open_orders = {
+        OpenOrder("stop", Side::kSell, OrderType::kStop, "1"),
+        OpenOrder("entry", Side::kBuy, OrderType::kStop, "1")};
+    venue->positions = {PositionOf("1")};
+    runner->End();
+    EXPECT_EQ(venue->cancels, (Ids{"entry"}));
+    EXPECT_TRUE(strategy->stopped);
+}
+
+// An entry that fills as it is cancelled reaches OnFill before the strategy
+// stops (where it would place its protective stop), even without a trade log.
+TEST_F(RunnerTest, AnEntryThatFillsAsItIsCancelledStillReachesOnFill) {
+    options.cancel_entries_on_stop = true;
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->open_orders = {
+        OpenOrder("entry", Side::kBuy, OrderType::kStop, "1")};
+    venue->cancel_result = trading::CancelOutcome::kAlreadyFilled;
+    venue->fills = {FillAt("f1", 6)};
+    runner->End();
+    EXPECT_EQ(venue->cancels, (Ids{"entry"}));
+    EXPECT_EQ(strategy->fills, (Ids{"f1"}));
+    EXPECT_TRUE(strategy->stopped);
+}
+
+TEST(EntriesToCancelTest, ReportsAHoldingLeftWithoutAClosingOrder) {
+    const std::vector open = {
+        OpenOrder("entry", Side::kBuy, OrderType::kStop, "1")};
+    const auto cancel = strategy::EntriesToCancel(
+        open, {kSymbol, kSymbol}, std::vector{PositionOf("1")},
+        std::vector<types::Balance>{});
+    EXPECT_EQ(cancel.ids, (Ids{"entry"}));  // once, though listed twice
+    EXPECT_EQ(cancel.unprotected, std::vector<types::Symbol>{kSymbol});
+}
+
+TEST_F(RunnerTest, LeavesOrdersOpenOnStopUnlessAsked) {
+    Build();
+    ASSERT_OK(runner->Begin());
+    venue->open_orders = {
+        OpenOrder("entry", Side::kBuy, OrderType::kStop, "1")};
+    runner->End();
+    EXPECT_TRUE(venue->cancels.empty());
+}
+
 TEST_F(RunnerTest, DoesNotStartWhenOpenOrdersCannotBeCancelled) {
     venue->fail_cancel_all = true;
     Build();

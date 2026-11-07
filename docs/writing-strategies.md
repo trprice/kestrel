@@ -34,7 +34,7 @@ All hooks are optional except `Name()` and `Needs()`.
 | `OnOrderUpdate` | when an order you placed changes state or fills further, ending with a closed state (filled, cancelled, rejected, expired) |
 | `OnSessionOpen` | on a market that closes (US stocks on Schwab), when a session opens; not for a session already open when the runner starts |
 | `OnSessionClosing` | `RunnerOptions::session_closing_lead` (5 minutes) before a session closes, with the close time, while orders are still accepted: the time to flatten; right after `OnStart` if the runner starts in that window |
-| `OnStop` | once at shutdown, after the streams are closed; `run` does not cancel open orders itself, so cancel the ones you want gone |
+| `OnStop` | once at shutdown, after the streams are closed; before it, `run` cancels open orders that would open or add to a position and keeps those that close it (a protective stop), so cancel any others you want gone |
 
 Every hook gets a `Context&`, valid only during that call:
 

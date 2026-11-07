@@ -719,6 +719,7 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
 
     strategy::RunnerOptions options;
     options.risk = *limits;
+    options.cancel_entries_on_stop = true;
     if (cfg.GetRecording().enabled) {
         auto log = make_log(cfg, strategy_name,
                             std::string(components->venue->Name()));
