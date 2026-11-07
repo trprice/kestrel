@@ -244,6 +244,33 @@ every quote, and the stop and cap rules close the position instead of only
 blocking entries. `config/binanceus-zec-marketmaker.example.toml` lists every
 rule's parameters and defaults.
 
+**`momentum_rotation`**: cross-sectional momentum across every symbol in
+`[general] symbols` (two or more, all with one quote asset, which is the
+cash). Every `rebalance_bars` bars it ranks them by their return over
+`lookback_bars` and holds the strongest `top_n`, each with an equal share of
+`invest_fraction` of equity (cash plus its holdings at the last close). It
+sells what dropped out of the top at market first, then buys what entered
+once those sells have filled; what stays in the top is not resized. A period
+is ranked once every symbol's bar for it has closed (or, if one never comes,
+on the next period's first bar). The lookback is measured in time: a symbol
+without a bar for the period, or for `lookback_bars` before it, is not ranked,
+and if held it is kept (with its slot) rather than sold. With fewer than half
+the symbols ranked there is no rebalance. Only what the strategy bought counts
+as held (less fees taken in the coin), not the account's other balances: it
+warns at startup about coins the account already holds, which it neither
+counts nor sells, so a restart forgets what the last run bought. Run it on an
+account (or sub-account) of its own. Leftovers under the minimum order count
+as nothing held.
+
+| Key | Meaning |
+|---|---|
+| `timeframe` | the bars it ranks on (default `1d`) |
+| `lookback_bars` | momentum: the return over this many bars (default 28) |
+| `rebalance_bars` | rebalance every this many bars, starting with the first (default 7) |
+| `top_n` | how many symbols to hold (default 3); at most the number of symbols |
+| `positive_only` | hold only symbols whose momentum is above zero, else cash (default `true`) |
+| `invest_fraction` | share of equity invested, split over the `top_n` slots; the rest covers fees and the move to the fill (default 0.95) |
+
 ## `[recording]`
 
 Whether `run` stores what it does in the `[database]`; see

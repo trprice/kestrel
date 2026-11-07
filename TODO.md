@@ -268,7 +268,11 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] EMA crossover and RSI mean-reversion
 - [ ] Breakout / Donchian channel with an ATR stop
 - [ ] Grid trading and dollar-cost averaging
-- [ ] Multi-symbol strategies (pairs trading, momentum rotation across a basket)
+- [ ] Multi-symbol strategies: pairs trading (momentum rotation is done)
+- [ ] Long multi-symbol backtests use 1-3 GB each (11 pairs of 1h fill bars
+      over five years): the summary keeps an equity point and the marks of
+      every symbol at each fill bar. Thin the curve (or keep it only for
+      `--equity-csv`), so several backtests can run at once.
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
 #### Market maker
@@ -841,6 +845,14 @@ the header of the code concerned.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.
+- [x] `momentum_rotation`: hold the `top_n` of `[general] symbols` by their
+      return over `lookback_bars`, rebalanced every `rebalance_bars`. On 11
+      Binance.US USDT pairs, daily bars, 2022 to Oct 2026 (1h fills, 2 bps
+      fees, 5 bps slippage), 28 days and the top 3 made +973% (drawdown
+      68%), +76k of the +97k from ZEC; without ZEC +128% (drawdown 56%),
+      against +63% (67%) for holding BTC: by year -41% / +167% / +53% /
+      -12% / +7% against BTC's -64% / +156% / +121% / -6% / -12%. Short
+      lookbacks with one holding were erratic without ZEC.
 - [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
       confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
       and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h

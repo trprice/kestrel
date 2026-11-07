@@ -15,6 +15,7 @@
 #include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/strategy/breakout.hpp"
 #include "kestrel/strategy/market_maker.hpp"
+#include "kestrel/strategy/momentum_rotation.hpp"
 #include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/kraken_trading_venue.hpp"
@@ -175,6 +176,11 @@ class ParamReader {
                                  " is not in [general] symbols");
         }
         return *symbol;
+    }
+
+    // The [general] symbols, for a strategy that trades them all.
+    const std::vector<types::Symbol>& Universe() const {
+        return mCfg.GetSymbols();
     }
 
     Result<types::Decimal> Quantity(const std::string& key) {
@@ -555,6 +561,35 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     }
 }
 
+Result<StrategyPtr> BuildMomentumRotation(ParamReader& p) {
+    strategy::MomentumRotationParams params;
+    params.symbols = p.Universe();
+    std::optional<types::Error> error;
+    Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
+    Take(p.Count("lookback_bars", params.lookback_bars), params.lookback_bars,
+         error);
+    Take(p.Count("rebalance_bars", params.rebalance_bars),
+         params.rebalance_bars, error);
+    Take(p.Count("top_n", params.top_n), params.top_n, error);
+    Take(p.Flag("positive_only", params.positive_only), params.positive_only,
+         error);
+    Take(p.Number("invest_fraction", params.invest_fraction),
+         params.invest_fraction, error);
+    if (error) {
+        return std::unexpected(*error);
+    }
+    if (auto ok = p.Finish(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    try {
+        return StrategyPtr(
+            std::make_unique<strategy::MomentumRotation>(std::move(params)));
+    } catch (const std::invalid_argument& e) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         std::string("[strategy] ") + e.what());
+    }
+}
+
 struct StrategyEntry {
     const char* name;
     Result<StrategyPtr> (*build)(ParamReader&);
@@ -564,6 +599,7 @@ constexpr StrategyEntry kStrategies[] = {
     {"sma_crossover", BuildSmaCrossover},
     {"market_maker", BuildMarketMaker},
     {"breakout", BuildBreakout},
+    {"momentum_rotation", BuildMomentumRotation},
 };
 
 // Whether the provider's TradingVenue is a real implementation. Update this
