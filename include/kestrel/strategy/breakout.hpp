@@ -81,6 +81,21 @@ struct BreakoutParams {
     std::size_t trend_sma = 0;
     // On a market that closes: sell in OnSessionClosing.
     bool flatten_at_close = false;
+    // Volume confirmation: the breakout's first close above the trigger
+    // counts only if its bar traded at least this many times the average
+    // volume of the volume_bars bars before it; zero turns it off. Needs
+    // confirm kCloses or entry kThrowback: a buy-stop fills before its bar's
+    // volume is known.
+    types::Decimal volume_ratio;
+    std::size_t volume_bars = 20;
+    // Once a bar closes this many times the trade's risk (the entry less the
+    // first stop) above the entry, the protective stop is raised to the
+    // entry (breakeven, less fees); zero turns it off.
+    types::Decimal breakeven_r;
+    // On each close the stop is raised to the lowest low of the last
+    // trail_bars bars, less stop_buffer_bps; it is never lowered. Zero turns
+    // it off.
+    std::size_t trail_bars = 0;
 };
 
 // Long-only breakout of a bar setup, after Fidelity's "Identifying Chart
@@ -114,6 +129,18 @@ struct BreakoutParams {
 // shares for both, and the venue has no one-cancels-other). So does the
 // max_hold_bars-th bar held, and with flatten_at_close the session's closing
 // hook. A downward break is only ever an exit: there is no shorting.
+// With breakeven_r or trail_bars, a close that is not an exit can raise the
+// stop (it is cancelled and placed again at the new level; never lowered,
+// and never at or above the close). While the market is closed (daily
+// bars, or a bar that closes the session) the new stop is placed at the next
+// open. A raised stop the venue refuses there (an open gapped through it) is
+// replaced by a market sell, as is a stop to be placed again after a close
+// through it.
+//
+// With volume_ratio, the first close above the trigger (of confirm_closes,
+// or the throwback's) must come on volume_ratio times the average volume of
+// the volume_bars bars before it; one on less does not count, as if it had
+// closed below. Bars without volume never confirm.
 //
 // On a market that closes, intraday bars: nothing is armed while it is
 // closed, and an armed entry is cancelled in OnSessionClosing, so a setup does
@@ -157,7 +184,9 @@ struct BreakoutParams {
 class Breakout : public Strategy {
    public:
     // Throws std::invalid_argument for a quantity that is not positive, an
-    // nr_bars under 2, a negative buffer, percent or multiple, zero
+    // nr_bars under 2, a negative buffer, percent, multiple, volume_ratio or
+    // breakeven_r, a volume_ratio without confirm kCloses or entry
+    // kThrowback, zero volume_bars, zero
     // arm_bars, confirm_closes, throwback_bars, min_touches, decline_bars,
     // reclaim_bars, swing_bars or opening_bars, bottoms other than 2 or 3, a
     // touch_zone outside (0, 0.5), with kMultipleBottom a range_bars too few to
@@ -216,6 +245,13 @@ class Breakout : public Strategy {
     std::size_t ClosesNeeded() const;
     void EnterAtMarket(Context& context);
     void PlaceStop(Context& context);
+    // Long, on a close that is no exit: raises mLevels->stop as breakeven_r
+    // and trail_bars say, and marks the stop to be moved.
+    void RaiseStop(Context& context, const types::Bar& bar);
+    // Moves the resting stop to mLevels->stop (cancel, then place).
+    void MoveStop(Context& context);
+    // volume_ratio: whether `bar`, the newest, traded enough.
+    bool VolumeConfirms(Context& context, const types::Bar& bar) const;
     void Exit(Context& context, const char* why);
     // Cancels the entry: flat, or long if it had partly filled; still armed
     // if the cancel failed or the venue says it filled.
@@ -239,6 +275,8 @@ class Breakout : public Strategy {
     std::size_t mBarsHeld = 0;      // kLong: whole bars since the entry
     types::Timestamp mEntryTime;    // kLong: when the entry first filled
     types::Decimal mEntryPrice;     // the entry's first fill price
+    types::Decimal mRisk;           // kLong: the entry less the first stop
+    bool mStopMoved = false;  // kLong: mLevels->stop is above the resting stop
     types::Decimal mHeld;           // base asset bought and not yet sold
     std::optional<types::Decimal> mTarget;
     Due mDue = Due::kStop;

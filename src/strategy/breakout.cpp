@@ -66,10 +66,21 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
     }
     if (mParams.stop_buffer_bps.IsNegative() ||
         mParams.confirm_percent.IsNegative() ||
-        mParams.target_multiple.IsNegative()) {
+        mParams.target_multiple.IsNegative() ||
+        mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative()) {
         throw std::invalid_argument(
-            "stop_buffer_bps, confirm_percent and target_multiple cannot be "
-            "negative");
+            "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio "
+            "and breakeven_r cannot be negative");
+    }
+    if (mParams.volume_bars == 0) {
+        throw std::invalid_argument("volume_bars must be positive");
+    }
+    if (mParams.volume_ratio.Sign() > 0 &&
+        mParams.confirm != BreakoutParams::Confirm::kCloses &&
+        mParams.entry != BreakoutParams::Entry::kThrowback) {
+        throw std::invalid_argument(
+            "volume_ratio needs confirm = closes or entry = throwback: a "
+            "buy-stop fills before its bar's volume is known");
     }
 }
 
@@ -91,7 +102,10 @@ Requirements Breakout::Needs() const {
     } else if (mParams.setup == BreakoutParams::Setup::kOpeningRange) {
         setup_bars = mParams.opening_bars + 1;  // and the bar before the open
     }
-    needs.warmup_bars = std::max(setup_bars, mParams.trend_sma);
+    needs.warmup_bars =
+        std::max({setup_bars, mParams.trend_sma, mParams.trail_bars,
+                  mParams.volume_ratio.Sign() > 0 ? mParams.volume_bars + 1
+                                                  : std::size_t{0}});
     return needs;
 }
 
@@ -216,7 +230,8 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             }
             break;  // expired: this bar may be a new setup
         case State::kWatching:
-            if (bar.close > mLevels->trigger) {
+            if (bar.close > mLevels->trigger &&
+                (mCloses > 0 || VolumeConfirms(context, bar))) {
                 if (++mCloses >= ClosesNeeded()) {
                     const bool throwback =
                         mParams.entry == BreakoutParams::Entry::kThrowback;
@@ -266,6 +281,9 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
                            mBarsHeld >= mParams.max_hold_bars) {
                     due = "held long enough";
                 }
+                if (!due) {
+                    RaiseStop(context, bar);
+                }
                 // Orders are refused while closed: the resting stop
                 // protects until the next bar in the session, or with daily
                 // bars until the open, where a due exit sells.
@@ -276,7 +294,16 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
                     return;
                 }
                 if (mStopId.empty()) {
-                    PlaceStop(context);  // an earlier attempt failed
+                    // An earlier attempt failed. A (raised) stop the price
+                    // has already fallen through would be refused, or sell
+                    // at once: sell now.
+                    if (!due && bar.close <= mLevels->stop) {
+                        due = "closed through its stop";
+                    } else if (!due) {
+                        PlaceStop(context);
+                    }
+                } else if (mStopMoved && !due) {
+                    MoveStop(context);
                 }
                 if (due) {
                     Exit(context, due);
@@ -398,6 +425,8 @@ void Breakout::GoLong(Context& context) {
     mBarsHeld = 0;
     mEntryId.clear();
     mTarget.reset();
+    mRisk = mEntryPrice - mLevels->stop;
+    mStopMoved = false;
     if (mParams.target_multiple.Sign() > 0) {
         mTarget = mEntryPrice + mParams.target_multiple * mLevels->height;
     }
@@ -410,6 +439,7 @@ void Breakout::GoLong(Context& context) {
 
 void Breakout::GoFlat() {
     mState = State::kFlat;
+    mStopMoved = false;
     mExitDue = nullptr;
     mLevels.reset();
     mTarget.reset();
@@ -437,6 +467,7 @@ void Breakout::CancelOther(Context& context, std::string& id,
 }
 
 void Breakout::PlaceStop(Context& context) {
+    mStopMoved = false;  // placed at mLevels->stop, or retried next bar
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kSell;
@@ -449,6 +480,113 @@ void Breakout::PlaceStop(Context& context) {
         // Unprotected until the next bar, which tries again.
         spdlog::error("breakout: {} is held without a protective stop",
                       mParams.symbol);
+    }
+}
+
+bool Breakout::VolumeConfirms(Context& context, const types::Bar& bar) const {
+    if (mParams.volume_ratio.Sign() <= 0) {
+        return true;
+    }
+    const auto bars = context.Bars(mParams.symbol, mParams.timeframe);
+    const std::size_t n = mParams.volume_bars;
+    if (bars.size() < n + 1) {
+        return false;
+    }
+    Decimal total;
+    for (std::size_t i = bars.size() - 1 - n; i < bars.size() - 1; ++i) {
+        total += bars[i].volume;
+    }
+    const Decimal average =
+        Decimal::Divide(total, Decimal::FromInt(static_cast<std::int64_t>(n)),
+                        8, Rounding::kNearest);
+    // No volume (a source without it, or a dead market) confirms nothing.
+    const bool enough =
+        average.Sign() > 0 && bar.volume >= mParams.volume_ratio * average;
+    if (!enough) {
+        spdlog::info(
+            "breakout: {} closed above {} on {} volume, under {}x the average "
+            "of {}; not counted",
+            mParams.symbol, mLevels->trigger.ToString(),
+            bar.volume.Normalized().ToString(),
+            mParams.volume_ratio.Normalized().ToString(),
+            average.Normalized().ToString());
+    }
+    return enough;
+}
+
+void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
+    if (mParams.breakeven_r.Sign() <= 0 && mParams.trail_bars == 0) {
+        return;
+    }
+    auto info = context.SymbolInfo(mParams.symbol);
+    if (!info) {
+        return;
+    }
+    const Decimal& tick = info->tick_size;
+    Decimal level = mLevels->stop;
+    const char* why = nullptr;
+    if (mParams.breakeven_r.Sign() > 0 && mRisk.Sign() > 0 &&
+        bar.close >= mEntryPrice + mParams.breakeven_r * mRisk) {
+        const Decimal even =
+            mEntryPrice.RoundToIncrement(tick, Rounding::kDown);
+        if (even > level) {
+            level = even;
+            why = "breakeven";
+        }
+    }
+    if (mParams.trail_bars > 0) {
+        const auto bars = context.Bars(mParams.symbol, mParams.timeframe);
+        if (bars.size() >= mParams.trail_bars) {
+            Decimal low = bars.back().low;
+            for (std::size_t i = bars.size() - mParams.trail_bars;
+                 i < bars.size(); ++i) {
+                low = std::min(low, bars[i].low);
+            }
+            const Decimal buffer =
+                Decimal::Divide(mParams.stop_buffer_bps,
+                                Decimal::FromInt(10000), 8, Rounding::kNearest);
+            const Decimal trail = (low * (Decimal::FromInt(1) - buffer))
+                                      .RoundToIncrement(tick, Rounding::kDown);
+            if (trail > level) {
+                level = trail;
+                why = "trailing";
+            }
+        }
+    }
+    // A sell-stop at or above the price would sell at once.
+    if (why && level < bar.close) {
+        spdlog::info("breakout: {} stop raised from {} to {} ({})",
+                     mParams.symbol, mLevels->stop.ToString(), level.ToString(),
+                     why);
+        mLevels->stop = level;
+        mStopMoved = true;
+    }
+}
+
+void Breakout::MoveStop(Context& context) {
+    if (mStopId.empty()) {
+        PlaceStop(context);
+        return;
+    }
+    const auto cancelled = context.Venue().CancelOrder(mStopId);
+    if (!cancelled) {
+        // The old stop still protects; try again on the next bar.
+        spdlog::warn(
+            "breakout: cannot cancel the protective stop {} to move "
+            "it: {}",
+            mStopId, cancelled.error().ToString());
+        return;
+    }
+    if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
+        return;  // it sold first; its fill makes us flat
+    }
+    mStopId.clear();
+    PlaceStop(context);
+    if (mStopId.empty()) {
+        // Refused: most likely the price is already through it (an open
+        // gapping below a stop raised on the close), where a venue refuses a
+        // sell-stop. The raised stop said to be out: sell at market.
+        Exit(context, "the raised stop was refused");
     }
 }
 
@@ -631,6 +769,8 @@ void Breakout::OnSessionOpen(Context& context) {
     } else if (mState == State::kLong) {
         if (mStopId.empty()) {
             PlaceStop(context);
+        } else if (mStopMoved && !mExitDue) {
+            MoveStop(context);
         }
         if (mExitDue) {
             Exit(context, std::exchange(mExitDue, nullptr));

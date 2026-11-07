@@ -627,6 +627,14 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_EQ((*opening)->Needs().warmup_bars, 4u);  // and the bar before
     EXPECT_FALSE(make("opening_bars=0\n").has_value());
     EXPECT_FALSE(make("timeframe='1d'\nsetup='opening_range'\n").has_value());
+    auto volume = make(
+        "confirm='closes'\nvolume_ratio=2\nvolume_bars=30\nbreakeven_r=1\n"
+        "trail_bars=5\n");
+    ASSERT_OK(volume);
+    EXPECT_EQ((*volume)->Needs().warmup_bars, 31u);      // and the newest bar
+    EXPECT_FALSE(make("volume_ratio=2\n").has_value());  // a buy-stop
+    EXPECT_FALSE(make("confirm='closes'\nvolume_bars=0\n").has_value());
+    EXPECT_FALSE(make("breakeven_r=-1\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

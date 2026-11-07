@@ -838,6 +838,15 @@ the header of the code concerned.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.
+- [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
+      confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
+      and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h
+      on 7 crypto pairs, May-Oct 2026, filled on 1m bars: the buy-stop
+      baseline made +4,677; a close-confirmed entry +686, and +2,141 with
+      `volume_ratio = 2` (+1,845 and all 7 pairs up with `arm_bars = 3`);
+      `trail_bars = 10` +4,115 with a smaller drawdown (5.5% against 7.0%),
+      `trail_bars = 3` +3,141; `breakeven_r = 0.5` +3,743, and at 1 no
+      change, as the target comes first. None beat the baseline there.
 - [x] Daily bars on a market that closes: breakout places a daily setup's
       entry, and sells a target or time exit, at the next open (it never
       traded on daily stock bars before), and the backtest walks a daily

@@ -168,6 +168,15 @@ the entry, checked on closes.
 | `max_hold_bars` | exit after this many whole bars held (default 0: never) |
 | `trend_sma` | enter only while the close is above this many bars' average close (default 0: off) |
 | `flatten_at_close` | sell in the closing hook, before the session closes (default `false`) |
+| `volume_ratio`, `volume_bars` | volume confirmation: the breakout's first close above the trigger counts only on a bar that traded at least `volume_ratio` times the average volume of the `volume_bars` bars before it (defaults 0: off, and 20). A close on less is treated as a close below. Needs `confirm = "closes"` or `entry = "throwback"`: a buy-stop fills before its bar's volume is known |
+| `breakeven_r` | once a bar closes this many times the trade's risk (the entry less the first stop) above the entry, the stop is raised to the entry (rounded down to the tick), so the trade loses little more than fees, unless the price gaps through it (default 0: off). With the default `target_multiple` of 1 the target usually comes first, as the risk is about the setup's height |
+| `trail_bars` | on each close, raise the stop to the lowest low of the last `trail_bars` bars less `stop_buffer_bps` (default 0: off) |
+
+A raised stop is never lowered, and never placed at or above the close. It
+replaces the resting stop (cancelled, then placed again); on daily bars, and
+a bar that closes the session, at the next open. If the venue refuses the
+new stop (an open that gapped below it), the position is sold at market.
+Bars without volume never confirm a `volume_ratio` breakout.
 
 The setups. Each arms a buy-stop one tick above the level shown, with the
 protective stop `stop_buffer_bps` below the low shown and the target the

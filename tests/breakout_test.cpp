@@ -376,6 +376,56 @@ types::Fill FillOf(const char* order_id, Side side, const char* quantity,
 
 constexpr std::array<const char*, 4> kQuietBar = {"12", "12.5", "11.5", "12"};
 
+// The stop raised to breakeven (13.01) on a close of 15.1 is refused (as a
+// venue refuses a sell-stop above the price): sold at market instead.
+TEST(Breakout, ARefusedRaisedStopSellsAtMarket) {
+    auto params = Params();
+    params.target_multiple = D("0");
+    params.breakeven_r = D("1");
+    Breakout strategy(params);
+    FakeContext context;
+    Feed(strategy, context);  // armed: order-1
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);  // the stop at 10.98
+    context.venue.reject_type = types::OrderType::kStop;
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, {"13.8", "15.5", "13.5", "15.1"});
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-2"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].side, Side::kSell);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+}
+
+// A stop that could not be placed again, after a close through its level,
+// is a market sell, not a stop the venue would refuse.
+TEST(Breakout, AMissingStopAfterACloseThroughItSellsAtMarket) {
+    auto params = Params();
+    params.target_multiple = D("0");
+    Breakout strategy(params);
+    FakeContext context;
+    Feed(strategy, context);
+    context.venue.reject_type = types::OrderType::kStop;
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 1u);  // the stop was refused
+    context.venue.reject_type.reset();
+    Feed(strategy, context, {"12", "12", "10.5", "10.9"});  // below 10.98
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kMarket);
+}
+
+TEST(Breakout, BarsWithoutVolumeNeverConfirm) {
+    auto params = Params();
+    params.confirm = BreakoutParams::Confirm::kCloses;
+    params.confirm_closes = 1;
+    params.volume_ratio = D("2");
+    params.volume_bars = 3;
+    Breakout strategy(params);
+    FakeContext context;      // no volume anywhere
+    Feed(strategy, context);  // the NR4: watching
+    Feed(strategy, context, {"12.5", "13.5", "12.4", "13.2"});
+    EXPECT_TRUE(context.venue.orders.empty());
+}
+
 TEST(Breakout, APartlyFilledEntryThatExpiresIsHeldWithAStop) {
     Breakout strategy(Params());
     FakeContext context;
@@ -631,6 +681,23 @@ TEST(Breakout, DailyBarsEnterAndExitAtTheNextOpen) {
     EXPECT_EQ(result.fills[1].time, Day(7) + std::chrono::minutes(270));
 }
 
+// In at day 5's open, 13.5 (stop 10.98, a risk of 2.52); day 6 closes at
+// 16.1, a risk above, after the market: the stop moves to 13.5 at day 7's
+// open, and day 7 falls through it.
+TEST(Breakout, ADailyBreakevenStopMovesAtTheNextOpen) {
+    auto params = Params();
+    params.target_multiple = D("0");
+    params.breakeven_r = D("1");
+    const auto result = Daily({{"13.5", "14", "13.4", "13.8"},
+                               {"13.8", "16.5", "13.5", "16.1"},
+                               {"15", "15.2", "13", "13.2"}},
+                              8, params);
+    ASSERT_EQ(result.fills.size(), 2u);
+    EXPECT_EQ(result.fills[1].side, Side::kSell);
+    EXPECT_EQ(result.fills[1].price, D("13.5"));
+    EXPECT_GE(result.fills[1].time, Day(7));
+}
+
 TEST(Breakout, ADailyEntryLastsOneSession) {
     // Day 5 stays under 13.01 (and, wide, is no new setup); the entry is
     // cancelled at its close, so day 6's rise through it buys nothing.
@@ -837,6 +904,122 @@ TEST(Breakout, AnOpeningRangeOnAMarketThatNeverClosesIsTheUtcDays) {
     EXPECT_GE(result->fills[0].time, Hour(26));
 }
 
+// In at 13.01 in hour 5 (stop 10.98: a risk of 2.03); hour 6 closes at
+// 15.1, more than one risk above the entry; hour 7 falls back to 12.
+std::shared_ptr<ReplayDataSource> UpThenBack() {
+    return Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                    {"13.8", "15.5", "13.5", "15.1"},
+                    {"15", "15", "12", "12.5"}});
+}
+
+BreakoutParams NoTarget() {
+    auto p = Params();
+    p.target_multiple = D("0");
+    return p;
+}
+
+TEST(Breakout, WithoutAMovingStopTheFirstStopStays) {
+    const auto trades = Backtest(UpThenBack(), NoTarget());
+    ASSERT_EQ(trades.size(), 1u);  // 12 never reaches 10.98
+}
+
+TEST(Breakout, BreakevenRaisesTheStopToTheEntry) {
+    auto params = NoTarget();
+    params.breakeven_r = D("1");  // 15.1 >= 13.01 + 2.03
+    const auto trades = Backtest(UpThenBack(), params);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].side, Side::kSell);
+    EXPECT_EQ(trades[1].price, D("13.01"));
+}
+
+TEST(Breakout, BreakevenWaitsForTheMultipleOfTheRisk) {
+    auto params = NoTarget();
+    params.breakeven_r = D("1.5");  // 13.01 + 3.045 = 16.055: not reached
+    EXPECT_EQ(Backtest(UpThenBack(), params).size(), 1u);
+}
+
+TEST(Breakout, ATrailingStopFollowsTheLowestRecentLow) {
+    auto params = NoTarget();
+    // Hours 5 and 6: lowest low 12.4, less 10 bps: 12.38.
+    params.trail_bars = 2;
+    const auto trades = Backtest(UpThenBack(), params);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].price, D("12.38"));
+}
+
+TEST(Breakout, TheHigherOfBreakevenAndTheTrailWins) {
+    auto params = NoTarget();
+    params.trail_bars = 2;
+    params.breakeven_r = D("1");
+    const auto trades = Backtest(UpThenBack(), params);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].price, D("13.01"));
+}
+
+// Hourly bars with volume: {open, high, low, close, volume}.
+std::shared_ptr<ReplayDataSource> VolumeBars(
+    const std::vector<std::array<const char*, 5>>& bars) {
+    auto data = std::make_shared<ReplayDataSource>();
+    std::vector<types::Bar> series;
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        types::Bar bar;
+        bar.open_time = Hour(static_cast<int>(i));
+        bar.open = D(bars[i][0]);
+        bar.high = D(bars[i][1]);
+        bar.low = D(bars[i][2]);
+        bar.close = D(bars[i][3]);
+        bar.volume = D(bars[i][4]);
+        series.push_back(bar);
+    }
+    data->AddBars(kSymbol, Timeframe::kH1, std::move(series));
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.0001"), D("0.0001"), {}});
+    return data;
+}
+
+// The NR4 of Nr4Then on 10 a bar; hour 5 closes above 13.01 on 15, hour 6 on
+// 30 (the three before average 11.67: twice that is 23.33).
+std::shared_ptr<ReplayDataSource> BreakoutVolumes() {
+    return VolumeBars({{"12", "14", "10", "12", "10"},
+                       {"12", "13", "10", "12", "10"},
+                       {"12", "15", "10", "12", "10"},
+                       {"12", "14", "10", "12", "10"},
+                       {"12", "13", "11", "12", "10"},
+                       {"12.5", "13.5", "12.4", "13.2", "15"},
+                       {"13.2", "13.6", "13.1", "13.5", "30"},
+                       {"13.6", "13.8", "13.4", "13.7", "10"}});
+}
+
+BreakoutParams OnVolume() {
+    auto p = Params();
+    p.confirm = BreakoutParams::Confirm::kCloses;
+    p.confirm_closes = 1;
+    p.arm_bars = 3;
+    p.volume_ratio = D("2");
+    p.volume_bars = 3;
+    return p;
+}
+
+TEST(Breakout, WithoutVolumeTheFirstCloseAboveConfirms) {
+    auto params = OnVolume();
+    params.volume_ratio = D("0");
+    const auto trades = Backtest(BreakoutVolumes(), params);
+    ASSERT_GE(trades.size(), 1u);
+    EXPECT_EQ(trades[0].price, D("13.2"));  // hour 6's open
+}
+
+TEST(Breakout, AVolumeRatioWaitsForACloseOnEnoughVolume) {
+    const auto trades = Backtest(BreakoutVolumes(), OnVolume());
+    ASSERT_GE(trades.size(), 1u);
+    EXPECT_EQ(trades[0].side, Side::kBuy);
+    EXPECT_EQ(trades[0].price, D("13.6"));  // hour 7's open
+}
+
+TEST(Breakout, ACloseOnLowVolumeIsNotABreakout) {
+    auto params = OnVolume();
+    params.arm_bars = 1;  // only hour 5's close could confirm
+    EXPECT_TRUE(Backtest(BreakoutVolumes(), params).empty());
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -882,6 +1065,16 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = OpeningRange();
     bad.timeframe = Timeframe::kD1;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.volume_ratio = D("2");  // a buy-stop entry
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.confirm = BreakoutParams::Confirm::kCloses;
+    EXPECT_NO_THROW(Breakout{bad});
+    bad.volume_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.breakeven_r = D("-1");
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
 }
 

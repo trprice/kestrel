@@ -530,6 +530,12 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Whole("trend_sma", params.trend_sma), params.trend_sma, error);
     Take(p.Flag("flatten_at_close", params.flatten_at_close),
          params.flatten_at_close, error);
+    Take(p.Number("volume_ratio", params.volume_ratio), params.volume_ratio,
+         error);
+    Take(p.Count("volume_bars", params.volume_bars), params.volume_bars, error);
+    Take(p.Number("breakeven_r", params.breakeven_r), params.breakeven_r,
+         error);
+    Take(p.Whole("trail_bars", params.trail_bars), params.trail_bars, error);
     if (error) {
         return std::unexpected(*error);
     }

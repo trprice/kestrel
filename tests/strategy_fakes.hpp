@@ -29,6 +29,9 @@ class RecordingVenue : public trading::TradingVenue {
         if (reject_category) {
             return types::MakeError(*reject_category, "no");
         }
+        if (reject_type && request.type == *reject_type) {
+            return types::MakeError(types::ErrorCategory::kRejected, "no");
+        }
         orders.push_back(request);
         return types::OrderAcknowledgement{
             "order-" + std::to_string(orders.size()), request.client_order_id,
@@ -103,6 +106,7 @@ class RecordingVenue : public trading::TradingVenue {
     bool pushes = false;
     bool reject_orders = false;
     std::optional<types::ErrorCategory> reject_category;  // refuse with this
+    std::optional<types::OrderType> reject_type;  // refuse orders of this type
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
