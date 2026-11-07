@@ -134,6 +134,21 @@ class PaperTradingVenue : public TradingVenue {
     std::vector<types::Decimal> RestingPrices(
         const types::Symbol& symbol) const;
 
+    // While set, an order placed is not matched against the quote it was
+    // placed on: it enters the book at the next quote, checked and matched
+    // there as on placement (with order_latency, at the first quote after it
+    // arrives). A market order, a stop it is already past and a marketable
+    // limit fill at that quote, as a taker, and a post-only order that would
+    // take there is rejected. A backtest sets it while a strategy handles a
+    // bar's close, so that what the close called for trades at the next
+    // price replayed (the next bar's open), not at the close it was decided
+    // on. A buy is still reserved at the placing quote's price, so one that
+    // costs more than the account has free at its fill (a gap up) is
+    // cancelled then. Fill-or-kill and immediate-or-cancel orders are not
+    // deferred: they are decided at once, against the quote placed on.
+    // Thread-safe.
+    void SetDeferMatching(bool defer);
+
     std::string_view Name() const override { return "paper"; }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
@@ -221,6 +236,7 @@ class PaperTradingVenue : public TradingVenue {
     const std::function<types::Timestamp()> mClock;
 
     mutable std::mutex mMutex;
+    bool mDeferMatching = false;  // under mMutex
     std::map<std::string, Order>
         mOrders;  // by order id; ids sort in creation order
     // The orders in mOrders that may still be active, in creation order

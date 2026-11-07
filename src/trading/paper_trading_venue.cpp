@@ -68,6 +68,9 @@ struct PaperTradingVenue::Order {
     bool arrived = true;
     bool cancelling = false;
     bool post_only = false;
+    // SetDeferMatching: placed while set, the order enters the book (is
+    // checked and matched as it would be on placement) at the next quote.
+    bool deferred = false;
 
     Decimal Remaining() const {
         return status.quantity - status.filled_quantity;
@@ -445,6 +448,9 @@ void PaperTradingVenue::ProcessPending() {
 
 void PaperTradingVenue::Arrive(Order& order) {
     order.arrived = true;
+    if (order.deferred) {
+        return;  // checked and entered at the next quote, in OnQuote
+    }
     const auto quote_it = mQuotes.find(order.status.symbol);
     const types::Quote* quote =
         quote_it == mQuotes.end() ? nullptr : &quote_it->second;
@@ -471,6 +477,9 @@ void PaperTradingVenue::Arrive(Order& order) {
 
 void PaperTradingVenue::Enter(Order& order) {
     const auto quote_it = mQuotes.find(order.status.symbol);
+    if (order.deferred) {
+        return;  // OnQuote enters it at the next quote
+    }
     if (quote_it != mQuotes.end()) {
         TryMatch(order, quote_it->second, /*placing=*/true);
         if (types::IsActive(order.status.state) &&
@@ -515,10 +524,34 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
 
     ExpireDayOrders();
     for (Order* order : mActive) {
-        if (order->status.symbol == quote.symbol && order->arrived) {
-            TryMatch(*order, latest, /*placing=*/false, trade);
+        if (order->status.symbol != quote.symbol || !order->arrived) {
+            continue;
         }
+        if (order->deferred) {
+            // Its first quote: checked and matched as on placement, so a
+            // marketable limit takes the touch, and a post-only order that
+            // would take is refused.
+            order->deferred = false;
+            const auto& limit = order->status.limit_price;
+            if (order->post_only && limit &&
+                (order->status.side == Side::kBuy
+                     ? latest.ask && *limit >= *latest.ask
+                     : latest.bid && *limit <= *latest.bid)) {
+                Close(*order, OrderState::kRejected,
+                      "post-only order would take liquidity at " +
+                          limit->ToString());
+                continue;
+            }
+            Enter(*order);
+            continue;
+        }
+        TryMatch(*order, latest, /*placing=*/false, trade);
     }
+}
+
+void PaperTradingVenue::SetDeferMatching(bool defer) {
+    std::lock_guard lock(mMutex);
+    mDeferMatching = defer;
 }
 
 std::vector<Decimal> PaperTradingVenue::RestingPrices(
@@ -585,6 +618,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
 
     Order order;
     order.post_only = request.post_only;
+    order.deferred = mDeferMatching &&
+                     request.time_in_force != types::TimeInForce::kIoc &&
+                     request.time_in_force != types::TimeInForce::kFok;
     order.info = *info;
     order.base_asset = parts->base;
     order.quote_asset = parts->quote.value_or(mOptions.default_quote_asset);
@@ -635,8 +671,8 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
         order.reserve_unit = ref_price * (one + fee_rate);
     }
     // Delayed, the post-only check is made against the book the order
-    // arrives at (Arrive).
-    if (!delayed && request.post_only && quote &&
+    // arrives at (Arrive); deferred, against the next quote (OnQuote).
+    if (!delayed && !order.deferred && request.post_only && quote &&
         (request.side == Side::kBuy
              ? quote->ask && *request.limit_price >= *quote->ask
              : quote->bid && *request.limit_price <= *quote->bid)) {

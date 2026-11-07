@@ -94,7 +94,7 @@ std::vector<Trade> Backtest(std::shared_ptr<ReplayDataSource> data,
 
 TEST(Breakout, EntersOnTheBreakAndTakesProfitAtTheTarget) {
     // Hour 5 breaks 13.01 inside the bar; hour 6 closes at 15.2, past the
-    // target 13.01 + 2 = 15.01: sold at that close.
+    // target 13.01 + 2 = 15.01: sold at the next price, hour 7's open.
     const auto trades = Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
                                           {"13.8", "15.5", "13.5", "15.2"},
                                           {"15", "15", "15", "15"}}),
@@ -103,7 +103,7 @@ TEST(Breakout, EntersOnTheBreakAndTakesProfitAtTheTarget) {
     EXPECT_EQ(trades[0].side, Side::kBuy);
     EXPECT_EQ(trades[0].price, D("13.01"));
     EXPECT_EQ(trades[1].side, Side::kSell);
-    EXPECT_EQ(trades[1].price, D("15.2"));
+    EXPECT_EQ(trades[1].price, D("15"));
 }
 
 TEST(Breakout, TheProtectiveStopSellsBelowTheSetup) {
@@ -171,7 +171,7 @@ TEST(Breakout, ExitsAfterMaxHoldBars) {
                                  params);
     ASSERT_EQ(trades.size(), 2u);
     EXPECT_EQ(trades[1].side, Side::kSell);
-    EXPECT_EQ(trades[1].price, D("13.9"));  // hour 6's close
+    EXPECT_EQ(trades[1].price, D("14"));  // after hour 6: hour 7's open
 }
 
 TEST(Breakout, RangeSetupBreaksTheLastBarsHigh) {
@@ -243,12 +243,13 @@ class DailySession : public types::TradingCalendar {
 };
 
 // Hour 6's bar reaches the target but closes at 07:00, after the market:
-// the exit waits (the stop resting overnight) and goes at the close of the
-// next session's first bar, hour 28's (04:00 to 05:00 the next day).
+// the exit waits (the stop resting overnight), is called for at the close of
+// the next session's first bar, hour 28's (04:00 to 05:00 the next day), and
+// sells at hour 29's open.
 TEST(Breakout, ATargetReachedAfterTheCloseExitsInTheNextSession) {
     std::vector<std::array<const char*, 4>> after = {
         {"12.5", "14", "12.4", "13.8"}, {"13.8", "15.5", "13.5", "15.2"}};
-    for (int h = 7; h <= 28; ++h) {
+    for (int h = 7; h <= 29; ++h) {
         after.push_back({"15.3", "15.3", "15.3", "15.3"});
     }
     auto data = Nr4Then(after);
@@ -274,19 +275,20 @@ BreakoutParams Throwback() {
 TEST(Breakout, AThrowbackBuysTheBrokenLevelAsAMaker) {
     // Hour 5 closes at 13.8, above the trigger 13.01: a limit at the setup's
     // high, 13. Hour 6 comes back to 12.9: bought at 13, a maker. Hour 7
-    // closes at 15.2, past the target 13 + 2 = 15.
-    auto result = backtest::RunBacktest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
-                                                 {"13.8", "14.2", "12.9", "14"},
-                                                 {"14", "15.5", "14", "15.2"}}),
-                                        std::make_unique<Breakout>(Throwback()),
-                                        Options(8));
+    // closes at 15.2, past the target 13 + 2 = 15: sold at hour 8's open.
+    auto result = backtest::RunBacktest(
+        Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                 {"13.8", "14.2", "12.9", "14"},
+                 {"14", "15.5", "14", "15.2"},
+                 {"15.1", "15.1", "15.1", "15.1"}}),
+        std::make_unique<Breakout>(Throwback()), Options(9));
     ASSERT_TRUE(result.has_value()) << result.error().ToString();
     ASSERT_EQ(result->fills.size(), 2u);
     EXPECT_EQ(result->fills[0].side, Side::kBuy);
     EXPECT_EQ(result->fills[0].price, D("13"));
     EXPECT_EQ(result->fills[0].liquidity, types::Liquidity::kMaker);
     EXPECT_EQ(result->fills[1].side, Side::kSell);
-    EXPECT_EQ(result->fills[1].price, D("15.2"));
+    EXPECT_EQ(result->fills[1].price, D("15.1"));
 }
 
 TEST(Breakout, ABreakoutThatNeverLooksBackIsMissed) {

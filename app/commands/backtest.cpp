@@ -18,11 +18,12 @@ class BacktestCommand : public Command {
    public:
     BacktestCommand(std::string strategy_name, types::Timestamp from,
                     types::Timestamp to, bool quotes_from_trades,
-                    std::string equity_csv)
+                    bool fill_at_close, std::string equity_csv)
         : mName(std::move(strategy_name)),
           mFrom(from),
           mTo(to),
           mQuotesFromTrades(quotes_from_trades),
+          mFillAtClose(fill_at_close),
           mEquityCsv(std::move(equity_csv)) {}
 
     int Run(const config::Configuration& config) override {
@@ -81,6 +82,7 @@ class BacktestCommand : public Command {
         options.risk = *limits;
         options.start = mFrom;
         options.end = mTo;
+        options.fill_at_close = mFillAtClose;
         auto result =
             backtest::RunBacktest(*replay, std::move(*strategy), options);
         if (!result) {
@@ -227,6 +229,7 @@ class BacktestCommand : public Command {
     types::Timestamp mFrom;
     types::Timestamp mTo;
     bool mQuotesFromTrades;
+    bool mFillAtClose;
     std::string mEquityCsv;
 };
 
@@ -235,6 +238,7 @@ struct Args {
     std::string from;
     std::string to;
     bool quotes_from_trades = false;
+    bool fill_at_close = false;
     std::string equity_csv;
 };
 
@@ -261,6 +265,10 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                   "Replay quotes rebuilt from stored trades (`trades --store`) "
                   "instead of recorded quotes; approximate, see "
                   "docs/database.md");
+    sub->add_flag("--fill-at-close", args->fill_at_close,
+                  "Fill an order placed on a bar's close at that close, not "
+                  "at the next price replayed (the next bar's open); "
+                  "optimistic");
     sub->add_option("--equity-csv", args->equity_csv,
                     "Also write the equity curve, sampled every minute, to "
                     "this CSV file")
@@ -269,7 +277,7 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
             *types::ParseTimestamp(args->to), args->quotes_from_trades,
-            args->equity_csv);
+            args->fill_at_close, args->equity_csv);
     });
 }
 

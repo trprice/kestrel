@@ -212,8 +212,16 @@ TEST(QuotesFromTradesTest, ATradeThroughTheOtherSideMovesItATickAway) {
     }
 }
 
+// These fill at the close an order was placed on (fill_at_close), the
+// arithmetic the expectations below use; the default is checked further on.
+BacktestOptions AtClose() {
+    auto o = Options();
+    o.fill_at_close = true;
+    return o;
+}
+
 TEST(BacktestTest, RunsASmaCrossoverEndToEnd) {
-    auto result = RunBacktest(Data(kCloses), Sma(), Options());
+    auto result = RunBacktest(Data(kCloses), Sma(), AtClose());
     ASSERT_OK(result);
 
     EXPECT_EQ(result->bars_replayed, 4u);
@@ -241,7 +249,7 @@ TEST(BacktestTest, RunsASmaCrossoverEndToEnd) {
 }
 
 TEST(BacktestTest, SummarizesTheRun) {
-    auto result = RunBacktest(Data(kCloses), Sma(), Options());
+    auto result = RunBacktest(Data(kCloses), Sma(), AtClose());
     ASSERT_OK(result);
     ASSERT_OK(result->summary);
     const auto& s = *result->summary;
@@ -268,7 +276,7 @@ TEST(BacktestTest, SummarizesTheRun) {
 }
 
 TEST(BacktestTest, AppliesSlippageAndFees) {
-    auto options = Options();
+    auto options = AtClose();
     options.paper.slippage = D("0.01");
     options.paper.taker_fee_rate = D("0.001");
     auto result = RunBacktest(Data(kCloses), Sma(), options);
@@ -277,6 +285,39 @@ TEST(BacktestTest, AppliesSlippageAndFees) {
     EXPECT_EQ(result->fills[0].price, D("20.2"));  // ask * 1.01
     EXPECT_EQ(result->fills[0].fee, D("0.0101"));  // 0.1% of 10.1
     EXPECT_EQ(result->fills[1].price, D("4.95"));  // bid * 0.99
+}
+
+TEST(BacktestTest, AnOrderPlacedOnACloseFillsAtTheNextOpen) {
+    // The up-cross at hour 5's close buys at hour 6's open; the down-cross at
+    // hour 7's close (5) sells at hour 8's open, 6, not at that close.
+    auto data = std::make_shared<ReplayDataSource>();
+    auto bars = Series(kCloses);
+    types::Bar next = BarAt(8, "7");
+    next.open = D("6");
+    next.low = D("6");
+    bars.push_back(next);
+    data->AddBars(kSymbol, Timeframe::kH1, bars);
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    auto options = Options();
+    options.end = Hour(9);
+    auto result = RunBacktest(data, Sma(), options);
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 2u);
+    EXPECT_EQ(result->fills[0].price, D("20"));
+    EXPECT_EQ(result->fills[0].time, Hour(6));
+    EXPECT_EQ(result->fills[1].side, Side::kSell);
+    EXPECT_EQ(result->fills[1].price, D("6"));
+    EXPECT_EQ(result->fills[1].time, Hour(8));
+}
+
+TEST(BacktestTest, AnOrderPlacedOnTheLastCloseDoesNotFill) {
+    // Nothing is replayed after hour 7's close, so its sell never trades.
+    auto result = RunBacktest(Data(kCloses), Sma(), Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].side, Side::kBuy);
+    ASSERT_EQ(result->positions.size(), 1u);
+    EXPECT_EQ(result->positions[0].quantity, D("0.5"));
 }
 
 TEST(BacktestTest, IsRepeatable) {

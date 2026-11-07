@@ -146,6 +146,67 @@ TEST(PaperMarket, BuyFillsAtAskPlusSlippageWithTakerFee) {
     EXPECT_EQ((*positions)[0].average_price, D("50025.0"));
 }
 
+TEST(PaperMarket, DeferredMatchingWaitsForTheNextQuote) {
+    Fixture f;
+    f.options.slippage = D("0");
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto ack = venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.05"));
+    ASSERT_OK(ack);
+    EXPECT_TRUE(types::IsActive(ack->state));  // not filled at this quote
+    // Immediate-or-cancel is still decided at once.
+    auto ioc = Order(Side::kBuy, OrderType::kMarket, "0.05");
+    ioc.time_in_force = TimeInForce::kIoc;
+    auto ioc_ack = venue->PlaceOrder(ioc);
+    ASSERT_OK(ioc_ack);
+    EXPECT_EQ(ioc_ack->state, OrderState::kFilled);
+    venue->SetDeferMatching(false);
+
+    venue->OnQuote(Q("50090.0", "50100.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 2u);
+    EXPECT_EQ((*fills)[0].price, D("50000.0"));  // the IOC, at once
+    EXPECT_EQ((*fills)[1].order_id, ack->order_id);
+    EXPECT_EQ((*fills)[1].price, D("50100.0"));  // the next quote's ask
+}
+
+TEST(PaperMarket, ADeferredMarketableLimitTakesTheNextTouch) {
+    Fixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto ack = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.05", "50500.0"));
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+    venue->OnQuote(Q("50090.0", "50100.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 1u);
+    // At the touch as a taker, as on placement; not at its limit as a maker.
+    EXPECT_EQ((*fills)[0].price, D("50100.0"));
+    EXPECT_EQ((*fills)[0].liquidity, types::Liquidity::kTaker);
+}
+
+TEST(PaperMarket, ADeferredPostOnlyOrderIsCheckedAtTheNextQuote) {
+    Fixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto req = Order(Side::kBuy, OrderType::kLimit, "0.05", "49995.0");
+    req.post_only = true;
+    auto ack = venue->PlaceOrder(req);  // would rest at this quote
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+    venue->OnQuote(Q("49980.0", "49990.0"));  // but would take at the next
+    auto order = venue->GetOrder(ack->order_id);
+    ASSERT_OK(order);
+    EXPECT_EQ(order->state, OrderState::kRejected);
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+}
+
 // The US equity market: nothing fills while it is closed; orders rest until
 // the open, a market order included.
 TEST(PaperMarket, NothingFillsWhileTheMarketIsClosed) {
@@ -1028,6 +1089,23 @@ TEST(PaperLatency, AnOrderCannotFillBeforeItReachesTheBook) {
     f.Advance(1);
     venue->OnQuote(Q("48890.0", "48900.0"));  // arrived: rests, then fills
     ASSERT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 1u);
+}
+
+TEST(PaperLatency, ADeferredOrderWaitsForTheQuoteAfterItArrives) {
+    Latent f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto ack = venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.05"));
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+    // Arrived by this quote, it fills at it, not at the book it arrived at.
+    f.Advance(3);
+    venue->OnQuote(Q("50190.0", "50200.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 1u);
+    EXPECT_EQ((*fills)[0].price, D("50225.1"));  // 50200 * 1.0005, rounded up
 }
 
 TEST(PaperLatency, AMarketableOrderTakesTheBookItArrivesAt) {

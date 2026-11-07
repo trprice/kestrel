@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--equity-csv` also writes the equity curve |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--equity-csv` also writes the equity curve |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
@@ -99,6 +99,19 @@ before then (`authorize --status` shows when).
   `YYYY-MM-DD` or ISO 8601 UTC with the `Z` (`2026-10-19T17:00:00Z`).
   `backtest` records no run, fills or P&L. With a `[database]`, it does save
   the bars it had to fetch from the provider, so the next backtest finds them.
+- **Fills.** Without recorded quotes, each bar is walked as open, the
+  extreme nearer the open, the other extreme, close, and a resting stop or
+  limit trades at its own price on the way. An order a strategy places on a
+  bar's close (a market buy after a crossover, a target or time exit) trades
+  at the next price replayed, since a signal computed from a close cannot
+  also be filled at it: the next bar's open, the next session's open if the
+  market has closed, or with recorded quotes the next quote. One placed on
+  the last close replayed never fills. A buy that gaps above the funds the
+  account has free is cancelled at the fill. `--fill-at-close` fills these
+  orders at the close instead, the optimistic model of earlier versions.
+  Orders placed elsewhere (in session hooks, on quotes, after a fill inside a
+  bar) trade at once, as do immediate-or-cancel and fill-or-kill orders, which
+  are always decided against the quote they are placed on.
 - **The backtest summary** values every balance in the quote asset after
   each quote (at its mid, or the last trade when a side is missing) or, for
   a strategy without quotes, each bar close:

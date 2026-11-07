@@ -67,10 +67,6 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
-- [ ] Backtest fill model: fill a market order at the next bar's open by
-      default (filling a signal computed on a close at that same close is a
-      look-ahead), keeping fill-on-close as an option. (Resting stops and
-      limits already trade inside the bar: see Done.)
 - [ ] Optionally drive the paper venue from 1-minute bars while the strategy
       takes longer ones, so the path within a bar is the real one rather
       than open, nearer extreme, other extreme, close. Breakout depends on
@@ -712,6 +708,10 @@ the header of the code concerned.
 - [x] `PnlTracker` as the single P&L implementation, used by both the paper
       venue and the risk gate
 - [x] `ReplayDataSource` and `RunBacktest`
+- [x] Backtest fill model: an order placed on a bar's close trades at the
+      next price replayed (the next bar's open), not at that close
+      (`PaperTradingVenue::SetDeferMatching`); `backtest --fill-at-close`
+      keeps the old model.
 - [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
       (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
       runner through a watch thread

@@ -29,6 +29,12 @@ struct BacktestOptions {
     // How often the summary's equity curve is sampled; zero keeps only its
     // first and last points.
     std::chrono::milliseconds equity_interval = std::chrono::minutes(1);
+    // An order placed on a bar's close trades at the next price replayed,
+    // normally the next bar's open (PaperTradingVenue::SetDeferMatching), so
+    // a signal computed from a close is not filled at it (immediate-or-cancel
+    // and fill-or-kill orders excepted). True fills it at that close instead,
+    // the optimistic model before this option.
+    bool fill_at_close = false;
 };
 
 struct BacktestResult {

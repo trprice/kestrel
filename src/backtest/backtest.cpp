@@ -381,8 +381,11 @@ types::Result<BacktestResult> RunBacktest(
             observe(*item.symbol, SummaryBuilder::MarkOf(*item.quote));
             continue;
         }
+        // What the close calls for trades at the next price, not this one.
+        venue->SetDeferMatching(!options.fill_at_close);
         data->Emit(*item.symbol, item.timeframe, item.bar);
         runner.Drain();
+        venue->SetDeferMatching(false);
         // With quotes the venue trades on them, so they alone set the marks.
         observe(*item.symbol, needs.quotes ? std::nullopt
                                            : std::optional(item.bar.close));
