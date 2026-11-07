@@ -269,10 +269,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Breakout / Donchian channel with an ATR stop
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Multi-symbol strategies: pairs trading (momentum rotation is done)
-- [ ] Long multi-symbol backtests use 1-3 GB each (11 pairs of 1h fill bars
-      over five years): the summary keeps an equity point and the marks of
-      every symbol at each fill bar. Thin the curve (or keep it only for
-      `--equity-csv`), so several backtests can run at once.
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
 #### Market maker
@@ -845,6 +841,11 @@ the header of the code concerned.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.
+- [x] `backtest` keeps the equity curve only for `--equity-csv`, sampled
+      every `--equity-interval` (default 1m): it had sampled every minute
+      regardless, 2.9 GB for 11 pairs over five years; now 156 MB. What is
+      left grows with the run: the bar timeline and the summary's mark
+      history (each symbol's mark at every event, for the markouts).
 - [x] `momentum_rotation`: hold the `top_n` of `[general] symbols` by their
       return over `lookback_bars`, rebalanced every `rebalance_bars`. On 11
       Binance.US USDT pairs, daily bars, 2022 to Oct 2026 (1h fills, 2 bps

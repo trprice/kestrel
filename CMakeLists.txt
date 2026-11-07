@@ -179,6 +179,8 @@ if(KESTREL_BUILD_APP)
       "backtest_backwards_range|${_good}|2|must be after its start|backtest,sma_crossover,--from,2026-02-01,--to,2026-01-01"
       "backtest_unknown_strategy|${_good}|1|unknown strategy|backtest,nope,--from,2026-01-01,--to,2026-02-01"
       "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
+      "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
+      "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
       "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,sma_crossover")
     foreach(_case IN LISTS _cli_cases)
       string(REPLACE "|" ";" _fields "${_case}")

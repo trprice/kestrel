@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
@@ -169,8 +169,10 @@ before then (`authorize --status` shows when).
   - The summary needs the symbols to share a quote asset, and every starting
     balance to be that asset or a symbol's base; otherwise it is skipped
     with the reason.
-  - `--equity-csv FILE` also writes the equity curve, one row a minute from
-    `--from` and a last one at `--to`: `time`, `equity`, `hold_equity`, and
+  - `--equity-csv FILE` also writes the equity curve: a row when every
+    balance first has a price, then one every `--equity-interval` from
+    `--from` (default `1m`; `1h` or `1d` keeps a backtest of years small),
+    and a last one at `--to`: `time`, `equity`, `hold_equity`, and
     each symbol's mark and base asset held. A path that cannot be written is
     refused before anything is loaded.
 - `run <strategy>` trades on live data through the paper or live venue until

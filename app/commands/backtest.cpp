@@ -20,14 +20,16 @@ class BacktestCommand : public Command {
                     types::Timestamp to, bool quotes_from_trades,
                     bool fill_at_close,
                     std::optional<types::Timeframe> fill_timeframe,
-                    std::string equity_csv)
+                    std::string equity_csv,
+                    std::chrono::milliseconds equity_interval)
         : mName(std::move(strategy_name)),
           mFrom(from),
           mTo(to),
           mQuotesFromTrades(quotes_from_trades),
           mFillAtClose(fill_at_close),
           mFillTimeframe(fill_timeframe),
-          mEquityCsv(std::move(equity_csv)) {}
+          mEquityCsv(std::move(equity_csv)),
+          mEquityInterval(equity_interval) {}
 
     int Run(const config::Configuration& config) override {
         // Opened first, so a bad path is refused before any data is loaded.
@@ -98,6 +100,11 @@ class BacktestCommand : public Command {
         options.end = mTo;
         options.fill_at_close = mFillAtClose;
         options.fill_timeframe = mFillTimeframe;
+        // The curve is only written out: without a CSV, keep its first and
+        // last points, not one a minute (millions over a few years).
+        options.equity_interval = mEquityCsv.empty()
+                                      ? std::chrono::milliseconds::zero()
+                                      : mEquityInterval;
         auto result =
             backtest::RunBacktest(*replay, std::move(*strategy), options);
         if (!result) {
@@ -253,6 +260,7 @@ class BacktestCommand : public Command {
     bool mFillAtClose;
     std::optional<types::Timeframe> mFillTimeframe;
     std::string mEquityCsv;
+    std::chrono::milliseconds mEquityInterval;
 };
 
 struct Args {
@@ -263,6 +271,7 @@ struct Args {
     bool fill_at_close = false;
     std::string fill_timeframe;
     std::string equity_csv;
+    std::string equity_interval = "1m";
 };
 
 }  // namespace
@@ -298,10 +307,16 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                     "a bar is the recorded one")
         ->check(TimeframeValidator(true))
         ->type_name("TIMEFRAME");
-    sub->add_option("--equity-csv", args->equity_csv,
-                    "Also write the equity curve, sampled every minute, to "
-                    "this CSV file")
-        ->type_name("FILE");
+    auto* csv = sub->add_option("--equity-csv", args->equity_csv,
+                                "Also write the equity curve, sampled every "
+                                "--equity-interval, to this CSV file")
+                    ->type_name("FILE");
+    sub->add_option("--equity-interval", args->equity_interval,
+                    "How often --equity-csv samples the curve, as a timeframe "
+                    "(default 1m; 1h or 1d for a backtest of years)")
+        ->check(TimeframeValidator(true))
+        ->needs(csv)
+        ->type_name("TIMEFRAME");
     sub->callback([&slot, args] {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
@@ -310,7 +325,10 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
             args->fill_timeframe.empty()
                 ? std::nullopt
                 : std::optional(*types::ParseTimeframe(args->fill_timeframe)),
-            args->equity_csv);
+            args->equity_csv,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                *types::FixedDuration(
+                    *types::ParseTimeframe(args->equity_interval))));
     });
 }
 
