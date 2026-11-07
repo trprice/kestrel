@@ -22,6 +22,8 @@ namespace {
 struct Replayed {
     types::Timestamp time;  // when the bar closed / the quote arrived
     bool is_quote = false;
+    // A bar of BacktestOptions::fill_timeframe: for the venue only.
+    bool fill_only = false;
     const types::Symbol* symbol = nullptr;  // in the strategy's Requirements
     types::Timeframe timeframe{};
     types::Bar bar;
@@ -29,10 +31,28 @@ struct Replayed {
 };
 
 // Whether `bars` (oldest first) reaches from `first` to the end of the window
-// [first, to), give or take a bar at each end.
+// [first, to), give or take a bar at each end. On a market that closes, the
+// ends are those of the window's first and last sessions, so intraday bars
+// of a window that starts or ends while it is closed can cover it.
 bool Covers(const std::vector<types::Bar>& bars, types::Timestamp first,
-            types::Timestamp to, std::chrono::seconds length) {
-    return !bars.empty() && bars.front().open_time <= first + length &&
+            types::Timestamp to, std::chrono::seconds length,
+            const types::MarketHours* hours) {
+    if (bars.empty()) {
+        return false;
+    }
+    if (hours && !hours->IsAlwaysOpen()) {
+        auto session = hours->CurrentOrNext(first);
+        if (session && session->start < to) {
+            first = std::max(first, session->start);
+            types::Timestamp last_end = first;
+            while (session && session->start < to) {
+                last_end = std::min(session->end, to);
+                session = hours->CurrentOrNext(session->end);
+            }
+            to = last_end;
+        }
+    }
+    return bars.front().open_time <= first + length &&
            bars.back().open_time >= to - length * 2;
 }
 
@@ -69,7 +89,8 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
                     spdlog::warn("{} {}: database read failed ({}); using {}",
                                  symbol, name, saved.error().ToString(),
                                  source.Name());
-                } else if (Covers(*saved, first, to, *length)) {
+                } else if (Covers(*saved, first, to, *length,
+                                  replay->Hours().get())) {
                     spdlog::info("{} {}: {} bars loaded from the database",
                                  symbol, name, saved->size());
                     replay->AddBars(symbol, timeframe, std::move(*saved));
@@ -181,6 +202,36 @@ std::vector<types::Quote> QuotesFromTrades(
     return quotes;
 }
 
+types::Result<void> CheckFillTimeframe(
+    const strategy::Requirements& needs,
+    std::optional<types::Timeframe> fill_timeframe) {
+    if (!fill_timeframe) {
+        return {};
+    }
+    const auto length = types::FixedDuration(*fill_timeframe);
+    if (!length) {
+        return MakeError(ErrorCategory::kUnsupported,
+                         "backtests cannot replay calendar timeframe " +
+                             std::string(types::ToString(*fill_timeframe)));
+    }
+    if (needs.quotes) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "a strategy that takes quotes fills on them, "
+                         "not on bars of a fill timeframe");
+    }
+    for (types::Timeframe timeframe : needs.bar_timeframes) {
+        const auto own = types::FixedDuration(timeframe);
+        if (own && *own < *length) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "the fill timeframe " +
+                                 std::string(types::ToString(*fill_timeframe)) +
+                                 " is coarser than the strategy's " +
+                                 std::string(types::ToString(timeframe)));
+        }
+    }
+    return {};
+}
+
 types::Result<BacktestResult> RunBacktest(
     const std::shared_ptr<ReplayDataSource>& data,
     std::unique_ptr<strategy::Strategy> strategy,
@@ -190,10 +241,15 @@ types::Result<BacktestResult> RunBacktest(
                          "the end of a backtest must be after its start");
     }
     const strategy::Requirements needs = strategy->Needs();
+    if (auto checked = CheckFillTimeframe(needs, options.fill_timeframe);
+        !checked) {
+        return std::unexpected(checked.error());
+    }
 
     // Every bar and quote to replay, ordered by when it closes / arrived; ties
-    // put quotes first, then keep the order of the strategy's symbols and
-    // timeframes.
+    // put quotes first, then fill-timeframe bars (so the venue has walked up
+    // to a strategy bar's close before the strategy sees it), then keep the
+    // order of the strategy's symbols and timeframes.
     std::vector<Replayed> timeline;
     for (types::Timeframe timeframe : needs.bar_timeframes) {
         const auto step = types::FixedDuration(timeframe);
@@ -216,7 +272,31 @@ types::Result<BacktestResult> RunBacktest(
             }
         }
     }
-    std::size_t bar_count = timeline.size();
+    const std::size_t bar_count = timeline.size();
+    // A fill timeframe the strategy also takes already drives the venue.
+    const bool fill_bars =
+        options.fill_timeframe &&
+        std::ranges::find(needs.bar_timeframes, *options.fill_timeframe) ==
+            needs.bar_timeframes.end();
+    if (fill_bars) {
+        const auto step = *types::FixedDuration(*options.fill_timeframe);
+        for (const types::Symbol& symbol : needs.symbols) {
+            for (const types::Bar& bar :
+                 data->Series(symbol, *options.fill_timeframe)) {
+                if (bar.open_time >= options.start &&
+                    bar.open_time < options.end) {
+                    Replayed item;
+                    item.time = bar.open_time + step;
+                    item.fill_only = true;
+                    item.symbol = &symbol;
+                    item.timeframe = *options.fill_timeframe;
+                    item.bar = bar;
+                    timeline.push_back(item);
+                }
+            }
+        }
+    }
+    const std::size_t fill_bar_count = timeline.size() - bar_count;
     if (needs.quotes) {
         for (const types::Symbol& symbol : needs.symbols) {
             for (const types::Quote& quote : data->QuotesFor(symbol)) {
@@ -234,8 +314,11 @@ types::Result<BacktestResult> RunBacktest(
     }
     std::stable_sort(timeline.begin(), timeline.end(),
                      [](const Replayed& a, const Replayed& b) {
+                         const auto rank = [](const Replayed& r) {
+                             return r.is_quote ? 0 : r.fill_only ? 1 : 2;
+                         };
                          return a.time != b.time ? a.time < b.time
-                                                 : a.is_quote && !b.is_quote;
+                                                 : rank(a) < rank(b);
                      });
 
     types::Timestamp now = options.start;
@@ -281,7 +364,7 @@ types::Result<BacktestResult> RunBacktest(
     // already seen), so a symbol missing the finer data still trades.
     std::vector<std::optional<types::Timeframe>> driving(needs.symbols.size());
     for (const Replayed& item : timeline) {
-        if (item.is_quote) {
+        if (item.is_quote || item.fill_only) {
             continue;
         }
         auto& finest = driving[static_cast<std::size_t>(item.symbol -
@@ -364,15 +447,34 @@ types::Result<BacktestResult> RunBacktest(
             quote_at(symbol, to, leg == 2 ? close : leg_start + leg_length);
         }
     };
+    // With fill-timeframe bars, the open of the last one walked for each
+    // symbol: a strategy bar none of them opened inside is walked itself.
+    std::vector<std::optional<types::Timestamp>> last_fill(
+        needs.symbols.size());
+    std::size_t walked_without = 0;
     for (const Replayed& item : timeline) {
-        if (!item.is_quote && !needs.quotes &&
-            item.timeframe == driving[static_cast<std::size_t>(
-                                  item.symbol - needs.symbols.data())]) {
-            walk(*item.symbol, item.bar, item.time);  // ends at item.time
+        const auto index =
+            static_cast<std::size_t>(item.symbol - needs.symbols.data());
+        if (item.fill_only) {
+            walk(*item.symbol, item.bar, item.time);
+            last_fill[index] = item.bar.open_time;
+        } else if (!item.is_quote && !needs.quotes &&
+                   item.timeframe == driving[index]) {
+            if (!fill_bars) {
+                walk(*item.symbol, item.bar, item.time);  // ends at item.time
+            } else if (!last_fill[index] ||
+                       *last_fill[index] < item.bar.open_time) {
+                walk(*item.symbol, item.bar, item.time);
+                ++walked_without;
+            }
         }
         run_sessions(item.time);
         now = std::max(now, item.time);
         data->SetTime(now);
+        if (item.fill_only) {
+            observe(*item.symbol, item.bar.close);
+            continue;
+        }
 
         if (item.is_quote) {
             venue->OnQuote(*item.quote);
@@ -396,7 +498,15 @@ types::Result<BacktestResult> RunBacktest(
 
     BacktestResult result;
     result.bars_replayed = bar_count;
-    result.quotes_replayed = timeline.size() - bar_count;
+    result.fill_bars_replayed = fill_bar_count;
+    result.quotes_replayed = timeline.size() - bar_count - fill_bar_count;
+    result.bars_walked_without_fill_bars = walked_without;
+    if (walked_without > 0) {
+        spdlog::warn(
+            "backtest: {} strategy bars had no {} bars inside them and were "
+            "walked as a whole",
+            walked_without, types::ToString(*options.fill_timeframe));
+    }
     auto fills = venue->GetFills(options.start);
     auto positions = venue->GetPositions();
     auto balances = venue->GetBalances();

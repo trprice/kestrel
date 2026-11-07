@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--equity-csv` also writes the equity curve |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
@@ -112,6 +112,14 @@ before then (`authorize --status` shows when).
   Orders placed elsewhere (in session hooks, on quotes, after a fill inside a
   bar) trade at once, as do immediate-or-cancel and fill-or-kill orders, which
   are always decided against the quote they are placed on.
+  Which extreme of a bar came first is a guess (the nearer one), so a bar
+  that reaches both an entry and its stop is decided by it.
+  `--fill-timeframe 1m` walks 1-minute bars for the venue instead, so the
+  path within each strategy bar is the recorded one; the strategy still
+  sees only its own bars. A strategy bar with no 1-minute bars inside it
+  (before the provider's 1-minute history, or a gap) is walked whole, and
+  the report counts those. Not for a strategy that takes quotes, which
+  fills on them.
 - **The backtest summary** values every balance in the quote asset after
   each quote (at its mid, or the last trade when a side is missing) or, for
   a strategy without quotes, each bar close:

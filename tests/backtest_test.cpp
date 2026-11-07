@@ -569,10 +569,12 @@ class BarOrders : public strategy::Strategy {
    public:
     BarOrders(std::vector<types::OrderRequest> orders,
               std::optional<const char*> protect = std::nullopt,
-              std::vector<Timeframe> timeframes = {Timeframe::kH1})
+              std::vector<Timeframe> timeframes = {Timeframe::kH1},
+              std::shared_ptr<std::vector<Timeframe>> seen = nullptr)
         : mOrders(std::move(orders)),
           mProtect(protect),
-          mTimeframes(std::move(timeframes)) {}
+          mTimeframes(std::move(timeframes)),
+          mSeen(std::move(seen)) {}
     std::string_view Name() const override { return "bar-orders"; }
     strategy::Requirements Needs() const override {
         strategy::Requirements r;
@@ -581,8 +583,11 @@ class BarOrders : public strategy::Strategy {
         r.warmup_bars = 1;
         return r;
     }
-    void OnBar(strategy::Context& ctx, const types::Symbol&, Timeframe,
-               const types::Bar&) override {
+    void OnBar(strategy::Context& ctx, const types::Symbol&,
+               Timeframe timeframe, const types::Bar&) override {
+        if (mSeen) {
+            mSeen->push_back(timeframe);
+        }
         for (const auto& order : mOrders) {
             EXPECT_TRUE(ctx.Venue().PlaceOrder(order).has_value());
         }
@@ -605,6 +610,7 @@ class BarOrders : public strategy::Strategy {
     std::vector<types::OrderRequest> mOrders;
     std::optional<const char*> mProtect;
     std::vector<Timeframe> mTimeframes;
+    std::shared_ptr<std::vector<Timeframe>> mSeen;  // each bar's timeframe
 };
 
 types::OrderRequest Stop(types::Side side, const char* price) {
@@ -694,6 +700,97 @@ TEST(BacktestTest, ASymbolWithoutTheFinestSeriesWalksItsCoarserOne) {
     ASSERT_OK(result);
     ASSERT_EQ(result->fills.size(), 1u);
     EXPECT_EQ(result->fills[0].price, D("15"));
+}
+
+// Half-hour bars for hour 5 only: up to 20 first, then down to 5.
+std::shared_ptr<ReplayDataSource> WithHalfHours() {
+    // Hour 5 as one bar is 10, 20, 5, 12: the walk guesses the low (nearer
+    // the open) came first.
+    auto data = OhlcData(WithBar5({"10", "20", "5", "12"}));
+    types::Bar up;
+    up.open_time = Hour(5);
+    up.open = up.low = D("10");
+    up.high = D("20");
+    up.close = D("18");
+    types::Bar down;
+    down.open_time = Hour(5) + std::chrono::minutes(30);
+    down.open = down.high = D("18");
+    down.low = D("5");
+    down.close = D("12");
+    data->AddBars(kSymbol, Timeframe::kM30, {up, down});
+    return data;
+}
+
+// The guess, low first: the buy-stop at 15 fills on the way up from 5, and
+// the bar closes at 12, above the protective stop at 8.
+TEST(BacktestTest, WithoutAFillTimeframeTheWalkGuessesTheOrder) {
+    auto result =
+        RunBacktest(WithHalfHours(),
+                    std::make_unique<BarOrders>(
+                        std::vector{Stop(types::Side::kBuy, "15")}, "8"),
+                    Options());
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("15"));
+    EXPECT_EQ(result->fill_bars_replayed, 0u);
+}
+
+// The half-hour bars show the high came first: bought at 15 in the first
+// half hour, stopped out at 8 in the second. The strategy still sees only
+// its hourly bars, and hours 4 and 6, without half-hour bars, are walked
+// whole.
+TEST(BacktestTest, AFillTimeframeWalksTheRecordedPath) {
+    auto options = Options();
+    options.fill_timeframe = Timeframe::kM30;
+    auto seen = std::make_shared<std::vector<Timeframe>>();
+    auto result = RunBacktest(
+        WithHalfHours(),
+        std::make_unique<BarOrders>(std::vector{Stop(types::Side::kBuy, "15")},
+                                    "8", std::vector{Timeframe::kH1}, seen),
+        options);
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 2u);
+    EXPECT_EQ(result->fills[0].side, types::Side::kBuy);
+    EXPECT_EQ(result->fills[0].price, D("15"));
+    EXPECT_LT(result->fills[0].time, Hour(5) + std::chrono::minutes(30));
+    EXPECT_EQ(result->fills[1].side, types::Side::kSell);
+    EXPECT_EQ(result->fills[1].price, D("8"));
+    EXPECT_GE(result->fills[1].time, Hour(5) + std::chrono::minutes(30));
+    EXPECT_EQ(result->bars_replayed, 3u);  // hours 4, 5 and 6
+    EXPECT_EQ(result->fill_bars_replayed, 2u);
+    EXPECT_EQ(result->bars_walked_without_fill_bars, 2u);
+    EXPECT_EQ(*seen, std::vector<Timeframe>(3, Timeframe::kH1));
+}
+
+// A fill timeframe the strategy takes itself changes nothing.
+TEST(BacktestTest, AFillTimeframeTheStrategyTakesIsItsOwn) {
+    auto options = Options();
+    options.fill_timeframe = Timeframe::kH1;
+    auto result =
+        RunBacktest(WithHalfHours(),
+                    std::make_unique<BarOrders>(
+                        std::vector{Stop(types::Side::kBuy, "15")}, "8"),
+                    options);
+    ASSERT_OK(result);
+    EXPECT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fill_bars_replayed, 0u);
+    EXPECT_EQ(result->bars_walked_without_fill_bars, 0u);
+}
+
+TEST(BacktestTest, RejectsACoarserFillTimeframeOrOneWithQuotes) {
+    auto options = Options();
+    options.fill_timeframe = Timeframe::kH4;
+    auto coarser = RunBacktest(
+        WithHalfHours(),
+        std::make_unique<BarOrders>(std::vector<types::OrderRequest>{}),
+        options);
+    ASSERT_FALSE(coarser);
+    EXPECT_EQ(coarser.error().category, ErrorCategory::kInvalidArgument);
+    options.fill_timeframe = Timeframe::kM1;
+    auto quotes =
+        RunBacktest(Data(kCloses), std::make_unique<QuoteStrategy>(), options);
+    ASSERT_FALSE(quotes);
+    EXPECT_EQ(quotes.error().category, ErrorCategory::kInvalidArgument);
 }
 
 TEST(BacktestTest, ARestingLimitFillsWhenTheBarReachesIt) {

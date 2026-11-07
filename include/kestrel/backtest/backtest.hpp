@@ -35,11 +35,25 @@ struct BacktestOptions {
     // and fill-or-kill orders excepted). True fills it at that close instead,
     // the optimistic model before this option.
     bool fill_at_close = false;
+    // Bars of this (finer) timeframe drive the paper venue instead of the
+    // strategy's own, so the path within a strategy bar is the recorded one
+    // rather than the open, nearer extreme, other extreme, close guess. The
+    // strategy does not see them; `data` must hold them (LoadReplayData with
+    // the timeframe added to the Requirements' bar_timeframes). A strategy
+    // bar with none of these bars inside it (beyond the data's reach, or a
+    // gap) is walked itself, as without this option. Not for a strategy
+    // that takes quotes, and no coarser than the strategy's finest
+    // timeframe.
+    std::optional<types::Timeframe> fill_timeframe;
 };
 
 struct BacktestResult {
     std::size_t bars_replayed = 0;
     std::size_t quotes_replayed = 0;
+    // With BacktestOptions::fill_timeframe: those bars walked, and the
+    // strategy bars walked themselves for want of them.
+    std::size_t fill_bars_replayed = 0;
+    std::size_t bars_walked_without_fill_bars = 0;
     std::vector<types::Fill> fills;
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
@@ -99,23 +113,35 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
     data::DataSource& source, const strategy::Requirements& needs,
     types::Timestamp from, types::Timestamp to, StoredData stored = {});
 
+// Whether `fill_timeframe` (BacktestOptions::fill_timeframe) suits a strategy
+// with `needs`: kUnsupported for a calendar timeframe; kInvalidArgument for a
+// strategy that takes quotes, or one coarser than the strategy's finest
+// timeframe. RunBacktest checks it too; call it first to fail before loading
+// data.
+types::Result<void> CheckFillTimeframe(
+    const strategy::Requirements& needs,
+    std::optional<types::Timeframe> fill_timeframe);
+
 // Runs a strategy over the bars in `data`, using the same Runner as live
 // trading and a PaperTradingVenue for execution, on one thread and a simulated
 // clock, so a run is repeatable. The bars of all of the strategy's series are
 // replayed in the order they close.
 //
 // For a strategy without quotes, the paper venue walks each bar of the
-// symbol's finest series (of those with bars) before the strategy sees it, as
-// quotes (bid = ask = last): the open, the extreme nearer the open, the other
-// extreme and the close, a third of the bar apart, and on each leg every
-// resting order's price it passes. The strategy runs at each point. So:
-//   - orders a strategy places on a bar fill on that bar's close, plus the
-//     paper venue's slippage and fees;
+// symbol's finest series (of those with bars), or of options.fill_timeframe,
+// before the strategy sees it, as quotes (bid = ask = last): the open, the
+// extreme nearer the open, the other extreme and the close, a third of the
+// bar apart, and on each leg every resting order's price it passes. The
+// strategy runs at each point. So:
+//   - orders a strategy places on a bar's close fill at the next price walked
+//     (unless options.fill_at_close), plus the paper venue's slippage and
+//     fees;
 //   - a resting stop or limit inside a later bar fills at its own price (at
 //     the start of its leg), and one the bar opens beyond, at the open; an
 //     order placed on that fill (a protective stop) can fill later in the
 //     same bar. Which extreme came first is a guess (the nearer one), so a bar
-//     that reaches both an entry and its stop is decided by it;
+//     that reaches both an entry and its stop is decided by it, unless finer
+//     bars (options.fill_timeframe) say which;
 //   - on a market that closes, a bar is walked only through the part of it
 //     in its session (a daily bar from the open to the close), and session
 //     hooks due at the open run right after the open's quote, so an order
@@ -136,9 +162,11 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
 // The summary values the balances after every bar or quote replayed, at the
 // quote's mid (the last trade when a side is missing) or, for a strategy
 // without quotes, the bar's close.
-// A calendar-length timeframe (1M) fails with kUnsupported, and an end that is
-// not after the start with kInvalidArgument. `data` needs bars (and quotes if
-// asked for) and SetSymbolInfo for every symbol the strategy trades.
+// A calendar-length timeframe (1M) fails with kUnsupported; an end that is
+// not after the start, or a fill_timeframe with a strategy that takes quotes
+// or coarser than the strategy's finest timeframe, with kInvalidArgument.
+// `data` needs bars (and quotes if asked for) and SetSymbolInfo for every
+// symbol the strategy trades.
 types::Result<BacktestResult> RunBacktest(
     const std::shared_ptr<ReplayDataSource>& data,
     std::unique_ptr<strategy::Strategy> strategy,

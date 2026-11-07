@@ -67,11 +67,6 @@ market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
 - [ ] Bound the runner's bar queue (quotes are conflated per symbol)
 - [ ] Cap the paper venue's fill history so long paper runs stay bounded and
       fast, and stop rescanning all of it in `GetFills`
-- [ ] Optionally drive the paper venue from 1-minute bars while the strategy
-      takes longer ones, so the path within a bar is the real one rather
-      than open, nearer extreme, other extreme, close. Breakout depends on
-      it most: a wide bar that reaches both its entry and its protective
-      stop is decided by that guess, and the October results inherit it.
 
 ### Schwab data source
 
@@ -712,6 +707,10 @@ the header of the code concerned.
       next price replayed (the next bar's open), not at that close
       (`PaperTradingVenue::SetDeferMatching`); `backtest --fill-at-close`
       keeps the old model.
+- [x] `backtest --fill-timeframe 1m` (`BacktestOptions::fill_timeframe`):
+      the paper venue walks finer bars than the strategy takes, so the path
+      within a strategy bar is the recorded one rather than the open,
+      nearer extreme, other extreme, close guess.
 - [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
       (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
       runner through a watch thread

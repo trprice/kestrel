@@ -18,12 +18,15 @@ class BacktestCommand : public Command {
    public:
     BacktestCommand(std::string strategy_name, types::Timestamp from,
                     types::Timestamp to, bool quotes_from_trades,
-                    bool fill_at_close, std::string equity_csv)
+                    bool fill_at_close,
+                    std::optional<types::Timeframe> fill_timeframe,
+                    std::string equity_csv)
         : mName(std::move(strategy_name)),
           mFrom(from),
           mTo(to),
           mQuotesFromTrades(quotes_from_trades),
           mFillAtClose(fill_at_close),
+          mFillTimeframe(fill_timeframe),
           mEquityCsv(std::move(equity_csv)) {}
 
     int Run(const config::Configuration& config) override {
@@ -71,8 +74,19 @@ class BacktestCommand : public Command {
             spdlog::warn("database unavailable, using the venue: {}",
                          database.error().ToString());
         }
-        auto replay = backtest::LoadReplayData(**source, (*strategy)->Needs(),
-                                               mFrom, mTo, stored);
+        // The fill timeframe's bars are loaded with the strategy's own.
+        strategy::Requirements needs = (*strategy)->Needs();
+        if (auto checked = backtest::CheckFillTimeframe(needs, mFillTimeframe);
+            !checked) {
+            return Fail("--fill-timeframe", checked.error());
+        }
+        if (mFillTimeframe &&
+            std::ranges::find(needs.bar_timeframes, *mFillTimeframe) ==
+                needs.bar_timeframes.end()) {
+            needs.bar_timeframes.push_back(*mFillTimeframe);
+        }
+        auto replay =
+            backtest::LoadReplayData(**source, needs, mFrom, mTo, stored);
         if (!replay) {
             return Fail("data", replay.error());
         }
@@ -83,6 +97,7 @@ class BacktestCommand : public Command {
         options.start = mFrom;
         options.end = mTo;
         options.fill_at_close = mFillAtClose;
+        options.fill_timeframe = mFillTimeframe;
         auto result =
             backtest::RunBacktest(*replay, std::move(*strategy), options);
         if (!result) {
@@ -117,8 +132,14 @@ class BacktestCommand : public Command {
 
     static void PrintReport(const backtest::BacktestResult& result) {
         std::cout << "bars replayed: " << result.bars_replayed
-                  << "\nquotes replayed: " << result.quotes_replayed
-                  << "\nfills: " << result.fills.size() << '\n';
+                  << "\nquotes replayed: " << result.quotes_replayed;
+        if (result.fill_bars_replayed > 0 ||
+            result.bars_walked_without_fill_bars > 0) {
+            std::cout << "\nfill bars replayed: " << result.fill_bars_replayed
+                      << " (strategy bars walked without them: "
+                      << result.bars_walked_without_fill_bars << ')';
+        }
+        std::cout << "\nfills: " << result.fills.size() << '\n';
         for (const auto& f : result.fills) {
             std::cout << types::FormatIso8601(f.time) << ' ' << f.symbol << ' '
                       << (f.side == types::Side::kBuy ? "buy" : "sell") << ' '
@@ -230,6 +251,7 @@ class BacktestCommand : public Command {
     types::Timestamp mTo;
     bool mQuotesFromTrades;
     bool mFillAtClose;
+    std::optional<types::Timeframe> mFillTimeframe;
     std::string mEquityCsv;
 };
 
@@ -239,6 +261,7 @@ struct Args {
     std::string to;
     bool quotes_from_trades = false;
     bool fill_at_close = false;
+    std::string fill_timeframe;
     std::string equity_csv;
 };
 
@@ -269,6 +292,12 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                   "Fill an order placed on a bar's close at that close, not "
                   "at the next price replayed (the next bar's open); "
                   "optimistic");
+    sub->add_option("--fill-timeframe", args->fill_timeframe,
+                    "Fill orders on bars of this finer timeframe (e.g. 1m), "
+                    "walked in place of the strategy's own, so the path within "
+                    "a bar is the recorded one")
+        ->check(TimeframeValidator(true))
+        ->type_name("TIMEFRAME");
     sub->add_option("--equity-csv", args->equity_csv,
                     "Also write the equity curve, sampled every minute, to "
                     "this CSV file")
@@ -277,7 +306,11 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
             *types::ParseTimestamp(args->to), args->quotes_from_trades,
-            args->fill_at_close, args->equity_csv);
+            args->fill_at_close,
+            args->fill_timeframe.empty()
+                ? std::nullopt
+                : std::optional(*types::ParseTimeframe(args->fill_timeframe)),
+            args->equity_csv);
     });
 }
 

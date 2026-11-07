@@ -194,6 +194,39 @@ TEST_F(BacktestDbTest, FallsBackWhenTheDatabaseStartsTooLateAndKeepsBoth) {
     EXPECT_EQ(saved->back().close, D("1"));  // the venue's copy replaced 4-7
 }
 
+// A market open from 02:00 to 05:00 UTC on 1970-01-01 only.
+class ShortCalendar : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        if (date != std::chrono::year_month_day{std::chrono::sys_days{}}) {
+            return std::nullopt;
+        }
+        return types::TradingDay{Hour(2), Hour(2), Hour(5), Hour(5)};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+// On a market that closes, stored bars need only reach the window's first
+// and last sessions: hours 2-4 cover a window from midnight to 08:00.
+TEST_F(BacktestDbTest, StoredBarsNeedOnlyCoverTheSessions) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(2, 4, "5")));
+    CountingSource source;
+    source.SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<ShortCalendar>(), false));
+    strategy::Requirements needs;
+    needs.symbols = {kSymbol};
+    needs.bar_timeframes = {Timeframe::kH1};
+    auto loaded =
+        backtest::LoadReplayData(source, needs, Hour(0), Hour(8), Stored());
+    ASSERT_OK(loaded);
+    EXPECT_EQ(source.bar_requests, 0);
+    EXPECT_EQ((*loaded)->Series(kSymbol, Timeframe::kH1).size(), 3u);
+}
+
 TEST_F(BacktestDbTest, FallsBackWhenTheDatabaseEndsTooEarly) {
     ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 4, "5")));
     CountingSource source;
