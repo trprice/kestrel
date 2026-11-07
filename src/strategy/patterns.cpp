@@ -238,4 +238,15 @@ std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            8, types::Rounding::kNearest);
 }
 
+std::optional<PriceRange> OpeningRangeOf(std::span<const types::Bar> bars,
+                                         std::size_t n,
+                                         types::Timestamp start) {
+    // The window opens at or after the open, and the bar before it before.
+    if (n == 0 || bars.size() <= n || bars[bars.size() - n].open_time < start ||
+        bars[bars.size() - n - 1].open_time >= start) {
+        return std::nullopt;
+    }
+    return RangeOf(bars, n);
+}
+
 }  // namespace kestrel::strategy

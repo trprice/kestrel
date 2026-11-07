@@ -41,10 +41,16 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
             "positive");
     }
     if (mParams.min_touches == 0 || mParams.decline_bars == 0 ||
-        mParams.reclaim_bars == 0 || mParams.swing_bars == 0) {
+        mParams.reclaim_bars == 0 || mParams.swing_bars == 0 ||
+        mParams.opening_bars == 0) {
         throw std::invalid_argument(
-            "min_touches, decline_bars, reclaim_bars and swing_bars must be "
-            "positive");
+            "min_touches, decline_bars, reclaim_bars, swing_bars and "
+            "opening_bars must be positive");
+    }
+    if (mParams.setup == BreakoutParams::Setup::kOpeningRange &&
+        CarriesOver()) {
+        throw std::invalid_argument(
+            "the opening_range setup needs intraday bars");
     }
     if (mParams.bottoms != 2 && mParams.bottoms != 3) {
         throw std::invalid_argument("bottoms must be 2 or 3");
@@ -82,6 +88,8 @@ Requirements Breakout::Needs() const {
         setup_bars = mParams.decline_bars + 2;
     } else if (mParams.setup == BreakoutParams::Setup::kFailedBreakdown) {
         setup_bars = mParams.range_bars + mParams.reclaim_bars + 1;
+    } else if (mParams.setup == BreakoutParams::Setup::kOpeningRange) {
+        setup_bars = mParams.opening_bars + 1;  // and the bar before the open
     }
     needs.warmup_bars = std::max(setup_bars, mParams.trend_sma);
     return needs;
@@ -136,6 +144,17 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                 range = bottom->range;
             }
             break;
+        case BreakoutParams::Setup::kOpeningRange: {
+            // Called only while the market is open (intraday bars), so a
+            // session here is the current one.
+            const auto session = context.CurrentOrNextSession();
+            const types::Timestamp start =
+                session ? session->start
+                        : std::chrono::floor<std::chrono::days>(
+                              bars.back().open_time);
+            range = OpeningRangeOf(bars, mParams.opening_bars, start);
+            break;
+        }
     }
     if (!range || range->Height().Sign() <= 0) {
         return std::nullopt;  // no setup, or a flat one with no height

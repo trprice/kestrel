@@ -19,6 +19,7 @@ struct BreakoutParams {
         kFailedBreakdown,  // a close back above a broken range_bars low
         kMultipleBottom,   // a double or triple bottom (bottoms) in
                            // range_bars bars
+        kOpeningRange,     // the session's first opening_bars bars
     };
     enum class Confirm {
         kNone,     // a buy-stop just above the setup's high
@@ -54,6 +55,9 @@ struct BreakoutParams {
     // a swing low must beat.
     std::size_t bottoms = 2;
     std::size_t swing_bars = 2;
+    // kOpeningRange: the bars of the session's opening range (6 five-minute
+    // bars: the first half hour). Intraday bars only.
+    std::size_t opening_bars = 6;
     Confirm confirm = Confirm::kNone;
     std::size_t confirm_closes = 2;
     types::Decimal confirm_percent{5, 1};  // 0.5 (%)
@@ -83,8 +87,9 @@ struct BreakoutParams {
 // Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, the last
 // N bars' range, a rectangle: that range when the price has tested both its
 // support and its resistance, see RectangleOf, a pipe bottom, see
-// PipeBottomOf, a failed breakdown, see FailedBreakdownOf, or a double or
-// triple bottom, see MultipleBottomOf), enter on a break
+// PipeBottomOf, a failed breakdown, see FailedBreakdownOf, a double or
+// triple bottom, see MultipleBottomOf, or the opening range: the session's
+// first opening_bars bars, see OpeningRangeOf), enter on a break
 // above its high, protect with a stop below its low, and take profit at the
 // setup's height above the entry.
 //
@@ -133,6 +138,18 @@ struct BreakoutParams {
 // is the range's. A double or triple bottom triggers above its neckline, with
 // the stop below its lowest low and its height from the one to the other.
 //
+// The opening range is a setup once a session, on the close of its last bar.
+// The session is the one Context::CurrentOrNextSession reports (so with
+// extended hours it starts before the regular open), and on a market that
+// never closes it is the UTC day. The range is the first opening_bars bars to
+// open at or after the open, counted rather than timed: a bar straddling the
+// open (hourly bars on a 09:30 open) is skipped, so the range starts at 10:00,
+// and a bar missing from the window delays the setup to the next one. A run
+// started after a session's range has formed waits for the next session. Its
+// entry lasts arm_bars bars like any
+// other, so for the usual opening range breakout set arm_bars to the rest of
+// the session (it is cancelled at the close anyway) and flatten_at_close.
+//
 // Two adaptations of the deck: every setup, the inside bar included, triggers
 // one tick above its high (the deck buys an inside bar on an open above its
 // close), and the target is measured from the entry's fill rather than the
@@ -142,9 +159,10 @@ class Breakout : public Strategy {
     // Throws std::invalid_argument for a quantity that is not positive, an
     // nr_bars under 2, a negative buffer, percent or multiple, zero
     // arm_bars, confirm_closes, throwback_bars, min_touches, decline_bars,
-    // reclaim_bars or swing_bars, bottoms other than 2 or 3, a touch_zone
-    // outside (0, 0.5), or with kMultipleBottom a range_bars too few to hold
-    // the pattern (MultipleBottomBars).
+    // reclaim_bars, swing_bars or opening_bars, bottoms other than 2 or 3, a
+    // touch_zone outside (0, 0.5), with kMultipleBottom a range_bars too few to
+    // hold the pattern (MultipleBottomBars), or kOpeningRange on bars of a day
+    // or longer.
     explicit Breakout(BreakoutParams params);
 
     std::string_view Name() const override { return "breakout"; }

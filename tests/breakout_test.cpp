@@ -729,6 +729,112 @@ TEST(Breakout, ADoubleBottomBuysAboveItsNeckline) {
     EXPECT_EQ(context.venue.orders[1].stop_price, D("9.99"));
 }
 
+// A market open from 04:00 to 08:00 UTC every day, so hourly bars start at
+// the open.
+class MorningSession : public types::TradingCalendar {
+   public:
+    std::optional<types::TradingDay> On(
+        std::chrono::year_month_day date) const override {
+        const types::Timestamp day{std::chrono::sys_days{date}};
+        const auto open = day + std::chrono::hours(4);
+        const auto close = day + std::chrono::hours(8);
+        return types::TradingDay{open, open, close, close};
+    }
+    std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+        return std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(t)};
+    }
+};
+
+BreakoutParams OpeningRange() {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kOpeningRange;
+    params.opening_bars = 2;
+    return params;
+}
+
+// Hours 0-3 are before the open and wider than anything after; hours 4 and 5
+// are the opening range, high 12.5 and low 10: trigger 12.51, stop 9.99.
+// Then `after`, from hour 6.
+std::shared_ptr<ReplayDataSource> OpeningThen(
+    std::vector<std::array<const char*, 4>> after) {
+    std::vector<std::array<const char*, 4>> bars = {
+        {"12", "20", "5", "12"},    {"12", "20", "5", "12"},
+        {"12", "20", "5", "12"},    {"12", "20", "5", "12"},
+        {"11", "12", "10", "11.5"}, {"11.5", "12.5", "10.5", "12"},
+    };
+    bars.insert(bars.end(), after.begin(), after.end());
+    auto data = Bars(bars);
+    data->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<MorningSession>(), false));
+    return data;
+}
+
+TEST(Breakout, AnOpeningRangeBreakoutBuysAboveTheFirstBarsAndFlattens) {
+    auto params = OpeningRange();
+    params.arm_bars = 2;
+    params.target_multiple = D("0");
+    params.flatten_at_close = true;
+    // Hour 6 stays inside; hour 7 breaks 12.51, the entry still armed.
+    auto result =
+        backtest::RunBacktest(OpeningThen({{"12", "12.4", "11", "12.2"},
+                                           {"12.2", "13", "12.1", "12.8"},
+                                           {"12.8", "12.8", "12.8", "12.8"}}),
+                              std::make_unique<Breakout>(params), Options(9));
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 2u);
+    EXPECT_EQ(result->fills[0].side, Side::kBuy);
+    EXPECT_EQ(result->fills[0].price, D("12.51"));
+    // Sold in the closing hook, 5 minutes before 08:00.
+    EXPECT_EQ(result->fills[1].side, Side::kSell);
+    EXPECT_EQ(result->fills[1].time, Hour(7) + std::chrono::minutes(55));
+}
+
+TEST(Breakout, AnOpeningRangeIsASetupOnceASession) {
+    // The entry armed at 06:00 lasts one bar and hour 6 stays inside; hour
+    // 7's break is not bought, since no later bar is a setup.
+    auto result = backtest::RunBacktest(
+        OpeningThen({{"12", "12.4", "11", "12.2"},
+                     {"12.2", "13", "12.1", "12.8"},
+                     {"12.8", "12.8", "12.8", "12.8"}}),
+        std::make_unique<Breakout>(OpeningRange()), Options(9));
+    ASSERT_OK(result);
+    EXPECT_TRUE(result->fills.empty());
+}
+
+TEST(Breakout, EachSessionHasItsOwnOpeningRange) {
+    // Day one's range (hours 4 and 5) is never broken. Day two's (hours 28
+    // and 29) ranges 20 to 21, and hour 30 breaks 21.01.
+    std::vector<std::array<const char*, 4>> after(
+        22, {"11", "11", "11", "11"});  // hours 6-27
+    after.push_back({"20", "21", "20", "20.5"});
+    after.push_back({"20.5", "20.8", "20.2", "20.5"});
+    after.push_back({"20.5", "22", "20.4", "21.8"});
+    auto result = backtest::RunBacktest(
+        OpeningThen(after), std::make_unique<Breakout>(OpeningRange()),
+        Options(31));
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("21.01"));
+    EXPECT_GE(result->fills[0].time, Hour(30));
+}
+
+TEST(Breakout, AnOpeningRangeOnAMarketThatNeverClosesIsTheUtcDays) {
+    // Hours 0-23 are flat at 12 (the backtest starts at hour 4); the day's
+    // first two bars (hours 24 and 25) range 11.5 to 12.5, and hour 26
+    // breaks 12.51.
+    std::vector<std::array<const char*, 4>> bars(24, {"12", "12", "12", "12"});
+    bars.push_back({"12", "12.5", "11.5", "12"});
+    bars.push_back({"12", "12.2", "11.8", "12"});
+    bars.push_back({"12", "13", "12", "12.9"});
+    auto result = backtest::RunBacktest(
+        Bars(bars), std::make_unique<Breakout>(OpeningRange()), Options(27));
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("12.51"));
+    EXPECT_GE(result->fills[0].time, Hour(26));
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -768,6 +874,12 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = RectangleParams();
     bad.touch_zone = D("0");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = OpeningRange();
+    bad.opening_bars = 0;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = OpeningRange();
+    bad.timeframe = Timeframe::kD1;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
 }
 

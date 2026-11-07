@@ -621,6 +621,12 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_EQ((*triple)->Needs().warmup_bars, 60u);
     EXPECT_TRUE(make("setup='double_bottom'\n").has_value());
     EXPECT_FALSE(make("swing_bars=0\n").has_value());
+    auto opening =
+        make("timeframe='5m'\nsetup='opening_range'\nopening_bars=3\n");
+    ASSERT_OK(opening);
+    EXPECT_EQ((*opening)->Needs().warmup_bars, 4u);  // and the bar before
+    EXPECT_FALSE(make("opening_bars=0\n").has_value());
+    EXPECT_FALSE(make("timeframe='1d'\nsetup='opening_range'\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

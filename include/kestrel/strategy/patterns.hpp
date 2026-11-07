@@ -117,6 +117,13 @@ std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
                                                std::size_t strength,
                                                const types::Decimal& zone);
 
+// The opening range: the high and low of a session's first `n` bars, answered
+// on the newest bar when it is the n-th to open at or after `start` (the
+// session's open), so once a session. The bar before them is needed to tell:
+// nullopt on any other bar, with n = 0, or with fewer than n + 1 bars.
+std::optional<PriceRange> OpeningRangeOf(std::span<const types::Bar> bars,
+                                         std::size_t n, types::Timestamp start);
+
 // The average close of the `period` bars ending `back` bars before the newest
 // (back = 0: ending with it), to 8 decimal places.
 std::optional<types::Decimal> Sma(std::span<const types::Bar> bars,

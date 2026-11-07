@@ -322,6 +322,30 @@ TEST(Patterns, TripleBottom) {
     EXPECT_EQ(twice->range.low, D("10.1"));
 }
 
+TEST(Patterns, OpeningRange) {
+    // Bars at minutes 0, 5, ..., 25; the session opens at minute 10.
+    std::vector<types::Bar> bars = {B("20", "1"),  B("21", "2"), B("12", "10"),
+                                    B("13", "11"), B("14", "9"), B("15", "12")};
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        bars[i].open_time = types::FromEpochSeconds(static_cast<int>(i) * 300);
+    }
+    const auto open = types::FromEpochSeconds(600);
+    const std::span<const types::Bar> all(bars);
+    // On the third bar from the open, the range of those three only.
+    const auto range = OpeningRangeOf(all.first(5), 3, open);
+    ASSERT_TRUE(range);
+    EXPECT_EQ(range->high, D("14"));
+    EXPECT_EQ(range->low, D("9"));
+    // Before it and after it, none: once a session.
+    EXPECT_FALSE(OpeningRangeOf(all.first(4), 3, open));
+    EXPECT_FALSE(OpeningRangeOf(all, 3, open));
+    // One bar: the first bar from the open.
+    EXPECT_TRUE(OpeningRangeOf(all.first(3), 1, open));
+    // The bar before the open is needed to tell, and n must be positive.
+    EXPECT_FALSE(OpeningRangeOf(all.subspan(2, 3), 3, open));
+    EXPECT_FALSE(OpeningRangeOf(all.first(5), 0, open));
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

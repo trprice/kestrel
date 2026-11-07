@@ -273,6 +273,13 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       once the venue can link them (one-cancels-other), instead of selling
       at market on a close past it; short entries and stop-and-reverse once
       the paper venue can short.
+- [ ] `breakout` setups for the deck's remaining patterns, on
+      `SwingPoints`: the inverse head-and-shoulders (three swing lows, the
+      middle lowest, bought above a neckline through the two swing highs,
+      which may slope); triangles, the ascending first (flat highs, rising
+      swing lows), then symmetrical ones (a fitted line through the highs);
+      and cup-and-handle (a rounded decline and recovery to the old high, a
+      small pullback, then the break; mainly daily bars, and rare).
 - [ ] EMA crossover and RSI mean-reversion
 - [ ] Breakout / Donchian channel with an ATR stop
 - [ ] Grid trading and dollar-cost averaging
@@ -829,6 +836,9 @@ the header of the code concerned.
       within `touch_zone` of the height, entered above the neckline;
       `SwingPoints` and `MultipleBottomOf` in `patterns.hpp` (swing points
       also underlie triangles, head-and-shoulders and cup-and-handle).
+- [x] `setup = "opening_range"`: the session's first `opening_bars` bars
+      (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
+      close of the last of them; the UTC day on a market that never closes.
 - [x] Daily bars on a market that closes: breakout places a daily setup's
       entry, and sells a target or time exit, at the next open (it never
       traded on daily stock bars before), and the backtest walks a daily
