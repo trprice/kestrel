@@ -138,6 +138,13 @@ struct MarketMakerParams {
     // quote (a higher bid); the skew or a widened spread moves the target
     // the other way, towards the quote, and still replaces it.
     bool keep_at_touch = false;
+    // Pull both quotes once no quote has arrived for this long, so a quote is
+    // not left resting at a price the strategy can no longer check (a
+    // stalled feed, a dropped connection); the next quote puts them back.
+    // Checked on a timer (OnTimer), a quarter of this, from 100 ms to 1 s.
+    // Zero (the default) never pulls. A feed that sends only changes is
+    // silent for seconds in a quiet market, so this wants tens of seconds.
+    std::chrono::milliseconds quiet_pull{0};
     // How far into the spread a computed price may go. kCompute quotes the
     // computed price; kJoin holds a quote to the best price on its side
     // (never better), so a bid computed inside the spread joins the best bid
@@ -180,9 +187,9 @@ struct MarketMakerParams {
 // With flow_pull_imbalance set, the side recent trades are running against
 // is pulled (see MarketMakerParams).
 //
-// Not modelled yet: pulling quotes when the feed goes quiet (the strategy only
-// runs when a quote arrives), and fees charged in the base asset (the P&L
-// counts them, the inventory does not).
+// With quiet_pull set, both quotes are pulled when the feed goes quiet (see
+// MarketMakerParams); the protection rules still run only when a quote
+// arrives.
 class MarketMaker : public Strategy {
    public:
     // Throws std::invalid_argument unless quantity, half_spread_bps and
@@ -203,6 +210,7 @@ class MarketMaker : public Strategy {
     void OnFill(Context& context, const types::Fill& fill) override;
     void OnOrderUpdate(Context& context,
                        const types::OrderStatus& status) override;
+    void OnTimer(Context& context) override;
     void OnStop(Context& context) override;
 
    private:
@@ -367,6 +375,11 @@ class MarketMaker : public Strategy {
     FlowPulls mFlowAsk;
     std::optional<types::Timestamp> mFirstQuote;
     types::Timestamp mLastQuote;
+    // When the last quote for the symbol arrived, for quiet_pull, and
+    // whether the quotes were pulled for its silence.
+    std::optional<types::Timestamp> mLastArrival;
+    bool mQuietPulled = false;
+    bool mQuietLogged = false;  // the pull was logged: log the return too
 };
 
 }  // namespace kestrel::strategy

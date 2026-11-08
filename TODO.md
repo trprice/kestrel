@@ -212,9 +212,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
-      the next quote (see Known limitations), so stale quotes are not filled
-      after a move the strategy never saw.
 - [ ] Stronger inventory control: a skew that grows faster than linearly
       with the position (Avellaneda-Stoikov style) and with how long the
       position has been held. The current skew is linear in the position.
@@ -362,9 +359,8 @@ the header of the code concerned.
   at the mid, and exits are market orders (taker fee and slippage).
 - A halt is permanent for the run; only restarting the process resumes it.
   Nothing is persisted, so a restart starts with fresh P&L and a fresh peak.
-- Rules run only when a quote arrives, so a silent feed trips none of them.
-- No pulling of quotes when the feed goes quiet: it only acts when a quote
-  arrives.
+- Rules run only when a quote arrives, so a silent feed trips none of them;
+  `quiet_pull_ms` pulls the quotes after a silence, but checks no rule.
 - Volatility scaling of the spread (`vol_multiplier`) did not beat a fixed
   spread of the same average width on the two recorded ZEC/USDT quote days
   (2026-10-19, 8 h; 2026-10-30, 24 h; conservative fills). Fixed 4 bps made
@@ -716,6 +712,16 @@ the header of the code concerned.
       Untested on a wide-tick pair. The
       same replays without post-only lose far more (4 bps: -134.4), as
       quotes the book moved through in flight fill as takers.
+- [x] `OnTimer` (`Requirements::timer_interval`): a strategy hook called on
+      the runner's clock whether or not anything arrives; `Run()` wakes for
+      it, and backtests tick it at simulated times between events.
+- [x] Market maker `quiet_pull_ms`: pulls both quotes after that long with
+      no quote, on the timer. In the same replays, 30 and 60 s were
+      neutral (vs hold within 0.3; 32 and 5 pulls in four days), while 2
+      and 5 s pulled 41,819 and 11,399 times and lost more (4 bps: -34.2
+      and -41.2 against -30.8): Binance.US's book stream is silent while
+      the book is unchanged, over 10 s 2,695 times on ZEC/USDT. It guards
+      against a stalled feed; it is not an edge.
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

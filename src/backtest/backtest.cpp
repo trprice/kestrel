@@ -349,10 +349,15 @@ types::Result<BacktestResult> RunBacktest(
         }
     };
 
-    // Session hooks due before `until` run at their own times.
+    // Session hooks and timer ticks due before `until` run at their own
+    // times.
     const auto run_sessions = [&](types::Timestamp until) {
-        while (const auto due = runner.NextSessionEvent()) {
-            if (*due >= until) {
+        while (true) {
+            auto due = runner.NextSessionEvent();
+            if (const auto timer = runner.NextTimer()) {
+                due = due ? std::min(*due, *timer) : *timer;
+            }
+            if (!due || *due >= until) {
                 break;
             }
             now = std::max(now, *due);

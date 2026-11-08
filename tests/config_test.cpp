@@ -558,6 +558,10 @@ TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
     EXPECT_TRUE(make("keep_at_touch=true\ntouch='join'\n").has_value());
     EXPECT_TRUE(make("touch='improve'\n").has_value());
     EXPECT_FALSE(make("touch='best'\n").has_value());
+    auto quiet = make("quiet_pull_ms=2000\n");
+    ASSERT_OK(quiet);
+    EXPECT_EQ((*quiet)->Needs().timer_interval, std::chrono::milliseconds(500));
+    EXPECT_FALSE(make("quiet_pull_ms=-1\n").has_value());
 }
 
 TEST(Factory, MarketMakerVolatilityScalingIsOptIn) {

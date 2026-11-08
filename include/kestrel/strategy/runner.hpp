@@ -201,6 +201,11 @@ class Runner : private Context {
     // that advances a clock: set the clock to it and Drain(). Nullopt on a
     // market that never closes, or before Begin().
     std::optional<types::Timestamp> NextSessionEvent() const;
+    // When OnTimer is next due (Requirements::timer_interval), likewise for a
+    // driver: Drain() calls it once the clock has reached it. Nullopt
+    // without a timer, or before Begin(). The timer ignores market sessions:
+    // it ticks while the market is closed too. For the driving thread only.
+    std::optional<types::Timestamp> NextTimer() const { return mNextTimer; }
 
    private:
     struct BarEvent {
@@ -279,6 +284,8 @@ class Runner : private Context {
     // session once one has ended. StartSessions does the first check.
     void StartSessions(types::Timestamp now);
     void CheckSession(types::Timestamp now);
+    // Calls OnTimer if it is due.
+    void CheckTimer(types::Timestamp now);
     // Adopts a restriction the calendar learned of since mSession was read.
     void RefreshSession(types::Timestamp now);
     // Logs the quote streams that have gone quiet while the market is open
@@ -315,6 +322,9 @@ class Runner : private Context {
     std::optional<types::MarketHours::Session> mSession;
     bool mOpenCalled = false;
     bool mClosingCalled = false;
+    // OnTimer: its interval, and when it is next due.
+    std::chrono::milliseconds mTimerInterval{0};
+    std::optional<types::Timestamp> mNextTimer;
     // The stale-quote check (Run() thread only): when each quoted symbol's
     // last quote came (or the run began), and which are reported stale.
     std::map<types::Symbol, types::Timestamp> mLastQuote;

@@ -159,9 +159,17 @@ class RecordingStrategy : public strategy::Strategy {
         updates.emplace_back(status.order_id, status.state,
                              status.filled_quantity);
     }
+    void OnTimer(strategy::Context& context) override {
+        timers.push_back(context.Now());
+        if (on_timer) {
+            on_timer();
+        }
+    }
     void OnStop(strategy::Context&) override { stopped = true; }
 
     Requirements requirements;
+    std::vector<types::Timestamp> timers;
+    std::function<void()> on_timer;
     bool throw_on_bar = false;
     bool throw_on_fill = false;
     int orders_on_start = 0;
@@ -777,6 +785,79 @@ TEST_F(RunnerTest, DrainProcessesEventsAndFillsOnTheCallingThread) {
     runner->End();
     EXPECT_TRUE(strategy->stopped);
     EXPECT_EQ(data->stops.load(), 1);
+}
+
+TEST_F(RunnerTest, DrainCallsOnTimerOnceItIsDue) {
+    strategy->requirements.timer_interval = std::chrono::seconds(1);
+    auto now = std::make_shared<types::Timestamp>(Hour(5));
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [now] { return *now; });
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(runner->NextTimer(), Hour(5) + std::chrono::seconds(1));
+    *now += std::chrono::milliseconds(999);
+    runner->Drain();
+    EXPECT_TRUE(strategy->timers.empty());
+    *now += std::chrono::milliseconds(1);
+    runner->Drain();
+    ASSERT_EQ(strategy->timers.size(), 1u);
+    // A late tick is not made up: the next is an interval after it ran.
+    *now += std::chrono::milliseconds(3500);
+    runner->Drain();
+    EXPECT_EQ(strategy->timers.size(), 2u);
+    EXPECT_EQ(runner->NextTimer(), *now + std::chrono::seconds(1));
+    runner->End();
+}
+
+TEST_F(RunnerTest, ATimerReArmsWhenTheClockStepsBack) {
+    strategy->requirements.timer_interval = std::chrono::seconds(1);
+    auto now = std::make_shared<types::Timestamp>(Hour(5));
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [now] { return *now; });
+    ASSERT_OK(runner->Begin());
+    // An hour back (NTP, a resumed VM): due a second from the new time, not
+    // when the clock catches up.
+    *now -= std::chrono::hours(1);
+    runner->Drain();
+    EXPECT_EQ(runner->NextTimer(), *now + std::chrono::seconds(1));
+    *now += std::chrono::seconds(1);
+    runner->Drain();
+    EXPECT_EQ(strategy->timers.size(), 1u);
+    runner->End();
+}
+
+TEST_F(RunnerTest, NoTimerUnlessAsked) {
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_FALSE(runner->NextTimer());
+    runner->End();
+}
+
+// Run() wakes for the timer with nothing else arriving, by a clock that runs.
+TEST_F(RunnerTest, RunWakesForTheTimer) {
+    strategy->requirements.timer_interval = std::chrono::milliseconds(20);
+    options.fill_poll_interval = std::chrono::milliseconds(0);
+    std::promise<void> ticked;
+    strategy->on_timer = [this, &ticked] {
+        if (strategy->timers.size() == 3) {
+            ticked.set_value();
+        }
+    };
+    const auto started = std::chrono::steady_clock::now();
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options, [started] {
+            return Hour(5) +
+                   std::chrono::duration_cast<types::Timestamp::duration>(
+                       std::chrono::steady_clock::now() - started);
+        });
+    thread = std::thread([this] { result = runner->Run(); });
+    EXPECT_EQ(ticked.get_future().wait_for(std::chrono::seconds(5)),
+              std::future_status::ready);
+    Finish();
+    ASSERT_GE(strategy->timers.size(), 3u);
+    EXPECT_GE(strategy->timers[1] - strategy->timers[0],
+              std::chrono::milliseconds(20));
 }
 
 TEST_F(RunnerTest, RecordsFillsAndAFinalPnlSnapshotWhenAskedTo) {

@@ -129,7 +129,10 @@ TEST(MarketMakerTest, RejectsBadParameters) {
                  p.flow_pull_imbalance = D("0.5");
                  p.flow_window = std::chrono::milliseconds(0);
              },
-             [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); }}) {
+             [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); },
+             [](MarketMakerParams& p) {
+                 p.quiet_pull = std::chrono::milliseconds(-1);
+             }}) {
         auto p = Params();
         change(p);
         EXPECT_THROW(MarketMaker{p}, std::invalid_argument);
@@ -431,6 +434,70 @@ TEST(MarketMakerTest, ImproveJoinsASpreadTooNarrowToImprove) {
                                                                 : "99.99"));
         EXPECT_EQ(m.Orders()[1].limit_price, D("100.01"));  // at the touch
     }
+}
+
+TEST(MarketMakerTest, PullsItsQuotesWhenTheFeedGoesQuiet) {
+    auto p = Params();
+    p.quiet_pull = std::chrono::milliseconds(2000);
+    Maker m("1", p);
+    // A timer a quarter of the quiet time (500 ms), held to 100 ms - 1 s.
+    EXPECT_EQ(m.strategy.Needs().timer_interval,
+              std::chrono::milliseconds(500));
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+    m.context.now += std::chrono::milliseconds(1999);
+    m.strategy.OnTimer(m.context);
+    EXPECT_TRUE(m.context.venue.cancelled.empty());
+    m.context.now += std::chrono::milliseconds(1);
+    m.strategy.OnTimer(m.context);
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    // Still quiet: nothing more to do.
+    m.context.now += std::chrono::seconds(5);
+    m.strategy.OnTimer(m.context);
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+    // The next quote puts them back.
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().size(), 4u);
+}
+
+TEST(MarketMakerTest, AQuietPullWaitsOutACancelThatLostToAFill) {
+    auto p = Params();
+    p.quiet_pull = std::chrono::milliseconds(1000);
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.context.venue.outcome = CancelOutcome::kAlreadyFilled;
+    m.context.now += std::chrono::seconds(1);
+    m.strategy.OnTimer(m.context);  // both cancels lose to fills
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+    // Until the venue settles them, a tick does not cancel them again.
+    m.context.now += std::chrono::milliseconds(250);
+    m.strategy.OnTimer(m.context);
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+    for (const char* id : {"order-1", "order-2"}) {
+        auto filled = StatusOf(id, OrderState::kFilled);
+        filled.filled_quantity = D("0.5");
+        m.strategy.OnFill(
+            m.context,
+            FillOf(id == std::string("order-1") ? Side::kBuy : Side::kSell,
+                   "0.5", id));
+        m.strategy.OnOrderUpdate(m.context, filled);
+    }
+    m.context.now += std::chrono::milliseconds(250);
+    m.strategy.OnTimer(m.context);  // settled: nothing left to pull
+    EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+    m.context.venue.outcome = CancelOutcome::kCancelled;
+    m.Quote("99.99", "100.01");  // and quoting resumes
+    EXPECT_EQ(m.Orders().size(), 4u);
+}
+
+TEST(MarketMakerTest, NeverPullsForQuietWithoutTheOption) {
+    Maker m;
+    EXPECT_EQ(m.strategy.Needs().timer_interval, std::chrono::milliseconds(0));
+    m.Quote("99.99", "100.01");
+    m.context.now += std::chrono::hours(1);
+    m.strategy.OnTimer(m.context);
+    EXPECT_TRUE(m.context.venue.cancelled.empty());
 }
 
 TEST(MarketMakerTest, ReplacesAQuoteOlderThanTheMaximumAge) {

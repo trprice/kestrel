@@ -51,10 +51,11 @@ MarketMaker::MarketMaker(MarketMakerParams params)
     if (mParams.skew_bps.IsNegative() || mParams.requote_bps.IsNegative() ||
         (mParams.requote_toward_bps &&
          mParams.requote_toward_bps->IsNegative()) ||
-        mParams.max_quote_age < std::chrono::milliseconds::zero()) {
+        mParams.max_quote_age < std::chrono::milliseconds::zero() ||
+        mParams.quiet_pull < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument(
-            "skew_bps, requote_bps, requote_toward_bps and max_quote_age "
-            "cannot be negative");
+            "skew_bps, requote_bps, requote_toward_bps, max_quote_age and "
+            "quiet_pull cannot be negative");
     }
     if (mParams.vol_multiplier.IsNegative() ||
         mParams.max_half_spread_bps.IsNegative()) {
@@ -112,6 +113,11 @@ Requirements MarketMaker::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
     needs.quotes = true;
+    if (mParams.quiet_pull > std::chrono::milliseconds::zero()) {
+        needs.timer_interval =
+            std::clamp(mParams.quiet_pull / 4, std::chrono::milliseconds(100),
+                       std::chrono::milliseconds(1000));
+    }
     return needs;
 }
 
@@ -157,6 +163,12 @@ Decimal MarketMaker::Size(const Decimal& room) const {
 void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     if (!mReady || quote.symbol != mParams.symbol) {
         return;
+    }
+    mLastArrival = context.Now();
+    mQuietPulled = false;
+    if (mQuietLogged) {
+        mQuietLogged = false;
+        spdlog::info("market_maker: quotes for {} again", quote.symbol);
     }
     if (mParams.flow_pull_imbalance.Sign() > 0) {
         NoteTrade(quote, context.Now());
@@ -699,6 +711,32 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
         }
     }
     return total;
+}
+
+void MarketMaker::OnTimer(Context& context) {
+    if (!mReady || mQuietPulled || !mLastArrival ||
+        mParams.quiet_pull <= std::chrono::milliseconds::zero()) {
+        return;
+    }
+    const auto quiet = context.Now() - *mLastArrival;
+    if (quiet < mParams.quiet_pull) {
+        return;
+    }
+    // Logged once per silence, when there was something to pull.
+    const bool resting = !mBid.order_id.empty() || !mAsk.order_id.empty();
+    if (resting && !mQuietLogged) {
+        mQuietLogged = true;
+        spdlog::warn(
+            "market_maker: no quote for {} for {} ms; pulling the quotes",
+            mParams.symbol,
+            std::chrono::duration_cast<std::chrono::milliseconds>(quiet)
+                .count());
+    }
+    // A side that cannot be pulled yet (a cancel lost to a fill) is tried
+    // again on the next tick.
+    const bool bid = Pull(context, mBid);
+    const bool ask = Pull(context, mAsk);
+    mQuietPulled = bid && ask;
 }
 
 void MarketMaker::OnStop(Context& context) {

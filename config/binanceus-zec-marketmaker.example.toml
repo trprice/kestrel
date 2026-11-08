@@ -72,6 +72,10 @@ post_only        = true
 # changed nothing; see TODO.md.
 # touch          = "join"
 # keep_at_touch  = true
+# Pull both quotes after this long with no quote (a stalled feed). The book
+# stream is silent while the book is unchanged, so keep it to tens of
+# seconds; 2-5 s pulled thousands of times in the replays and lost money.
+# quiet_pull_ms  = 60000
 
 # Drawdown protection. Every rule is off until its flag is set to true; the
 # numbers shown are the defaults (loss_cap_amount and drawdown_cap_amount have

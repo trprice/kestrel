@@ -19,6 +19,7 @@ subscribes to anything:
 | `bar_timeframes` | closed-bar streams to subscribe to for every symbol (none by default) |
 | `quotes` | whether to receive `OnQuote` |
 | `warmup_bars` | closed bars kept per series and loaded before `OnStart`, so indicators start with a full window |
+| `timer_interval` | how often to call `OnTimer` (zero, the default: never) |
 
 A backtest replays stored quotes only if `quotes` is true, and fetches the
 warmup bars plus the range from the database or the provider.
@@ -36,6 +37,7 @@ All hooks are optional except `Name()` and `Needs()`.
 | `OnOrderUpdate` | when an order you placed changes state or fills further, ending with a closed state (filled, cancelled, rejected, expired) |
 | `OnSessionOpen` | on a market that closes (US stocks on Schwab), when a session opens; not for a session already open when the runner starts |
 | `OnSessionClosing` | `RunnerOptions::session_closing_lead` (5 minutes) before a session closes, with the close time, while orders are still accepted: the time to flatten; right after `OnStart` if the runner starts in that window |
+| `OnTimer` | every `Requirements::timer_interval` of the runner's clock (simulated in a backtest), whether or not anything arrives; for acting on time passing, such as a feed gone quiet. A tick due when an event arrives runs just before it, and a late one is not made up |
 | `OnStop` | once at shutdown, after the streams are closed; before it, `run` cancels open orders that would open or add to a position and keeps those that close it (a protective stop), so cancel any others you want gone |
 
 Every hook gets a `Context&`, valid only during that call:

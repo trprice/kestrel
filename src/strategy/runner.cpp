@@ -404,7 +404,27 @@ types::Result<void> Runner::Begin() {
     mBegun = true;
     Guarded("OnStart", [this] { mStrategy->OnStart(*this); });
     StartSessions(mClock());
+    mTimerInterval = requirements.timer_interval;
+    if (mTimerInterval > std::chrono::milliseconds::zero()) {
+        mNextTimer = mClock() + mTimerInterval;
+    }
     return {};
+}
+
+void Runner::CheckTimer(types::Timestamp now) {
+    if (!mNextTimer) {
+        return;
+    }
+    if (*mNextTimer - now > mTimerInterval) {
+        // The clock stepped back (NTP, a resumed VM): due an interval from
+        // now, not when the clock catches up.
+        mNextTimer = now + mTimerInterval;
+    }
+    if (now < *mNextTimer) {
+        return;
+    }
+    Guarded("OnTimer", [this] { mStrategy->OnTimer(*this); });
+    mNextTimer = mClock() + mTimerInterval;  // an interval after it ran
 }
 
 void Runner::StartSessions(types::Timestamp now) {
@@ -722,9 +742,19 @@ types::Result<void> Runner::Run() {
             const SteadyTime at = steady + wait;
             deadline = deadline ? std::min(*deadline, at) : at;
         }
+        if (mNextTimer) {
+            // At most an interval, so a clock that steps back cannot stall
+            // the timer (CheckTimer re-arms it).
+            const auto wait = std::clamp<types::Timestamp::duration>(
+                *mNextTimer - mClock(), types::Timestamp::duration::zero(),
+                mTimerInterval);
+            const SteadyTime at = steady + wait;
+            deadline = deadline ? std::min(*deadline, at) : at;
+        }
         auto event = Pop(deadline);
         CheckSession(mClock());
         CheckQuoteFeeds(mClock());
+        CheckTimer(mClock());
         if (event) {
             running = Handle(*event);
         }
@@ -739,6 +769,7 @@ types::Result<void> Runner::Run() {
 
 bool Runner::Drain() {
     CheckSession(mClock());
+    CheckTimer(mClock());
     do {
         while (auto event = TryPop()) {
             if (!Handle(*event)) {

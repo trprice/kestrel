@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -26,6 +27,9 @@ struct Requirements {
     // Context::Bars. They are loaded with GetBars before OnStart, so the
     // strategy starts with a full window. At least 1 bar is always kept.
     std::size_t warmup_bars = 0;
+    // Call OnTimer every this long of the runner's clock (simulated in a
+    // backtest), whether or not anything arrives; zero for never.
+    std::chrono::milliseconds timer_interval{0};
 };
 
 // What a strategy may touch. Valid only for the duration of a hook call.
@@ -109,6 +113,13 @@ class Strategy {
     virtual void OnSessionClosing(Context&, types::Timestamp close) {
         (void)close;
     }
+    // Every Requirements::timer_interval from OnStart, on the strategy thread
+    // like every hook, so a strategy can act on time passing with nothing
+    // arriving (a feed gone quiet). A tick due when an event arrives runs
+    // just before it. A tick late behind a slow hook is not made up: the
+    // next is due an interval after it ran. It ticks while the market is
+    // closed too.
+    virtual void OnTimer(Context&) {}
     // After the last event, when the runner stops.
     virtual void OnStop(Context&) {}
 };

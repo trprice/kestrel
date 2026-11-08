@@ -501,6 +501,44 @@ std::shared_ptr<ReplayDataSource> QuoteData() {
     return data;
 }
 
+// Wants quotes and a timer every 5 minutes, and records both by minute.
+class TimedQuotes : public QuoteStrategy {
+   public:
+    explicit TimedQuotes(std::vector<std::string>& out) : events(out) {}
+    strategy::Requirements Needs() const override {
+        auto r = QuoteStrategy::Needs();
+        r.timer_interval = std::chrono::minutes(5);
+        return r;
+    }
+    void OnQuote(strategy::Context& context, const types::Quote&) override {
+        events.push_back("quote " + Minute(context.Now()));
+    }
+    void OnTimer(strategy::Context& context) override {
+        events.push_back("timer " + Minute(context.Now()));
+    }
+    static std::string Minute(types::Timestamp t) {
+        return std::to_string(
+            std::chrono::duration_cast<std::chrono::minutes>(t - Hour(0))
+                .count());
+    }
+    std::vector<std::string>& events;
+};
+
+TEST(BacktestTest, TimerTicksAtTheirReplayTimesBetweenQuotes) {
+    auto options = Options();
+    options.start = Hour(0);
+    options.end = Hour(0) + std::chrono::minutes(40);
+    std::vector<std::string> events;
+    ASSERT_OK(RunBacktest(QuoteData(), std::make_unique<TimedQuotes>(events),
+                          options));
+    // A tick due at a quote's time comes just before it, as in Run(); none
+    // at the end itself.
+    EXPECT_EQ(events,
+              (std::vector<std::string>{
+                  "timer 5", "timer 10", "quote 10", "timer 15", "timer 20",
+                  "quote 20", "timer 25", "timer 30", "quote 30", "timer 35"}));
+}
+
 // Wants quotes, and hourly bars too if `with_bars`. Records every bar and quote
 // it is handed as a (kind, time) pair, where a bar's time is when it closed,
 // and buys 1 unit at market on the second one.

@@ -60,6 +60,10 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
   as ZEC's tick is too fine for a quote to sit exactly there. Every
   setting lost to holding over the four windows (6 bps: −19), and without
   post-only quotes the same replays lose several times as much.
+- **Pulling quotes when the feed goes quiet** (`quiet_pull_ms`, same
+  replays): neutral at 30 or 60 s; at 2 or 5 s it pulled about 42,000
+  and 11,000 times in a quiet market and lost more. A safety guard, not
+  an edge.
 - **Out of sample (Nov 1–3, ZEC falling):** the best setting lost 19.7
   against holding, with a 1 s markout of −6.2 bps.
 
