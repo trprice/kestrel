@@ -11,46 +11,8 @@ the reference sections, Known limitations and Done.
 
 ## Priorities
 
-From a code review (Nov 5 2026), each claim checked against the code. Work
-the groups in order.
-
-### 1. Live-money safety (before a live Binance.US run)
-Done (Nov 5 2026): the risk gate's holdings on a venue without positions,
-the risk limits on `order`, and Binance.US order statuses that fail closed.
-See Done.
-
-### 2. The Schwab and recording path in use now
-Done (Nov 5 2026): Schwab `GetBars` retries, idempotent quote saves,
-database timeouts, and unknown config keys rejected everywhere. See Done.
-
-### 3. Quick hygiene
-Done (Nov 5 2026): the json download pinned by its hash, a smaller Docker
-context, the setup script's password off the process list, warnings on
-every target (errors in CI), and a safer token file save. See Done.
-
-### 4. Robustness, when convenient
-- [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
-      listeners' lock. The `ExecutionCallback` contract forbids calling back
-      into the venue, so nothing deadlocks today; calling them outside the
-      lock would make a contract breach harmless.
-- [ ] Refuse a `limit_price` on a `kStop` (stop-market) request instead of
-      ignoring it.
-- [ ] Quote `seq` is numbered per process: two recorders of one symbol
-      interleave. Check the stored maximum at each flush, or number in SQL.
-- [ ] Push an instant fill-or-kill expiry in the paper venue to
-      `StreamExecutions` listeners (the acknowledgement already says it).
-- [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
-- [ ] Database rows that do not parse: `std::stoll`/`stod` throw and
-      `sql::ParseDecimal` reads zero; return kParse instead.
-- [ ] The backtest summary keeps every mark of the run; only the markout
-      horizons' tail is needed.
-
-### 5. Before the Kraken or Schwab trading venue lands
-- [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
-      whether `Authorization` goes to another host.
-- [ ] Keep `BinanceUSApi`'s rule: a request that is not idempotent is never
-      retried (`util::Retry` itself retries a timeout).
-- [ ] A stop-limit order type, if a venue needs one.
+Empty for now: the next work is being decided. The code review's items
+(Nov 5 2026) are done (see Done) or moved to their sections under Projects.
 
 ## In progress
 
@@ -166,6 +128,14 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       provider's docs (Schwab's is a step under In progress). The lists in the code
       and docs/design.md came from memory.
 
+- [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
+      whether `Authorization` goes to another host. Before the Kraken or
+      Schwab trading venue lands.
+- [ ] Keep `BinanceUSApi`'s rule in the Kraken and Schwab venues: a request
+      that is not idempotent is never retried (`util::Retry` itself retries
+      a timeout).
+- [ ] A stop-limit order type, if a venue needs one.
+- [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 ### Operations
 - [ ] Record quotes continuously: `stream --store` under systemd (a loop
       that restarts it) on the server, for several pairs, so backtests are not
@@ -222,6 +192,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Dry-run mode for live data: real quotes and the paper venue, with a switch
       to the live venue only when explicitly enabled
 
+- [ ] Quote `seq` is numbered per process: two recorders of one symbol
+      interleave. Check the stored maximum at each flush, or number in SQL.
+- [ ] Database rows that do not parse: `std::stoll`/`stod` throw and
+      `sql::ParseDecimal` reads zero; return kParse instead.
 ### Backtesting and research
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
       30 min) has stored quotes for its window (see Known limitations under
@@ -241,6 +215,8 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       hold" covers holding the starting balances; comparing against other
       benchmarks (an index, a basket) is not done
 
+- [ ] The backtest summary keeps every mark of the run; only the markout
+      horizons' tail is needed.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
@@ -321,6 +297,14 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
 - [ ] Shorting and margin in the paper venue and the P&L tracker
+- [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
+      listeners' lock. The `ExecutionCallback` contract forbids calling back
+      into the venue, so nothing deadlocks today; calling them outside the
+      lock would make a contract breach harmless.
+- [ ] Refuse a `limit_price` on a `kStop` (stop-market) request instead of
+      ignoring it.
+- [ ] Push an instant fill-or-kill expiry in the paper venue to
+      `StreamExecutions` listeners (the acknowledgement already says it).
 
 ## Known limitations
 

@@ -33,3 +33,4 @@ Requires CMake 3.25+ and GCC 12+ or Clang 16+. Paper mode needs no credentials.
 | [Writing a strategy](docs/writing-strategies.md) | the strategy interface, its hooks, the rules to follow, registering and testing one |
 | [Design](docs/design.md) | how information flows, the major classes, threads, design notes, source layout |
 | [Testing](docs/testing.md) | running the tests, database integration tests, running the suite in Docker |
+| [Strategy tests](docs/strategy-tests.md) | the backtests and paper runs done so far, and a short summary of each result |
