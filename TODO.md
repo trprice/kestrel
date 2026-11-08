@@ -16,14 +16,6 @@ Empty for now: the next work is being decided. The code review's items
 
 ## In progress
 
-### Strategy system and risk gate
-
-Built and tested with fakes, and reachable from `kestrel_app run` and
-`backtest`. Run on Binance.US in paper mode (including an 8 hour
-market-making session) and live (`market_maker` on ZEC/USDT, Oct 2026).
-
-Nothing is left to finish here (Nov 2026); see Done.
-
 ### Schwab data source
 
 Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
@@ -73,9 +65,9 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Drawdown that is measured continuously (the `max_drawdown` limit is
       sampled at order attempts only), and a version that halts and closes
       the position instead of only blocking entries
-- [ ] Stop-loss support: a per-position loss limit (`max_loss_per_position`)
-      and a risk-per-trade percentage need orders that carry a stop, which
-      `SmaCrossover` does not place
+- [ ] A per-position loss limit (`max_loss_per_position`) in the risk gate,
+      and risk-per-trade sizing from an order's stop distance. `breakout`
+      places its own protective stops; the gate does not check them.
 - [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
       reports that use them
 
@@ -89,31 +81,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       source under In progress). It can reuse `SchwabAuth` and `SchwabApi`,
       which already handle tokens, renewal and retrying once after a 401;
       order placement has its own rate limit.
-- [ ] **Binance.US trading venue.** The data source is done. The venue is
-      reads checked against the live API on 2026-10-28 with `kestrel_app
-      account`. Orders are built: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
-      STOP_LOSS; `kst-` client order IDs; never resent, looked up by client
-      ID after a timeout or 5xx), `CancelOrder` (-2011 looked up to tell
-      filled from closed), `CancelAll`, an order-rate limit (9/s, 10 burst,
-      against Binance's 100 per 10 s), and the minimum order value
-      (`SymbolInfo::min_notional`, also enforced by the paper venue). The test
-      endpoint accepted limit buy, market buy and limit sell requests on
-      2026-10-29 and refused a price under the band (-1013 PERCENT_PRICE).
-      A real round trip on 2026-10-29 (limit buy 0.002 ZEC at 700, 46%
-      under the market, order 412845258) checked the rest: the RESULT reply,
-      the open order and 1.40 USDT locked, a cancel from a fresh process
-      (symbol found by lookup), the balance released with no fill, and a
-      second cancel answered -2011 and reported as already closed.
-      Leftover orders: `Runner::Begin` now cancels every order open on the
-      configured symbols before `OnStart`, and refuses to start if it cannot
-      (Kestrel assumes it alone controls the account's orders while it runs).
-      `HasLiveVenue` is now true for Binance.US, so `run` trades live on it.
-      Exchange info advertises 6000
-      request weight a minute, not 1200; the client now keeps to 2400 (it
-      was 960).
 - [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
-      until a fill shows in `GetFills`, and the venue's clock against ours.
-      Needs order placement first; store it beside `venue_latency`.
+      until a fill shows in `GetFills`, and the venue's clock against ours,
+      stored beside `venue_latency`.
 - [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
       the API key (no new credentials), keepalive about every 30 minutes,
       `executionReport` to fills and order states, a REST catch-up after a
@@ -136,10 +106,11 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       a timeout).
 - [ ] A stop-limit order type, if a venue needs one.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
+
 ### Operations
 - [ ] Record quotes continuously: `stream --store` under systemd (a loop
-      that restarts it) on the server, for several pairs, so backtests are not
-      drawn from 32 hours of one pair. Mind the retention item below.
+      that restarts it) on the server, for several pairs. Recordings so far
+      were runs of a few days started by hand. Mind the retention item below.
 - [ ] **Data retention for the database** (from the 10 minute paper run,
       2026-10-28; nothing is configured yet, no compression or retention
       policy exists on either hypertable). `quotes` is the only table that
@@ -185,17 +156,15 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       orders a day at the paper run's pace), which would outgrow `quotes`.
 - [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
       stays down
-- [ ] Health checks: stale-data detection, stream reconnect counts, clock-skew
-      warning
+- [ ] Health checks: stream reconnect counts and a clock-skew warning
+      (stale feeds are already logged; see Done)
 - [ ] Structured logging, with a per-strategy log context
 - [ ] Run several strategies in one process, sharing data subscriptions
-- [ ] Dry-run mode for live data: real quotes and the paper venue, with a switch
-      to the live venue only when explicitly enabled
-
 - [ ] Quote `seq` is numbered per process: two recorders of one symbol
       interleave. Check the stored maximum at each flush, or number in SQL.
 - [ ] Database rows that do not parse: `std::stoll`/`stod` throw and
       `sql::ParseDecimal` reads zero; return kParse instead.
+
 ### Backtesting and research
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
       30 min) has stored quotes for its window (see Known limitations under
@@ -217,6 +186,7 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 
 - [ ] The backtest summary keeps every mark of the run; only the markout
       horizons' tail is needed.
+
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
@@ -224,12 +194,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       reusable pieces so strategies do not each reimplement them, in
       `strategy/patterns.hpp` beside the SMA and the bar patterns (NR,
       inside bar, range) already there
-- [ ] Study `breakout` on Schwab bars: several symbols, 30-minute and daily,
-      against `sma_crossover` and holding, `confirm = "none"` against
-      `"closes"`, parameters fixed on one period and tested on another. A
-      first October SPY 30-minute run (one month, one symbol, far too few
-      trades to judge): nr -12.87 (19 trades, 11 won), inside -10.49 (18, 9
-      won), range -14.84 (1 trade).
 - [ ] `breakout`: rest the target as a sell limit beside the protective stop
       once the venue can link them (one-cancels-other), instead of selling
       at market on a close past it; short entries and stop-and-reverse once
@@ -242,9 +206,10 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       and cup-and-handle (a rounded decline and recovery to the old high, a
       small pullback, then the break; mainly daily bars, and rare).
 - [ ] EMA crossover and RSI mean-reversion
-- [ ] Breakout / Donchian channel with an ATR stop
+- [ ] An ATR stop option for `breakout` (the `range` setup is already a
+      Donchian breakout, and `trail_bars` a channel exit)
 - [ ] Grid trading and dollar-cost averaging
-- [ ] Multi-symbol strategies: pairs trading (momentum rotation is done)
+- [ ] Pairs trading
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
 #### Market maker
@@ -775,6 +740,15 @@ the header of the code concerned.
 - [x] Binance.US order statuses with an unknown side, type or time in force
       fail with kParse instead of being read as a buy, a limit order or GTC
       (a missing time in force, as on market orders, is still GTC)
+- [x] Binance.US trading venue: `PlaceOrder` (LIMIT GTC/IOC/FOK, MARKET,
+      STOP_LOSS, LIMIT_MAKER; `kst-` client order IDs, never resent, looked
+      up by client ID after a timeout or 5xx), `CancelOrder` (-2011 looked up
+      to tell filled from closed), `CancelAll`, a 9/s order-rate limit, the
+      minimum order value, and request weight kept to 2400 of the 6000 a
+      minute advertised. Checked live (a resting order placed and cancelled
+      on 2026-10-29), and `market_maker` traded live on ZEC/USDT in Oct-Nov
+      2026. `run` cancels every open order on its symbols before starting.
+      Fills are polled; the user-data stream is under Venues in Projects.
 
 ### Market hours
 - [x] `DataSource::Hours()`: always open for crypto; for Schwab, the US
