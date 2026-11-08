@@ -52,9 +52,9 @@ forming one; the volume can be fractional (REST truncates it); the bars match
       defensive (see Done); renewals work, and do not rotate the refresh
       token, so the 7 days still run from `authorize`.
 - [ ] Then the trading venue (see Venues under Projects). Its header's TODO
-      predates `SchwabAuth` and `SchwabApi` and should be rewritten to build
-      on them. Pushed executions (ACCT_ACTIVITY) would also have to share
-      `SchwabStreamer`'s connection.
+      lists the endpoints, built on `SchwabAuth` and `SchwabApi`; pushed
+      executions (ACCT_ACTIVITY) would have to share `SchwabStreamer`'s
+      connection.
 
 ## Projects
 
@@ -262,6 +262,8 @@ made +0.77 USDT in the five minutes after their fills but +9.99 by the end
       paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
 - [ ] Shorting and margin in the paper venue and the P&L tracker
+- [ ] MSVC: `Decimal` uses `__int128`, which MSVC lacks; it needs a small
+      wide-integer fallback (the TODO in `src/types/decimal.cpp`).
 - [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
       listeners' lock. The `ExecutionCallback` contract forbids calling back
       into the venue, so nothing deadlocks today; calling them outside the

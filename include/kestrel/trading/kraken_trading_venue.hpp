@@ -21,16 +21,16 @@ namespace kestrel::trading {
 //   PlaceOrder: /0/private/AddOrder (pair, type=buy|sell, ordertype=
 //             market|limit|stop-loss, volume, price, price2, timeinforce=
 //             GTC|IOC|GTD, cl_ord_id, validate). Returns result.txid[].
-//   Cancel:   /0/private/CancelOrder (txid); /0/private/CancelAll. Cancelling
-//   an
-//             order that already filled returns EOrder:Unknown order -> look it
-//             up with /0/private/QueryOrders to report kAlreadyFilled.
+//   Cancel:   /0/private/CancelOrder (txid); /0/private/CancelAll.
+//             Cancelling an order that already filled returns EOrder:Unknown
+//             order -> look it up with /0/private/QueryOrders to report
+//             kAlreadyFilled or kAlreadyClosed.
 //   GetOrder: /0/private/QueryOrders (txid); the runner calls it for an order
 //             that has left OpenOrders, so it must report closed orders.
-//   Open orders: /0/private/OpenOrders.   Fills: /0/private/TradesHistory
-//   (start=
-//             <epoch>, paged with ofs).   Balances: /0/private/BalanceEx
-//             (balance + hold_trade gives the locked amount).
+//   Open orders: /0/private/OpenOrders.
+//   Fills:    /0/private/TradesHistory (start=<epoch>, paged with ofs).
+//   Balances: /0/private/BalanceEx (balance + hold_trade gives the locked
+//             amount).
 //   Positions: spot has none; derive them from balances and trade history.
 //   Limits:   a per-account call counter (starter tier: max 15, decays 0.33/s;
 //             TradesHistory costs 2); order placement has a separate matching
