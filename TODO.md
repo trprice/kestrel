@@ -279,16 +279,17 @@ Things that work but have edges a user could trip over. Each is also noted in
 the header of the code concerned.
 
 ### Strategy runner (`strategy/runner.hpp`)
-- Quotes are conflated per symbol, but the event queue is otherwise unbounded:
-  a strategy slower than the bar stream still falls behind (bars are never
-  dropped).
+- Quotes are conflated per symbol, and queued bars are capped at
+  `RunnerOptions::max_queued_bars` (1000; none in backtests): a bar arriving
+  past it is dropped, logged, and recovered by the gap backfill, but the
+  newest one dropped in a quiet market is not seen until the next bar.
 - Fills and order changes are pushed only by venues that implement
   `StreamExecutions` (today only the paper venue). Others are polled, so
   `OnFill` can lag the fill by up to `fill_poll_interval` (default 1 s).
 - With pushes, the backstop poll looks back `Runner::kSeenFillHorizon`
   (10 minutes) behind the newest fill, and a pushed fill older than that is
-  dropped as stale. The paper venue pushes with no delay, so live latency is
-  not modelled in paper runs (see the paper-delay item under Projects).
+  dropped as stale. The paper venue pushes at once unless `[paper]
+  report_latency_ms` is set.
 - The fill poll starts from the time `Begin()` ran and assumes the venue's fill
   times and the runner's clock roughly agree. A fill stamped earlier than the
   start (clock skew) is missed.
@@ -306,7 +307,8 @@ the header of the code concerned.
   `sigtimedwait`; any other driver must do the same.
 
 ### Risk gate (`trading/risk_gate.hpp`)
-- Optional in `RunnerOptions`. Nothing forces it on for live trading.
+- Optional in `RunnerOptions`. `run` refuses live mode without `[risk]`
+  (`ValidateForRun`); a driver that builds its own `Runner` is not checked.
 - Daily loss and drawdown are summed across symbols, so they must share a
   quote asset.
 - `max_drawdown` is sampled when an order is attempted: a peak or trough
@@ -348,14 +350,11 @@ the header of the code concerned.
   position's realized P&L is not visible through `GetPositions`.
 
 ### Paper venue (`trading/paper_trading_venue.hpp`)
-- Closed orders are kept for `GetOrder` and never dropped, so memory grows
-  with every order placed (a quoting strategy places thousands per hour).
-  Prune closed orders once the runner has reported their final state or after
-  an age.
-- Fill history grows without bound and `GetFills` scans all of it on every
-  call; both the runner's fill poll and the risk gate's daily-loss check hit
-  that path, so a paper venue left running for weeks gets slower and leaks
-  memory. Cap the history (or index it by time) rather than rescanning.
+- `run` keeps the newest 100,000 fills and closed orders
+  (`PaperOptions::max_fills`, `max_closed_orders`): `GetFills` from before
+  the oldest kept returns what is kept, and `GetOrder` of a forgotten order
+  is kNotFound. Backtests keep everything, so their memory grows with the
+  orders placed.
 - Market orders fill the whole remaining quantity against a single quote with
   fixed-bps slippage: no book depth and no size-aware slippage, so paper
   results flatter anything above retail size. Limit fills can be capped at
@@ -523,9 +522,11 @@ the header of the code concerned.
   latency, at most 50 fills of 1172 went (Oct 30, 2 bps, no latency) and vs
   hold moved by under 0.4 USDT. Most fills come from the opposite touch or
   trades through our price, not from trades at it.
-- Orders fill at the close of the bar that triggered them, plus slippage and
-  fees. Resting limit and stop orders can only trigger at closes, never on an
-  intrabar high or low.
+- Bar-only backtests walk each bar as open, nearer extreme, other extreme
+  and close: an order placed on a bar's close fills at the next price walked
+  (normally the next open), and a resting stop or limit at its own price
+  inside a bar. Which extreme came first is a guess unless
+  `--fill-timeframe` supplies finer bars.
 - An order placed in `OnStart` is rejected because no quote exists yet.
 - The summary has no annualized figures (Sharpe and the like); one day of
   data is too little for them. Its realized P&L gives the starting holding
@@ -535,12 +536,13 @@ the header of the code concerned.
   stamped before the fill's time, so a quote in the same millisecond is not
   counted as before it. A fill closer to the end than a horizon is left out
   of that horizon. Fees are not included.
-- Symbol info (tick, lot, minimum size) must be supplied by hand for every
-  symbol.
+- `backtest` takes symbol info (tick, lot, minimum size) from the
+  provider as it is today, not as it was over the replayed range; a direct
+  `RunBacktest` caller must set it for every symbol.
 
 ### Run recording (`strategy/run_recorder.hpp`)
-- Fills are recorded when the runner polls them, so a fill the venue reports
-  after the final poll at shutdown is missed. Fills and snapshots are written
+- Fills are recorded as the runner delivers them (pushed, or polled), so a
+  fill the venue reports after the final poll at shutdown is missed. Fills and snapshots are written
   on the strategy thread, so a slow database delays the strategy.
 - Unwritten fills are kept in memory (up to 100k) while the database is down;
   a snapshot that fails is skipped. A process that dies loses what was queued.
@@ -596,9 +598,9 @@ the header of the code concerned.
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
   land), but `CreateComponents` still builds the stub, so `bars` in live mode
   runs until the first order-related call fails with `kNotImplemented`.
-- Stream liveness: Schwab's streamer reconnects a connection silent for
-  60 s (it sends heartbeats, so silence means a half-open socket); the
-  Kraken and Binance.US streams have no such check. `run` logs a quote feed
+- Stream liveness: every WebSocket pings every 20 s, and IXWebSocket closes
+  and reconnects one whose pong has not come back by the next ping; Schwab's
+  streamer also reconnects after 60 s without a message. `run` logs a quote feed
   quiet for 2 minutes of open market time, but only logs it: pausing (or
   halting) the strategy on a stale feed is a trading-safety feature and
   belongs with the risk work.
@@ -689,8 +691,8 @@ the header of the code concerned.
       threading rules, `Context`, the risk gate)
 - [x] Backtest summary: equity, return, return against holding the starting
       balances, max drawdown, realized and unrealized P&L, fills, volume,
-      fees, closing sells won, inventory range, and the equity curve sampled
-      every minute (`--equity-csv`)
+      fees, closing sells won, inventory range, and the equity curve
+      (`--equity-csv`)
 - [x] Paper venue latency: `[paper] order_latency_ms` (orders and cancels
       reach the book later, so an order can fill while its cancel is in
       flight, and post-only and fill-or-kill are checked on arrival) and

@@ -158,7 +158,7 @@ types::Result<void> CheckFillTimeframe(
 // recorded trade prints through it, or trades at the limit clear the queue
 // ahead of the order (see LimitFillModel). Trades are visible only in stored
 // quotes that carry last/last_size (Binance.US does; Kraken sends no size).
-// Neither model simulates order or cancel latency.
+// Order and cancel latency are paper.order_latency / report_latency.
 // The summary values the balances after every bar or quote replayed, at the
 // quote's mid (the last trade when a side is missing) or, for a strategy
 // without quotes, the bar's close.
