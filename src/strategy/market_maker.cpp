@@ -186,6 +186,7 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     Decimal ask = (reservation + half).RoundToIncrement(tick, Rounding::kUp);
     bid = std::min(bid, *quote.ask - tick);  // never cross the book
     ask = std::max(ask, *quote.bid + tick);
+    HoldToTouch(quote, bid, ask);
 
     // Room to add to the position, and to sell down. Spot cannot go short.
     // Fills the venue reported but OnFill has not delivered yet count as done.
@@ -202,10 +203,36 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
         tick);
     Manage(context, mBid, Side::kBuy,
            bid.Sign() > 0 && !pause.bid ? std::optional(bid) : std::nullopt,
-           Size(bid_room), bid_room, away, toward);
+           Size(bid_room), bid_room, away, toward, *quote.bid);
     Manage(context, mAsk, Side::kSell,
            pause.ask ? std::nullopt : std::optional(ask), Size(ask_room),
-           ask_room, away, toward);
+           ask_room, away, toward, *quote.ask);
+}
+
+void MarketMaker::HoldToTouch(const types::Quote& quote, Decimal& bid,
+                              Decimal& ask) const {
+    using Touch = MarketMakerParams::Touch;
+    if (mParams.touch == Touch::kCompute) {
+        return;
+    }
+    const Decimal tick = mInfo.tick_size;
+    Decimal best_bid = *quote.bid;
+    Decimal best_ask = *quote.ask;
+    // Room to improve: three ticks of spread leaves a tick between our two
+    // improved quotes.
+    if (mParams.touch == Touch::kImprove &&
+        best_ask - best_bid >= tick * Decimal::FromInt(3)) {
+        // Our own quote at the touch is the improvement already made, and so
+        // is our last one there: the book may not show yet that it filled.
+        if (mLastBidPrice != best_bid) {
+            best_bid += tick;
+        }
+        if (mLastAskPrice != best_ask) {
+            best_ask -= tick;
+        }
+    }
+    bid = std::min(bid, best_bid);
+    ask = std::max(ask, best_ask);
 }
 
 Decimal MarketMaker::Centre(const types::Quote& quote, const Decimal& mid) {
@@ -480,7 +507,8 @@ bool MarketMaker::Pull(Context& context, Resting& quote) {
 void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                          const std::optional<Decimal>& price,
                          const Decimal& size, const Decimal& room,
-                         const Decimal& away, const Decimal& toward) {
+                         const Decimal& away, const Decimal& toward,
+                         const Decimal& best) {
     const bool wanted = price && size.Sign() > 0;
     // What the new quote replaces, and why, for the log.
     std::string replaced;
@@ -496,7 +524,11 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                                                          : *price - quote.price)
                                    : Decimal();
         const bool moved_toward = closer.Sign() > 0 && closer >= toward;
-        const bool moved_away = closer.Sign() < 0 && -closer >= away;
+        // At the touch, a move away costs nothing yet: keep the place in the
+        // queue.
+        const bool at_touch = mParams.keep_at_touch && quote.price == best;
+        const bool moved_away =
+            closer.Sign() < 0 && -closer >= away && !at_touch;
         const bool moved = wanted && (moved_toward || moved_away);
         const bool keep = wanted && !quote.cancel_raced && fresh &&
                           quote.Remaining() <= room && !moved;
@@ -554,11 +586,13 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                      ack->order_id, replaced, types::ToString(ack->state));
         if (ack->state == types::OrderState::kFilled) {
             ExpectFills(ack->order_id, side, size, Decimal(), context.Now());
+            (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
         }
         return;
     }
     quote =
         Resting{ack->order_id, *price, size, Decimal(), context.Now(), false};
+    (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
     spdlog::info("market_maker: quote {} {} @ {} (order {}{})",
                  types::ToString(side), size.ToString(), price->ToString(),
                  ack->order_id, replaced);

@@ -238,7 +238,9 @@ its stop.
 | `requote_bps` | how far the target must move before a resting quote is replaced (default 1) |
 | `requote_toward_bps` | the same when the market has moved towards the quote (the target below a resting bid, above a resting ask), which is the quote about to be filled at a stale price; 0 replaces it on a tick's move (default: `requote_bps`) |
 | `max_quote_age_ms` | replace a quote older than this even if its price is right (0, the default: never) |
-| `post_only` | quote with post-only orders, which the venue refuses instead of filling as a taker; recommended live (default `false`) |
+| `post_only` | quote with post-only orders, which the venue refuses instead of filling as a taker; recommended live, and in backtests meant to predict a live run, where without it a quote the book moved through while in flight fills as a taker (default `false`; on in `binanceus-zec-marketmaker.example.toml`) |
+| `touch` | how far into the spread a computed price may go: `compute` (the default) quotes it; `join` holds it to the best price on its side, so a bid computed inside the spread joins the best bid; `improve` holds it to one tick better than that while the spread is at least three ticks wide (else as `join`). A price computed behind the touch stays there, and our own quote at the touch is not improved on |
+| `keep_at_touch` | keep a resting quote that is still at the best price on its side when its target moves away, so it keeps its place in the queue; a move towards it still replaces it (default `false`). A move away is a target better than the quote (a higher bid); the skew or a widened spread moves it the other way and still replaces the quote. It matters on pairs whose tick is a large part of the spread; with `touch = "join"` a target is never better than the touch, so it adds nothing there |
 
 Drawdown protection is opt-in, one rule at a time, each with its own
 parameters: `stop_loss`, `loss_cap`, `drawdown_cap`, `spike_standdown`,

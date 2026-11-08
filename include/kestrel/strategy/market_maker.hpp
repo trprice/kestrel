@@ -128,6 +128,26 @@ struct MarketMakerParams {
     // Replace a quote older than this even if its price is still right;
     // zero never does.
     std::chrono::milliseconds max_quote_age{0};
+    // Queue position. Each replacement joins the back of the queue at its
+    // price, and on a pair whose spread is a tick or two wide the place in
+    // the queue is most of what a quote earns. With keep_at_touch, a resting
+    // quote still at the best price on its side (the best bid for our bid)
+    // is not replaced because its target moved away from it: it keeps its
+    // place. A market moving towards it still replaces it (requote_toward_bps),
+    // as does the age or room rule. A move away is a target better than the
+    // quote (a higher bid); the skew or a widened spread moves the target
+    // the other way, towards the quote, and still replaces it.
+    bool keep_at_touch = false;
+    // How far into the spread a computed price may go. kCompute quotes the
+    // computed price; kJoin holds a quote to the best price on its side
+    // (never better), so a bid computed inside the spread joins the best bid
+    // instead; kImprove holds it to one tick better than that, while the
+    // spread is at least three ticks (else as kJoin). A computed price behind
+    // the touch stays where it is. Our own quote at the touch is the touch:
+    // it is not improved on, nor is the last price quoted on that side (a
+    // book delayed past a fill can still show our quote there).
+    enum class Touch { kCompute, kJoin, kImprove };
+    Touch touch = Touch::kCompute;
     // Quote with post-only orders: a quote that would cross the book on
     // arrival is refused by the venue instead of filling as a taker, and the
     // next quote tries again.
@@ -202,10 +222,16 @@ class MarketMaker : public Strategy {
     // A resting quote is replaced once its target is `toward` or more on the
     // side the market came from (below a bid, above an ask), or `away` or
     // more on the other.
+    // With keep_at_touch, a quote at `best` (the book's best price on its
+    // side) is not replaced for a move away.
     void Manage(Context& context, Resting& quote, types::Side side,
                 const std::optional<types::Decimal>& price,
                 const types::Decimal& size, const types::Decimal& room,
-                const types::Decimal& away, const types::Decimal& toward);
+                const types::Decimal& away, const types::Decimal& toward,
+                const types::Decimal& best);
+    // Holds a computed price to the touch, as MarketMakerParams::touch says.
+    void HoldToTouch(const types::Quote& quote, types::Decimal& bid,
+                     types::Decimal& ask) const;
     // Cancels a resting quote; false if it cannot be replaced yet.
     bool Pull(Context& context, Resting& quote);
     types::Decimal Size(const types::Decimal& room) const;
@@ -272,6 +298,10 @@ class MarketMaker : public Strategy {
     types::Decimal mStart;      // what was held at the start
     Resting mBid;
     Resting mAsk;
+    // The price of the last quote placed on each side, kept after it fills
+    // or closes, for MarketMakerParams::Touch::kImprove.
+    std::optional<types::Decimal> mLastBidPrice;
+    std::optional<types::Decimal> mLastAskPrice;
 
     types::Symbol mBaseAsset;
     types::Symbol mQuoteAsset;

@@ -60,7 +60,18 @@ requote_toward_bps = 0         # ...but one it moved towards at once (TODO.md)
 # the Oct 2026 replays; see TODO.md.
 # flow_pull_imbalance = 0.5
 # flow_window_ms      = 2000
-# post_only      = true        # refuse instead of filling as a taker (live)
+# Post-only quotes are refused instead of filling as a taker when the book
+# moves through them in flight. Keep it on in paper runs and backtests too:
+# without it the Nov 2026 ZEC/USDT replays lost several times as much
+# (4 bps: -134 against -31 vs hold over four days).
+post_only        = true
+# Queue position: hold a computed price to the best price on its side
+# ("join"), or a tick inside it ("improve"), and keep a quote at the touch
+# when its target moves away. On ZEC/USDT (a tick of 0.08 bps) join and
+# improve helped only at 2 bps in the Nov 2026 replays, and keep_at_touch
+# changed nothing; see TODO.md.
+# touch          = "join"
+# keep_at_touch  = true
 
 # Drawdown protection. Every rule is off until its flag is set to true; the
 # numbers shown are the defaults (loss_cap_amount and drawdown_cap_amount have

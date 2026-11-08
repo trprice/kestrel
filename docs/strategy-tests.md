@@ -52,6 +52,14 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
 - **Microprice centring and the order-flow pull:** no improvement at the
   best setting. Both are off by default. Touch size and recent trades
   predict a fraction of a bp, against 5 bps lost a second after a fill.
+- **Queue position** (Nov 2026 replays of Oct 19, Oct 30–31, Nov 1–2 and
+  Nov 7, post-only): joining the touch instead of quoting inside the
+  spread cut the loss at 2 bps (−100 to −72 against holding, summed;
+  improving it by a tick, −88), and made no real difference at 4 or 6 bps
+  (within a dollar either way); keeping a quote at the touch changed nothing,
+  as ZEC's tick is too fine for a quote to sit exactly there. Every
+  setting lost to holding over the four windows (6 bps: −19), and without
+  post-only quotes the same replays lose several times as much.
 - **Out of sample (Nov 1–3, ZEC falling):** the best setting lost 19.7
   against holding, with a 1 s markout of −6.2 bps.
 

@@ -321,6 +321,118 @@ TEST(MarketMakerTest, ReplacesAQuoteTheMarketMovesTowardsSooner) {
     EXPECT_EQ(m.Orders()[3].limit_price, D("99.89"));
 }
 
+// A quote at the best bid keeps its place in the queue when its target moves
+// away, but not when the market moves towards it.
+TEST(MarketMakerTest, KeepAtTouchHoldsAQuoteAtTheBestPrice) {
+    for (const bool keep : {false, true}) {
+        auto p = Params();  // requote_bps 5 both ways
+        p.keep_at_touch = keep;
+        Maker m("1", p);
+        m.Quote("99.99", "100.01");  // 99.90 / 100.10
+        ASSERT_EQ(m.Orders().size(), 2u);
+        // Our 99.90 is now the best bid, and the asks lifted to 100.30: mid
+        // 100.10, the bid's target 99.99 moved 0.09 away; the ask's 100.21
+        // moved 0.11 towards our 100.10.
+        m.Quote("99.90", "100.30");
+        const auto expected =
+            keep ? std::vector<std::string>{"order-2"}
+                 : std::vector<std::string>{"order-1", "order-2"};
+        EXPECT_EQ(m.context.venue.cancelled, expected) << keep;
+    }
+    auto p = Params();
+    p.keep_at_touch = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    // At the touch, but the market fell to it: mid 99.81, target 99.71 is
+    // 0.19 under our 99.90, a move towards it, so it is replaced.
+    m.Quote("99.90", "99.92");
+    EXPECT_EQ(m.context.venue.cancelled.front(), "order-1");
+
+    // A quote at the touch is still pulled when it no longer fits the room:
+    // bought up to the limit, the bid has none.
+    Maker full("1", p);
+    full.Quote("99.99", "100.01");
+    full.strategy.OnFill(full.context, FillOf(Side::kBuy, "2"));
+    full.Quote("99.90", "100.30");
+    EXPECT_NE(std::ranges::find(full.context.venue.cancelled, "order-1"),
+              full.context.venue.cancelled.end());
+}
+
+// A quote computed inside a wide spread: 1 bps of a mid of 100 is 0.01, so
+// 99.99 / 100.01 inside a book of 99.80 / 100.20.
+TEST(MarketMakerTest, TouchHoldsAComputedPriceToTheBestPrice) {
+    using Touch = MarketMakerParams::Touch;
+    const std::vector<std::tuple<Touch, const char*, const char*>> cases = {
+        {Touch::kCompute, "99.99", "100.01"},
+        {Touch::kJoin, "99.80", "100.20"},
+        {Touch::kImprove, "99.81", "100.19"}};
+    for (const auto& [touch, bid, ask] : cases) {
+        auto p = Params();
+        p.half_spread_bps = D("1");
+        p.touch = touch;
+        Maker m("1", p);
+        m.Quote("99.80", "100.20");
+        ASSERT_EQ(m.Orders().size(), 2u);
+        EXPECT_EQ(m.Orders()[0].limit_price, D(bid));
+        EXPECT_EQ(m.Orders()[1].limit_price, D(ask));
+    }
+    // A computed price behind the touch is left there.
+    auto p = Params();  // 10 bps: 99.90 / 100.10
+    p.touch = Touch::kJoin;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.90"));
+    EXPECT_EQ(m.Orders()[1].limit_price, D("100.10"));
+}
+
+TEST(MarketMakerTest, ImproveDoesNotStepOverItsOwnQuote) {
+    auto p = Params();
+    p.half_spread_bps = D("1");
+    p.requote_bps = D("0");  // a tick's move would replace it
+    p.touch = MarketMakerParams::Touch::kImprove;
+    Maker m("1", p);
+    m.Quote("99.80", "100.20");  // 99.81 / 100.19
+    ASSERT_EQ(m.Orders().size(), 2u);
+    // Our own quotes are now the touch: they are not improved on again.
+    m.Quote("99.81", "100.19");
+    EXPECT_EQ(m.Orders().size(), 2u);
+    EXPECT_TRUE(m.context.venue.cancelled.empty());
+    // The bid fills, but a delayed book still shows it at 99.81: the new bid
+    // goes back there rather than a tick above our own departed quote.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    auto filled = StatusOf("order-1", OrderState::kFilled);
+    filled.filled_quantity = D("0.5");
+    m.strategy.OnOrderUpdate(m.context, filled);
+    m.Quote("99.81", "100.19");
+    ASSERT_EQ(m.Orders().size(), 3u);
+    EXPECT_EQ(m.Orders()[2].side, Side::kBuy);
+    EXPECT_EQ(m.Orders()[2].limit_price, D("99.81"));
+}
+
+TEST(MarketMakerTest, ImproveJoinsASpreadTooNarrowToImprove) {
+    // Centred on the microprice of 99.99 x 9 / 100.01 x 1, 100.008, with a
+    // tiny half-spread the bid computes to 100.00, one tick inside a
+    // two-tick spread. Improving both sides there would leave no tick
+    // between them, so it joins the best bid instead.
+    for (const auto touch : {MarketMakerParams::Touch::kCompute,
+                             MarketMakerParams::Touch::kImprove}) {
+        auto p = Params();
+        p.half_spread_bps = D("0.1");
+        p.microprice_weight = D("1");
+        p.touch = touch;
+        Maker m("1", p);
+        auto quote = QuoteOf("99.99", "100.01");
+        quote.bid_size = D("9");
+        quote.ask_size = D("1");
+        m.strategy.OnQuote(m.context, quote);
+        ASSERT_EQ(m.Orders().size(), 2u);
+        EXPECT_EQ(m.Orders()[0].limit_price,
+                  D(touch == MarketMakerParams::Touch::kCompute ? "100.00"
+                                                                : "99.99"));
+        EXPECT_EQ(m.Orders()[1].limit_price, D("100.01"));  // at the touch
+    }
+}
+
 TEST(MarketMakerTest, ReplacesAQuoteOlderThanTheMaximumAge) {
     auto p = Params();
     p.max_quote_age = std::chrono::milliseconds(5000);

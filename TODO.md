@@ -212,11 +212,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Keep queue position: leave a resting quote alone while it is still at
-      the touch even if its target moved, and optionally join the touch (or
-      improve it by a tick) instead of quoting a computed price. Each
-      replacement goes to the back of the queue (see Known limitations), and
-      on wide-tick pairs queue position is most of the edge.
 - [ ] Pull the quotes when the feed goes quiet, on a timer rather than on
       the next quote (see Known limitations), so stale quotes are not filled
       after a move the strategy never saw.
@@ -708,6 +703,19 @@ the header of the code concerned.
 - [x] Market maker order-flow pull (`flow_pull_imbalance`,
       `flow_window_ms`): no quote on the side recent trades run against,
       off by default
+- [x] Market maker queue position, off by default: `touch = "join"` /
+      `"improve"` holds a computed price to the best price on its side (or
+      a tick inside it), and `keep_at_touch` keeps a quote at the touch
+      when its target moves away. Replayed on ZEC/USDT (Oct 19, Oct 30-31,
+      Nov 1-2, Nov 7; post-only, 130 / 600 ms latency, conservative fills),
+      vs hold summed over the four: at 2 bps -100.3, join -72.1, improve
+      -88.1; at 4 bps -30.8 / -31.6 / -30.3; at 6 bps -18.9 / -19.6 /
+      -19.7. keep_at_touch changed nothing: ZEC's tick is 0.08 bps, so a
+      computed quote is seldom exactly at the touch, and with join a target
+      is never better than the touch, so a quote there never moves away.
+      Untested on a wide-tick pair. The
+      same replays without post-only lose far more (4 bps: -134.4), as
+      quotes the book moved through in flight fill as takers.
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

@@ -440,6 +440,9 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
         p.Number("requote_toward_bps", requote ? *requote : params.requote_bps);
     auto max_age = p.Millis("max_quote_age_ms", params.max_quote_age);
     auto post_only = p.Flag("post_only", params.post_only);
+    auto keep_at_touch = p.Flag("keep_at_touch", params.keep_at_touch);
+    std::string touch_word = "compute";
+    auto touch = p.Word("touch", touch_word, {"compute", "join", "improve"});
     auto protection = ReadProtection(p, params.protection);
     if (!symbol) return std::unexpected(symbol.error());
     if (!quantity) return std::unexpected(quantity.error());
@@ -456,6 +459,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!requote_toward) return std::unexpected(requote_toward.error());
     if (!max_age) return std::unexpected(max_age.error());
     if (!post_only) return std::unexpected(post_only.error());
+    if (!keep_at_touch) return std::unexpected(keep_at_touch.error());
+    if (!touch) return std::unexpected(touch.error());
     if (!protection) return std::unexpected(protection.error());
     if (auto ok = p.Finish(); !ok) {
         return std::unexpected(ok.error());
@@ -475,6 +480,11 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.requote_toward_bps = *requote_toward;
     params.max_quote_age = *max_age;
     params.post_only = *post_only;
+    params.keep_at_touch = *keep_at_touch;
+    using Touch = strategy::MarketMakerParams::Touch;
+    params.touch = *touch == "join"      ? Touch::kJoin
+                   : *touch == "improve" ? Touch::kImprove
+                                         : Touch::kCompute;
     try {
         return StrategyPtr(
             std::make_unique<strategy::MarketMaker>(std::move(params)));

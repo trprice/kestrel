@@ -554,6 +554,10 @@ TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
     EXPECT_FALSE(make("loss_cap=true\n").has_value());
     EXPECT_FALSE(make("stop_loss='yes'\n").has_value());
     EXPECT_FALSE(make("stop_los=true\n").has_value());
+    // Queue position.
+    EXPECT_TRUE(make("keep_at_touch=true\ntouch='join'\n").has_value());
+    EXPECT_TRUE(make("touch='improve'\n").has_value());
+    EXPECT_FALSE(make("touch='best'\n").has_value());
 }
 
 TEST(Factory, MarketMakerVolatilityScalingIsOptIn) {
