@@ -54,7 +54,7 @@ for the config file.
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
 | `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
-| `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] [--no-risk] (--test \| --confirm)` | one order on the live venue, checked against the `[risk]` limits that apply to one order; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
+| `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] [--client-id ID] [--no-risk] (--test \| --confirm)` | one order on the live venue, checked against the `[risk]` limits that apply to one order; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
 | `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
 | `authorize [--status]` | Schwab only: authorizes Kestrel to use the account and saves its tokens; `--status` shows when they expire |
 
@@ -203,8 +203,10 @@ before then (`authorize --status` shows when).
   response times as it goes; see [database.md](database.md#recording-a-run).
 - `run` logs a quote feed that has gone quiet for 2 minutes of open market
   time (nights and weekends do not count), and again when quotes return. It
-  only logs: the strategy carries on. Schwab's streamer itself reconnects a
-  connection that has sent nothing, not even a heartbeat, for 60 s.
+  only logs: the strategy carries on. Every stream pings its WebSocket every
+  20 s and reconnects one whose reply does not come back by the next ping;
+  Schwab's streamer also reconnects a connection that has sent nothing, not
+  even a heartbeat, for 60 s.
 
 The strategies' parameters, the risk limits and the market maker's protection
 rules are described in [configuration.md](configuration.md). To write your own

@@ -2,8 +2,10 @@
 
 A strategy is a class derived from `strategy::Strategy`
 (`include/kestrel/strategy/strategy.hpp`). The runner calls its hooks; the
-strategy reacts by placing orders. `SmaCrossover` is a small worked example and
-`MarketMaker` a larger one. See [design.md](design.md) for where the runner,
+strategy reacts by placing orders. `SmaCrossover` is a small worked example,
+`MarketMaker` a larger quote-driven one, `Breakout` a bar strategy with
+resting stops and session handling, and `MomentumRotation` one that trades
+several symbols at once. See [design.md](design.md) for where the runner,
 the risk gate and the venue sit.
 
 ## 1. Declare what you need
@@ -91,8 +93,10 @@ class MyStrategy : public strategy::Strategy {
 - **Threading:** every hook runs on the runner's one strategy thread, one at a
   time, so the strategy needs no locks. Do not start your own threads that call
   the venue or the context.
-- **Be quick:** events queue up behind a slow hook. Quotes are conflated, but
-  bars never are. On a live venue every `PlaceOrder` and `CancelOrder` is an
+- **Be quick:** events queue up behind a slow hook. Quotes are conflated;
+  bars are not, and past `RunnerOptions::max_queued_bars` (1000) a bar is
+  dropped and backfilled later, so a hook that keeps falling behind sees
+  bars late. On a live venue every `PlaceOrder` and `CancelOrder` is an
   HTTP round trip (about 0.13 s on Binance.US once the connection is open)
   on this thread. Polling for
   fills does not use this thread.
@@ -147,8 +151,8 @@ class MyStrategy : public strategy::Strategy {
 3. Add `{"my_strategy", BuildMyStrategy}` to the `kStrategies` table. That one
    entry makes `kestrel_app run my_strategy` and `backtest my_strategy` work,
    and allows a `[risk.my_strategy]` section.
-4. Document the parameters in `config/kestrel.example.toml` and in
-   [configuration.md](configuration.md#strategy).
+4. Document the parameters in [configuration.md](configuration.md#strategy).
+   `config/kestrel.example.toml` shows `sma_crossover`'s only.
 
 ## 5. Test it
 

@@ -78,12 +78,12 @@ order, on one thread and a simulated clock.
 | `factory.hpp` | The only place that knows which concrete class goes with a provider name or strategy name. `CreateComponents` makes the data source and venue, `CreateStrategy` the strategy, `ResolveRiskLimits` the limits, and `CreateRunner` wires them into a ready-to-run `Runner`. |
 | `DataSource` (`data/`) | Read-only market data: `GetBars`, `GetSymbolInfo`, and `StreamQuotes`/`StreamBars`, which return a `Subscription` to stop. Implemented by `KrakenDataSource`, `BinanceUSDataSource` and `ReplayDataSource`; `SchwabDataSource` too (its two streams share one Schwab streamer connection). `Hours()` says when its market trades (`types::MarketHours`): always for crypto; for US stocks, `UsEquityCalendar`'s rules checked against Schwab's `/markets` (`SchwabCalendar`). The runner refuses orders while it is closed (`SessionGatedVenue`) and calls the strategy's session hooks. |
 | `TradingVenue` (`trading/`) | Execution: place and cancel orders, list open orders and fills, positions and balances, and optionally push executions. Implemented by `PaperTradingVenue` and `BinanceUSTradingVenue`; the Kraken and Schwab venues are stubs. |
-| `PaperTradingVenue` | A simulated exchange built on any `DataSource`. It fills orders from the quote stream with fees, slippage and a configurable limit-fill model, keeps balances, and pushes its fills. A `run` keeps its newest 100,000 fills and closed orders; a backtest keeps all. |
+| `PaperTradingVenue` | A simulated exchange built on any `DataSource`. It fills orders from the quote stream with fees, slippage, a configurable limit-fill model and optional order and report latency, keeps balances, and pushes its fills. A `run` keeps its newest 100,000 fills and closed orders; a backtest keeps all. |
 | `BinanceUSTradingVenue` / `BinanceUSApi` | The live Binance.US venue. `BinanceUSApi` signs requests, keeps the server clock offset, holds calls to the request-weight budget and stops calling during a ban; the venue maps orders, cancels, fills and balances onto it, and never sends a placement twice. |
 | `RiskGatedVenue` | A `TradingVenue` that wraps another one and refuses orders that break a limit (size, open orders, order rate, daily loss, drawdown, symbol allowlist). It has a kill switch, `Halt()`. |
 | `ApplySymbolRules` | Rounds an order to the symbol's tick and lot and refuses one under its minimum size or value; used by every venue. |
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
-| `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info and its bar history. `SmaCrossover` and `MarketMaker` are the two included. |
+| `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnSessionOpen`, `OnSessionClosing`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info, its bar history and the market's hours. Four are included: `SmaCrossover`, `MarketMaker`, `Breakout` (bar-pattern setups, from `patterns.hpp`) and `MomentumRotation` (several symbols at once). |
 | `Runner` | Owns one strategy, run on one thread, with venue polling on a second. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders), and with `cancel_entries_on_stop` (`run`) cancels the entries left open when it stops, keeping the orders that close a position. Queues events (conflating quotes per symbol; at most `max_queued_bars` bars, past which a bar is dropped and later backfilled), runs the strategy on one thread, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
@@ -172,7 +172,9 @@ include/kestrel/   public headers, one directory per area:
                      market-trade stores
   trading/           TradingVenue, paper and live venues, Binance.US API,
                      order rules, PnlTracker, RiskGatedVenue
-  strategy/          Strategy, Runner, RunRecorder, SmaCrossover, MarketMaker
+  strategy/          Strategy, Runner, RunRecorder, the strategies
+                     (SmaCrossover, MarketMaker, Breakout, MomentumRotation)
+                     and bar patterns (patterns.hpp)
   backtest/          ReplayDataSource, LoadReplayData, RunBacktest,
                      SummaryBuilder (the P&L summary and markouts)
   factory.hpp        builds a provider's data source and venue, a strategy by
@@ -180,7 +182,8 @@ include/kestrel/   public headers, one directory per area:
 src/               implementation, same directories (plus factory.cpp)
 app/main.cpp       kestrel_app: parses the command line and runs one command
 app/commands/      one class per subcommand (bars, account, order, cancel,
-                   stream, stream-bars, init-db, run, backtest, trades);
+                   stream, stream-bars, init-db, run, backtest, trades,
+                   authorize);
                    command.hpp is the interface
 app/common.*       helpers shared by the commands (argument validators, printing)
 tests/             kestrel_tests; tests/data and cli_check.cmake drive the cli_* tests

@@ -29,7 +29,7 @@ automatically on startup (`src/db/migrations.cpp`, append-only).
 
 | Table / view | Written by | Contents |
 |---|---|---|
-| `bars` | `bars --store`, `stream-bars --store` | hypertable keyed by venue, symbol, timeframe, open_time |
+| `bars` | `bars --store`, `stream-bars --store`, and `backtest` (the bars it had to fetch) | hypertable keyed by venue, symbol, timeframe, open_time |
 | `quotes` | `stream --store` | hypertable chunked per day: one row per delivered quote |
 | `runs`, `fills`, `pnl_snapshots`, `pnl_totals`, `venue_latency` | `run` with `[recording]` | one run's record; see below |
 | `account_fills` | `account --store` | the account's whole trade history; see below |
