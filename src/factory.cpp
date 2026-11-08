@@ -444,6 +444,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     auto post_only = p.Flag("post_only", params.post_only);
     auto keep_at_touch = p.Flag("keep_at_touch", params.keep_at_touch);
     auto quiet_pull = p.Millis("quiet_pull_ms", params.quiet_pull);
+    auto levels = p.Count("levels", params.levels);
+    auto level_step = p.Number("level_step_bps", params.level_step_bps);
     std::string touch_word = "compute";
     auto touch = p.Word("touch", touch_word, {"compute", "join", "improve"});
     auto protection = ReadProtection(p, params.protection);
@@ -466,6 +468,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!post_only) return std::unexpected(post_only.error());
     if (!keep_at_touch) return std::unexpected(keep_at_touch.error());
     if (!quiet_pull) return std::unexpected(quiet_pull.error());
+    if (!levels) return std::unexpected(levels.error());
+    if (!level_step) return std::unexpected(level_step.error());
     if (!touch) return std::unexpected(touch.error());
     if (!protection) return std::unexpected(protection.error());
     if (auto ok = p.Finish(); !ok) {
@@ -490,6 +494,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.post_only = *post_only;
     params.keep_at_touch = *keep_at_touch;
     params.quiet_pull = *quiet_pull;
+    params.levels = *levels;
+    params.level_step_bps = *level_step;
     using Touch = strategy::MarketMakerParams::Touch;
     params.touch = *touch == "join"      ? Touch::kJoin
                    : *touch == "improve" ? Touch::kImprove

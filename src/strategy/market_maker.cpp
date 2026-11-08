@@ -62,6 +62,13 @@ MarketMaker::MarketMaker(MarketMakerParams params)
         mParams.skew_power > Decimal::FromInt(4)) {
         throw std::invalid_argument("skew_power must be from 1 to 4");
     }
+    if (mParams.levels == 0 || mParams.levels > 10 ||
+        mParams.level_step_bps.IsNegative()) {
+        throw std::invalid_argument(
+            "levels must be from 1 to 10, and level_step_bps not negative");
+    }
+    mBids.resize(mParams.levels);
+    mAsks.resize(mParams.levels);
     if (mParams.vol_multiplier.IsNegative() ||
         mParams.max_half_spread_bps.IsNegative()) {
         throw std::invalid_argument(
@@ -215,12 +222,81 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     const Decimal toward = std::max(
         Bps(mid, mParams.requote_toward_bps.value_or(mParams.requote_bps)),
         tick);
-    Manage(context, mBid, Side::kBuy,
-           bid.Sign() > 0 && !pause.bid ? std::optional(bid) : std::nullopt,
-           Size(bid_room), bid_room, away, toward, *quote.bid);
-    Manage(context, mAsk, Side::kSell,
-           pause.ask ? std::nullopt : std::optional(ask), Size(ask_room),
-           ask_room, away, toward, *quote.ask);
+    // Each level a step further from the touch, sharing the side's room:
+    // what the levels before it hold (or are about to) comes off first.
+    // The default step is the half-spread quoted (widened by volatility,
+    // with vol_multiplier).
+    const Decimal step = std::max(mParams.level_step_bps.Sign() > 0
+                                      ? Bps(mid, mParams.level_step_bps)
+                                      : half,
+                                  tick);
+    // First pull any deeper level the room no longer covers, so the levels
+    // placed below never rest beside it beyond max_inventory. (A partly
+    // filled level replaced below can come back larger than its remainder,
+    // and a deeper one then goes just after it: brief, and accepted.)
+    if (mBids.size() > 1) {
+        for (auto [levels, room] :
+             {std::pair{&mBids, bid_room}, std::pair{&mAsks, ask_room}}) {
+            Decimal left = room;
+            for (Resting& level : *levels) {
+                if (!level.order_id.empty() && level.Remaining() > left) {
+                    const std::string id = level.order_id;
+                    const std::string price = level.price.ToString();
+                    if (Pull(context, level)) {
+                        spdlog::info(
+                            "market_maker: pulled {} quote {} @ {} (over the "
+                            "room left)",
+                            levels == &mBids ? "buy" : "sell", id, price);
+                    }
+                }
+                left -= level.order_id.empty() ? Size(left) : level.Remaining();
+            }
+        }
+    }
+    Decimal bid_left = bid_room;
+    Decimal ask_left = ask_room;
+    for (std::size_t i = 0; i < mBids.size(); ++i) {
+        const Decimal back = step * Decimal::FromInt(static_cast<int>(i));
+        const Decimal level_bid =
+            (bid - back).RoundToIncrement(tick, Rounding::kDown);
+        const Decimal level_ask =
+            (ask + back).RoundToIncrement(tick, Rounding::kUp);
+        const Decimal bid_size = Size(bid_left);
+        const Decimal ask_size = Size(ask_left);
+        Manage(context, mBids[i], Side::kBuy,
+               level_bid.Sign() > 0 && !pause.bid ? std::optional(level_bid)
+                                                  : std::nullopt,
+               bid_size, bid_left, away, toward, *quote.bid, i == 0);
+        Manage(context, mAsks[i], Side::kSell,
+               pause.ask ? std::nullopt : std::optional(level_ask), ask_size,
+               ask_left, away, toward, *quote.ask, i == 0);
+        // The room this level takes: its resting quote, or what it would
+        // have placed (also when it was not wanted: a paused side or a bid
+        // at zero, where every deeper level is unwanted too).
+        bid_left -= mBids[i].order_id.empty() ? bid_size : mBids[i].Remaining();
+        ask_left -= mAsks[i].order_id.empty() ? ask_size : mAsks[i].Remaining();
+    }
+}
+
+bool MarketMaker::PullAll(Context& context) {
+    bool all = true;
+    for (auto* side : {&mBids, &mAsks}) {
+        for (Resting& quote : *side) {
+            all = Pull(context, quote) && all;
+        }
+    }
+    return all;
+}
+
+bool MarketMaker::AnyResting() const {
+    for (const auto* side : {&mBids, &mAsks}) {
+        for (const Resting& quote : *side) {
+            if (!quote.order_id.empty()) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 void MarketMaker::HoldToTouch(const types::Quote& quote, Decimal& bid,
@@ -467,9 +543,7 @@ bool MarketMaker::ExitPosition(Context& context, const char* why) {
     }
     // Both quotes must be gone first, or a resting one could fill into the
     // exit and the position would be sold twice.
-    const bool bid_gone = Pull(context, mBid);
-    const bool ask_gone = Pull(context, mAsk);
-    if (!bid_gone || !ask_gone) {
+    if (!PullAll(context)) {
         return false;  // try again on the next quote
     }
     types::OrderRequest request;
@@ -522,7 +596,7 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                          const std::optional<Decimal>& price,
                          const Decimal& size, const Decimal& room,
                          const Decimal& away, const Decimal& toward,
-                         const Decimal& best) {
+                         const Decimal& best, bool top) {
     const bool wanted = price && size.Sign() > 0;
     // What the new quote replaces, and why, for the log.
     std::string replaced;
@@ -600,13 +674,17 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                      ack->order_id, replaced, types::ToString(ack->state));
         if (ack->state == types::OrderState::kFilled) {
             ExpectFills(ack->order_id, side, size, Decimal(), context.Now());
-            (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
+            if (top) {
+                (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
+            }
         }
         return;
     }
     quote =
         Resting{ack->order_id, *price, size, Decimal(), context.Now(), false};
-    (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
+    if (top) {
+        (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
+    }
     spdlog::info("market_maker: quote {} {} @ {} (order {}{})",
                  types::ToString(side), size.ToString(), price->ToString(),
                  ack->order_id, replaced);
@@ -686,9 +764,11 @@ void MarketMaker::OnFill(Context& context, const types::Fill& fill) {
             mExit.reset();
         }
     }
-    for (Resting* quote : {&mBid, &mAsk}) {
-        if (!quote->order_id.empty() && quote->order_id == fill.order_id) {
-            quote->filled += fill.quantity;
+    for (auto* side : {&mBids, &mAsks}) {
+        for (Resting& quote : *side) {
+            if (!quote.order_id.empty() && quote.order_id == fill.order_id) {
+                quote.filled += fill.quantity;
+            }
         }
     }
     if (auto it = mUnconfirmed.find(fill.order_id); it != mUnconfirmed.end()) {
@@ -712,12 +792,16 @@ void MarketMaker::OnOrderUpdate(Context& context,
         status.state != types::OrderState::kFilled) {
         mExit.reset();  // closed without filling; the next quote may retry
     }
-    for (Resting* quote : {&mBid, &mAsk}) {
-        if (!quote->order_id.empty() && quote->order_id == status.order_id) {
-            // Closed with fills OnFill has not delivered: keep counting them.
-            ExpectFills(status.order_id, status.side, status.filled_quantity,
-                        quote->filled, context.Now());
-            *quote = Resting();
+    for (auto* side : {&mBids, &mAsks}) {
+        for (Resting& quote : *side) {
+            if (!quote.order_id.empty() && quote.order_id == status.order_id) {
+                // Closed with fills OnFill has not delivered: keep counting
+                // them.
+                ExpectFills(status.order_id, status.side,
+                            status.filled_quantity, quote.filled,
+                            context.Now());
+                quote = Resting();
+            }
         }
     }
 }
@@ -763,8 +847,7 @@ void MarketMaker::OnTimer(Context& context) {
         return;
     }
     // Logged once per silence, when there was something to pull.
-    const bool resting = !mBid.order_id.empty() || !mAsk.order_id.empty();
-    if (resting && !mQuietLogged) {
+    if (AnyResting() && !mQuietLogged) {
         mQuietLogged = true;
         spdlog::warn(
             "market_maker: no quote for {} for {} ms; pulling the quotes",
@@ -774,9 +857,7 @@ void MarketMaker::OnTimer(Context& context) {
     }
     // A side that cannot be pulled yet (a cancel lost to a fill) is tried
     // again on the next tick.
-    const bool bid = Pull(context, mBid);
-    const bool ask = Pull(context, mAsk);
-    mQuietPulled = bid && ask;
+    mQuietPulled = PullAll(context);
 }
 
 void MarketMaker::OnStop(Context& context) {
@@ -821,7 +902,13 @@ void MarketMaker::OnStop(Context& context) {
             "taken liquidity",
             mWouldTake);
     }
-    for (Resting* quote : {&mBid, &mAsk}) {
+    std::vector<Resting*> quotes;
+    for (auto* side : {&mBids, &mAsks}) {
+        for (Resting& quote : *side) {
+            quotes.push_back(&quote);
+        }
+    }
+    for (Resting* quote : quotes) {
         if (!quote->order_id.empty() && !quote->cancel_raced) {
             auto outcome = context.Venue().CancelOrder(quote->order_id);
             if (outcome) {

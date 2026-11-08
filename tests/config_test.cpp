@@ -565,6 +565,9 @@ TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
     EXPECT_TRUE(
         make("skew_bps=4\nskew_power=2\nskew_age_ms=600000\n").has_value());
     EXPECT_FALSE(make("skew_power=0.5\n").has_value());
+    EXPECT_TRUE(make("levels=3\nlevel_step_bps=4\n").has_value());
+    EXPECT_FALSE(make("levels=0\n").has_value());
+    EXPECT_FALSE(make("levels=11\n").has_value());
 }
 
 TEST(Factory, MarketMakerVolatilityScalingIsOptIn) {

@@ -25,9 +25,16 @@ class CancelVenue : public RecordingVenue {
         cancelled.push_back(id);
         return outcome;
     }
+    types::Result<types::OrderAcknowledgement> PlaceOrder(
+        const types::OrderRequest& request) override {
+        cancels_before.push_back(cancelled.size());
+        return RecordingVenue::PlaceOrder(request);
+    }
 
     types::Result<CancelOutcome> outcome = CancelOutcome::kCancelled;
     std::vector<std::string> cancelled;
+    // For each order placed, how many cancels had been sent before it.
+    std::vector<std::size_t> cancels_before;
 };
 
 class FakeContext : public strategy::Context {
@@ -135,6 +142,9 @@ TEST(MarketMakerTest, RejectsBadParameters) {
              },
              [](MarketMakerParams& p) { p.skew_power = D("0.5"); },
              [](MarketMakerParams& p) { p.skew_power = D("5"); },
+             [](MarketMakerParams& p) { p.levels = 0; },
+             [](MarketMakerParams& p) { p.levels = 11; },
+             [](MarketMakerParams& p) { p.level_step_bps = D("-1"); },
              [](MarketMakerParams& p) {
                  p.skew_age = std::chrono::milliseconds(-1);
              }}) {
@@ -503,6 +513,91 @@ TEST(MarketMakerTest, NeverPullsForQuietWithoutTheOption) {
     m.context.now += std::chrono::hours(1);
     m.strategy.OnTimer(m.context);
     EXPECT_TRUE(m.context.venue.cancelled.empty());
+}
+
+TEST(MarketMakerTest, QuotesSeveralLevelsAStepApartWithinTheRoom) {
+    auto p = Params();  // 10 bps, quantity 0.5, max_inventory 2
+    p.levels = 3;
+    Maker m("1", p);  // room to buy 2, to sell the 1 held
+    m.Quote("99.99", "100.01");
+    std::vector<std::pair<Side, std::string>> placed;
+    for (const auto& order : m.Orders()) {
+        placed.emplace_back(order.side,
+                            order.limit_price->Normalized().ToString());
+    }
+    // A step of half_spread_bps (0.10): three bids, and asks for the 1 held.
+    EXPECT_EQ(placed, (std::vector<std::pair<Side, std::string>>{
+                          {Side::kBuy, "99.9"},
+                          {Side::kSell, "100.1"},
+                          {Side::kBuy, "99.8"},
+                          {Side::kSell, "100.2"},
+                          {Side::kBuy, "99.7"}}));
+    for (const auto& order : m.Orders()) {
+        EXPECT_EQ(order.quantity, D("0.5"));
+    }
+}
+
+TEST(MarketMakerTest, LevelsTakeTheirOwnStep) {
+    auto p = Params();
+    p.levels = 2;
+    p.level_step_bps = D("5");
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 4u);
+    EXPECT_EQ(m.Orders()[2].limit_price, D("99.85"));
+    EXPECT_EQ(m.Orders()[3].limit_price, D("100.15"));
+}
+
+TEST(MarketMakerTest, AFillOnADeeperLevelLeavesTheOthersAlone) {
+    auto p = Params();
+    p.levels = 2;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // bids order-1 99.90, order-3 99.80
+    ASSERT_EQ(m.Orders().size(), 4u);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-3"));
+    auto filled = StatusOf("order-3", OrderState::kFilled);
+    filled.filled_quantity = D("0.5");
+    m.strategy.OnOrderUpdate(m.context, filled);
+    // The same book: the touch's bid stays, and the second level is quoted
+    // again, room allowing (1.5 held of a 3 maximum: 1.5 left).
+    m.Quote("99.99", "100.01");
+    EXPECT_TRUE(m.context.venue.cancelled.empty());
+    ASSERT_EQ(m.Orders().size(), 5u);
+    EXPECT_EQ(m.Orders()[4].side, Side::kBuy);
+    EXPECT_EQ(m.Orders()[4].limit_price, D("99.80"));
+}
+
+TEST(MarketMakerTest, ALevelTheRoomNoLongerCoversIsPulledBeforeAnyIsPlaced) {
+    auto p = Params();  // quantity 0.5, max_inventory 2
+    p.levels = 3;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // bids order-1, order-3, order-5: 1.5
+    ASSERT_EQ(m.Orders().size(), 5u);
+    // The touch's bid fills, and another 0.5 is bought elsewhere: room 1.
+    // The touch takes 0.5 again and order-3 its 0.5, so order-5 no longer
+    // fits; it is pulled before the touch's new bid is sent.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    auto filled = StatusOf("order-1", OrderState::kFilled);
+    filled.filled_quantity = D("0.5");
+    m.strategy.OnOrderUpdate(m.context, filled);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.cancelled, std::vector<std::string>{"order-5"});
+    ASSERT_GT(m.Orders().size(), 5u);
+    EXPECT_EQ(m.Orders()[5].side, Side::kBuy);
+    EXPECT_EQ(m.Orders()[5].limit_price, D("99.90"));
+    EXPECT_EQ(m.context.venue.cancels_before[5], 1u);  // order-5 went first
+}
+
+TEST(MarketMakerTest, AQuietPullCancelsEveryLevel) {
+    auto p = Params();
+    p.levels = 2;
+    p.quiet_pull = std::chrono::milliseconds(1000);
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");
+    m.context.now += std::chrono::seconds(1);
+    m.strategy.OnTimer(m.context);
+    EXPECT_EQ(m.context.venue.cancelled.size(), 4u);
 }
 
 TEST(MarketMakerTest, ReplacesAQuoteOlderThanTheMaximumAge) {

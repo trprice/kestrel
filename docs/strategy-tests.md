@@ -66,6 +66,11 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
   ahead of the linear skew at both (−27.2 and −16.7 against −30.8 and
   −18.9), though doubling the linear skew did better at 6 bps (−15.2):
   all within the days' noise.
+- **Several levels a side** (same replays): two or three levels a
+  half-spread apart lost more at 4 bps (−38.6, −42.4 against −30.8) and
+  a little more at 6; twice as far apart they were slightly ahead at 6 bps
+  (−17.5, −16.6 against −18.9) and behind at 4. The deeper fills capture
+  more, but on falling days the extra levels pile up inventory.
 - **Pulling quotes when the feed goes quiet** (`quiet_pull_ms`, same
   replays): neutral at 30 or 60 s; at 2 or 5 s it pulled about 42,000
   and 11,000 times in a quiet market and lost more. A safety guard, not

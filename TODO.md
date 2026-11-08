@@ -212,8 +212,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Quote several levels a side with smaller sizes, for pairs that swing
-      enough to fill them.
 - [ ] Persist the halt state and protection P&L, so a restart does not reset
       the loss and drawdown caps (see Known limitations).
 - [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
@@ -728,6 +726,14 @@ the header of the code concerned.
       -27.2 / -16.7; linear skew_bps 8 -32.1 / -15.2. The days swing by
       several USDT each, so none is clearly better; a 30 min age was
       ahead of the linear skew_bps 4 on both spreads.
+- [x] Market maker `levels` and `level_step_bps`: several quotes a side, a
+      step apart, sharing max_inventory. Same replays, vs hold summed, 4 /
+      6 bps: one level -30.8 / -18.9; two at the half-spread step -38.6 /
+      -21.3, three -42.4 / -19.4; at twice the half-spread step, two
+      -33.4 / -17.5, three -35.4 / -16.6. Deeper fills capture more at the
+      fill, but on the falling days (Nov 1-2) the extra levels build more
+      inventory (two levels at 4 bps: -19.6 against -11.8). Three levels
+      sent three times the orders (162k against 54k on Nov 7).
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/types/decimal.hpp"
@@ -157,6 +158,15 @@ struct MarketMakerParams {
     // Zero (the default) never pulls. A feed that sends only changes is
     // silent for seconds in a quiet market, so this wants tens of seconds.
     std::chrono::milliseconds quiet_pull{0};
+    // Quote this many levels a side, each of quantity: the first where a
+    // single quote would be, each further one level_step_bps (of the mid,
+    // at least a tick) behind the one before. The levels share
+    // max_inventory's room, the touch's level first, so a deeper level is
+    // quoted only while there is room left for it. One (the default) is a
+    // single quote a side. Zero level_step_bps: the half-spread quoted
+    // (widened by volatility, with vol_multiplier).
+    std::size_t levels = 1;
+    types::Decimal level_step_bps{0, 0};
     // How far into the spread a computed price may go. kCompute quotes the
     // computed price; kJoin holds a quote to the best price on its side
     // (never better), so a bid computed inside the spread joins the best bid
@@ -178,7 +188,8 @@ struct MarketMakerParams {
 // towards the microprice, with microprice_weight), shifted away from the side
 // the position is heavy on. Spot only, so the ask is quoted only while there
 // is base asset to sell, and the strategy starts from whatever the venue
-// holds of the base asset.
+// holds of the base asset. With levels above 1, each side quotes that many,
+// a step apart (see MarketMakerParams).
 //
 // Quotes never cross the book: a bid is held to one tick under the best ask,
 // an ask to one tick over the best bid. Nothing is quoted while the book is
@@ -248,8 +259,10 @@ class MarketMaker : public Strategy {
                 const std::optional<types::Decimal>& price,
                 const types::Decimal& size, const types::Decimal& room,
                 const types::Decimal& away, const types::Decimal& toward,
-                const types::Decimal& best);
+                const types::Decimal& best, bool top);
     // Holds a computed price to the touch, as MarketMakerParams::touch says.
+    // `top`: the quote is the side's first level (its price is the one
+    // kImprove remembers).
     void HoldToTouch(const types::Quote& quote, types::Decimal& bid,
                      types::Decimal& ask) const;
     // Cancels a resting quote; false if it cannot be replaced yet.
@@ -321,8 +334,12 @@ class MarketMaker : public Strategy {
     bool mReady = false;
     types::Decimal mInventory;  // base units held
     types::Decimal mStart;      // what was held at the start
-    Resting mBid;
-    Resting mAsk;
+    // The quotes on each side, the touch's level first (levels of them).
+    std::vector<Resting> mBids;
+    std::vector<Resting> mAsks;
+    // Cancels every quote on both sides; false if any cannot be pulled yet.
+    bool PullAll(Context& context);
+    bool AnyResting() const;
     // The price of the last quote placed on each side, kept after it fills
     // or closes, for MarketMakerParams::Touch::kImprove.
     std::optional<types::Decimal> mLastBidPrice;
