@@ -2,6 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <initializer_list>
+#include <limits>
+#include <optional>
 #include <vector>
 
 #include "test_helpers.hpp"
@@ -360,6 +364,404 @@ TEST(Patterns, SimpleMovingAverage) {
     EXPECT_FALSE(Sma(bars, 4, 1));
     EXPECT_FALSE(Sma(bars, 0));
     EXPECT_FALSE(Sma(bars, 5));
+}
+
+// Closes alone (high = low = close).
+std::vector<types::Bar> Closes(std::initializer_list<const char*> closes) {
+    std::vector<types::Bar> bars;
+    for (const char* close : closes) {
+        bars.push_back(B(close, close, close));
+    }
+    return bars;
+}
+
+// 60 hourly-looking bars around 1200, for values checked against an exact
+// (rational) reference computation of each definition.
+const std::vector<types::Bar>& Series() {
+    static const std::vector<types::Bar> bars = {
+        B("1236.10", "1223.78", "1227.82"), B("1234.97", "1227.08", "1234.48"),
+        B("1253.59", "1233.52", "1248.11"), B("1254.07", "1242.49", "1243.08"),
+        B("1265.53", "1240.89", "1260.34"), B("1261.22", "1237.43", "1241.87"),
+        B("1242.58", "1236.53", "1238.99"), B("1244.63", "1218.36", "1222.70"),
+        B("1228.49", "1203.86", "1205.12"), B("1226.20", "1198.67", "1223.92"),
+        B("1235.57", "1223.29", "1229.61"), B("1239.23", "1225.55", "1233.24"),
+        B("1235.50", "1214.80", "1215.27"), B("1219.43", "1212.31", "1218.07"),
+        B("1219.54", "1209.70", "1215.23"), B("1221.07", "1196.90", "1200.05"),
+        B("1209.97", "1198.20", "1202.99"), B("1208.94", "1181.37", "1187.21"),
+        B("1195.29", "1183.40", "1193.37"), B("1198.97", "1170.07", "1177.36"),
+        B("1183.13", "1159.32", "1159.93"), B("1167.38", "1154.85", "1165.28"),
+        B("1178.58", "1160.91", "1173.14"), B("1188.18", "1168.38", "1184.97"),
+        B("1193.59", "1181.27", "1188.95"), B("1191.49", "1179.38", "1181.22"),
+        B("1197.83", "1178.73", "1189.85"), B("1195.73", "1170.13", "1173.20"),
+        B("1179.77", "1169.69", "1174.71"), B("1189.17", "1171.77", "1184.58"),
+        B("1190.26", "1183.38", "1189.52"), B("1194.76", "1187.84", "1190.48"),
+        B("1204.99", "1188.93", "1201.49"), B("1224.71", "1197.18", "1219.71"),
+        B("1226.55", "1200.52", "1201.31"), B("1218.33", "1195.45", "1212.62"),
+        B("1228.15", "1209.14", "1224.94"), B("1236.99", "1218.86", "1233.41"),
+        B("1239.68", "1228.74", "1233.75"), B("1234.70", "1213.80", "1216.56"),
+        B("1223.69", "1209.17", "1215.97"), B("1216.59", "1191.15", "1198.63"),
+        B("1210.53", "1192.01", "1207.36"), B("1218.00", "1202.80", "1211.03"),
+        B("1218.36", "1198.73", "1202.68"), B("1225.85", "1199.13", "1219.01"),
+        B("1223.73", "1196.30", "1199.93"), B("1206.18", "1185.62", "1186.81"),
+        B("1187.63", "1184.58", "1187.03"), B("1201.43", "1185.71", "1198.49"),
+        B("1211.26", "1194.42", "1208.73"), B("1213.81", "1203.92", "1204.74"),
+        B("1209.33", "1187.44", "1191.55"), B("1196.89", "1190.15", "1194.05"),
+        B("1212.00", "1188.42", "1207.60"), B("1214.83", "1194.75", "1199.00"),
+        B("1205.99", "1189.80", "1193.69"), B("1215.27", "1192.15", "1212.91"),
+        B("1214.71", "1194.76", "1196.30"), B("1203.04", "1183.42", "1185.80"),
+    };
+    return bars;
+}
+
+// Within `tolerance` (one unit in the 8th place) of `expected`.
+void ExpectNear(const std::optional<types::Decimal>& actual,
+                const char* expected, const char* tolerance = "0.00000001") {
+    ASSERT_TRUE(actual);
+    EXPECT_LE((*actual - D(expected)).Abs(), D(tolerance))
+        << *actual << " against " << expected;
+}
+
+TEST(Indicators, Ema) {
+    // alpha = 0.5: seeded with (1 + 2 + 3) / 3 = 2, then 3, then 4.
+    const auto bars = Closes({"1", "2", "3", "4", "5"});
+    EXPECT_EQ(Ema(bars, 3), D("4"));
+    EXPECT_EQ(Ema(bars, 3, 1), D("3"));
+    EXPECT_EQ(Ema(bars, 3, 2), D("2"));
+    EXPECT_FALSE(Ema(bars, 3, 3));
+    EXPECT_FALSE(Ema(bars, 0));
+    EXPECT_FALSE(Ema(bars, 6));
+    EXPECT_EQ(Ema(bars, 1), D("5"));  // alpha = 1: the close itself
+    ExpectNear(Ema(Series(), 20), "1200.37138738");
+    ExpectNear(Ema(Series(), 20, 3), "1201.39895007");
+    ExpectNear(Ema(Series(), 12), "1198.71087984");
+}
+
+TEST(Indicators, Rsi) {
+    // Changes +1, -1, +2; period 2: gains seeded 0.5 then 1.25, losses 0.5
+    // then 0.25, so 100 * 1.25 / 1.5.
+    const auto bars = Closes({"10", "11", "10", "12"});
+    EXPECT_EQ(Rsi(bars, 2), D("83.33333333"));
+    EXPECT_EQ(Rsi(bars, 2, 1), D("50"));  // one gain, one loss of 1
+    EXPECT_EQ(Rsi(Closes({"1", "2", "3"}), 2), D("100"));
+    EXPECT_EQ(Rsi(Closes({"3", "2", "1"}), 2), D("0"));
+    EXPECT_EQ(Rsi(Closes({"2", "2", "2"}), 2), D("50"));
+    EXPECT_FALSE(Rsi(bars, 4));  // needs period + 1 bars
+    EXPECT_FALSE(Rsi(bars, 3, 1));
+    EXPECT_FALSE(Rsi(bars, 0));
+    ExpectNear(Rsi(Series()), "44.39322895");
+    ExpectNear(Rsi(Series(), 14, 5), "51.87861662");
+}
+
+TEST(Indicators, TrueRange) {
+    // A gap counts: from a close below the bar, or above it.
+    EXPECT_EQ(TrueRange(B("12", "10"), D("8")), D("4"));
+    EXPECT_EQ(TrueRange(B("12", "10"), D("13")), D("3"));
+    EXPECT_EQ(TrueRange(B("12", "10"), D("11")), D("2"));
+}
+
+TEST(Indicators, Atr) {
+    // True ranges 2, 4 and 1; period 2: seeded 3, then 3 + (1 - 3) / 2.
+    const std::vector<types::Bar> bars = {
+        B("10", "10", "10"), B("11", "9", "10"), B("14", "12", "13"),
+        B("13", "12", "12")};
+    EXPECT_EQ(Atr(bars, 2), D("2"));
+    EXPECT_EQ(Atr(bars, 2, 1), D("3"));
+    EXPECT_FALSE(Atr(bars, 2, 2));
+    EXPECT_FALSE(Atr(bars, 4));
+    EXPECT_FALSE(Atr(bars, 0));
+    ExpectNear(Atr(Series()), "18.13856820");
+    ExpectNear(Atr(Series(), 14, 2), "17.87650514");
+}
+
+TEST(Indicators, Bollinger) {
+    // Mean 5, population deviation exactly 2.
+    const auto bars = Closes({"2", "4", "4", "4", "5", "5", "7", "9"});
+    const auto bands = Bollinger(bars, 8);
+    ASSERT_TRUE(bands);
+    EXPECT_EQ(bands->middle, D("5"));
+    EXPECT_EQ(bands->deviation, D("2"));
+    EXPECT_EQ(bands->upper, D("9"));
+    EXPECT_EQ(bands->lower, D("1"));
+    // 5, 5, 7, 9: mean 6.5, variance 2.75.
+    const auto last4 = Bollinger(bars, 4, D("1"));
+    ASSERT_TRUE(last4);
+    EXPECT_EQ(last4->deviation, D("1.65831240"));
+    EXPECT_EQ(last4->upper, D("8.15831240"));
+    const auto flat = Bollinger(bars, 3, D("0"), 4);  // 4, 4, 4
+    ASSERT_TRUE(flat);
+    EXPECT_EQ(flat->deviation, D("0"));
+    EXPECT_EQ(flat->upper, flat->lower);
+    EXPECT_FALSE(Bollinger(bars, 8, D("-1")));
+    EXPECT_FALSE(Bollinger(bars, 8, D("2"), 1));
+    EXPECT_FALSE(Bollinger(bars, 0));
+
+    const auto series = Bollinger(Series());
+    ASSERT_TRUE(series);
+    EXPECT_EQ(series->middle, D("1201.0655"));
+    ExpectNear(series->upper, "1220.08731219");
+    ExpectNear(series->lower, "1182.04368781");
+    ExpectNear(series->deviation, "9.51090610");
+    const auto wide = Bollinger(Series(), 20, D("2.5"), 1);
+    ASSERT_TRUE(wide);
+    ExpectNear(wide->upper, "1226.11467989");
+    ExpectNear(wide->lower, "1179.09232011");
+}
+
+TEST(Indicators, BollingerLargePrices) {
+    // Six-figure prices (BTC) swinging by thousands: the squares stay exact.
+    const auto bars =
+        Closes({"100000", "104000", "96000", "108000", "92000", "100000"});
+    const auto bands = Bollinger(bars, 6, D("2"));
+    ASSERT_TRUE(bands);
+    EXPECT_EQ(bands->middle, D("100000"));
+    // Squares 0, 16e6, 16e6, 64e6, 64e6, 0: variance 160e6 / 6.
+    EXPECT_EQ(bands->deviation, D("5163.97779494"));
+}
+
+TEST(Indicators, Macd) {
+    // fast 2 (alpha 2/3), slow 3 (alpha 1/2), signal 2 on closes 1..5:
+    // fast EMA 1.5, 2.5, 3.5, 4.5; slow 2, 3, 4; line 0.5 three times, so
+    // the signal is 0.5 and the histogram 0.
+    const auto bars = Closes({"1", "2", "3", "4", "5"});
+    const auto macd = Macd(bars, 2, 3, 2);
+    ASSERT_TRUE(macd);
+    EXPECT_EQ(macd->line, D("0.5"));
+    EXPECT_EQ(macd->signal, D("0.5"));
+    EXPECT_EQ(macd->histogram, D("0"));
+    EXPECT_TRUE(Macd(bars, 2, 3, 2, 1));   // 4 bars = slow + signal - 1
+    EXPECT_FALSE(Macd(bars, 2, 3, 2, 2));  // 3 bars
+    EXPECT_FALSE(Macd(bars, 3, 3, 2));     // fast must be below slow
+    EXPECT_FALSE(Macd(bars, 0, 3, 2));
+    EXPECT_FALSE(Macd(bars, 2, 3, 0));
+
+    const auto series = Macd(Series());
+    ASSERT_TRUE(series);
+    ExpectNear(series->line, "-2.94218074");
+    ExpectNear(series->signal, "-2.28133297");
+    ExpectNear(series->histogram, "-0.66084776");
+    const auto earlier = Macd(Series(), 12, 26, 9, 4);
+    ASSERT_TRUE(earlier);
+    ExpectNear(earlier->line, "-2.35492492");
+    ExpectNear(earlier->signal, "-2.23586229");
+    ExpectNear(earlier->histogram, "-0.11906263");
+}
+
+// Bars from {high, low, close}.
+std::vector<types::Bar> Hlc(
+    std::initializer_list<std::array<const char*, 3>> bars) {
+    std::vector<types::Bar> out;
+    for (const auto& [high, low, close] : bars) {
+        out.push_back(B(high, low, close));
+    }
+    return out;
+}
+
+TEST(Indicators, PriceScales) {
+    // The working precision follows the prices: a tiny price keeps its
+    // significant digits and a nine-figure one does not overflow. Each is
+    // checked against the exact computation.
+    {
+        // BTC/USDT-like, around 65,000 with cent ticks.
+        const auto bars = Hlc({{"65001.45", "64998.21", "64998.37"},
+                               {"64998.67", "64996.72", "64997.98"},
+                               {"65000.78", "64997.01", "64999.58"},
+                               {"64999.82", "64997.48", "64998.72"},
+                               {"64999.71", "64994.91", "64996.01"},
+                               {"64997.15", "64992.35", "64993.03"},
+                               {"64993.29", "64991.56", "64992.37"},
+                               {"64992.42", "64989.62", "64989.68"},
+                               {"64992.24", "64988.71", "64992.22"},
+                               {"64993.30", "64991.36", "64991.43"},
+                               {"64994.39", "64990.31", "64993.83"},
+                               {"64997.31", "64993.24", "64995.90"},
+                               {"64997.02", "64995.34", "64996.43"},
+                               {"64998.87", "64996.38", "64998.13"},
+                               {"65000.81", "64997.88", "64999.39"},
+                               {"65000.14", "64997.99", "64998.29"},
+                               {"64999.97", "64997.21", "64998.69"},
+                               {"65001.36", "64997.92", "65000.88"},
+                               {"65002.38", "64999.51", "65000.78"},
+                               {"65003.95", "64999.28", "65002.95"},
+                               {"65004.17", "64999.68", "65000.30"},
+                               {"65002.49", "64999.86", "65001.43"},
+                               {"65003.58", "65000.48", "65002.18"},
+                               {"65003.30", "64998.76", "65000.06"},
+                               {"65000.47", "64996.83", "64998.16"},
+                               {"65000.12", "64996.91", "64999.18"},
+                               {"65000.38", "64996.37", "64996.48"},
+                               {"64998.11", "64995.48", "64996.63"},
+                               {"64997.06", "64994.09", "64995.37"},
+                               {"64995.40", "64994.18", "64994.69"},
+                               {"64998.61", "64994.10", "64997.21"},
+                               {"64999.66", "64996.33", "64998.35"},
+                               {"65002.16", "64997.18", "65001.26"},
+                               {"65002.66", "65001.00", "65001.01"},
+                               {"65003.24", "65000.68", "65001.93"},
+                               {"65005.67", "65001.41", "65004.24"},
+                               {"65005.74", "65003.01", "65005.60"},
+                               {"65007.78", "65004.19", "65006.33"},
+                               {"65007.62", "65004.32", "65005.37"},
+                               {"65008.24", "65004.31", "65007.33"}});
+        ExpectNear(Ema(bars, 10), "65003.55822196");
+        ExpectNear(Rsi(bars), "66.42720990");
+        ExpectNear(Atr(bars), "3.30195531");
+        const auto macd = Macd(bars);
+        ASSERT_TRUE(macd);
+        ExpectNear(macd->line, "2.47872611");
+    }
+    {
+        // SHIB-like, around 0.00001 with 1e-8 ticks.
+        const auto bars = Hlc({{"0.00001260", "0.00001232", "0.00001259"},
+                               {"0.00001270", "0.00001229", "0.00001234"},
+                               {"0.00001260", "0.00001226", "0.00001251"},
+                               {"0.00001265", "0.00001250", "0.00001259"},
+                               {"0.00001271", "0.00001246", "0.00001266"},
+                               {"0.00001288", "0.00001255", "0.00001276"},
+                               {"0.00001294", "0.00001268", "0.00001280"},
+                               {"0.00001308", "0.00001280", "0.00001307"},
+                               {"0.00001321", "0.00001290", "0.00001300"},
+                               {"0.00001340", "0.00001287", "0.00001328"},
+                               {"0.00001360", "0.00001323", "0.00001355"},
+                               {"0.00001362", "0.00001340", "0.00001340"},
+                               {"0.00001350", "0.00001316", "0.00001321"},
+                               {"0.00001332", "0.00001294", "0.00001299"},
+                               {"0.00001340", "0.00001286", "0.00001326"},
+                               {"0.00001354", "0.00001315", "0.00001343"},
+                               {"0.00001357", "0.00001331", "0.00001336"},
+                               {"0.00001366", "0.00001322", "0.00001354"},
+                               {"0.00001372", "0.00001339", "0.00001365"},
+                               {"0.00001380", "0.00001341", "0.00001352"},
+                               {"0.00001378", "0.00001338", "0.00001364"},
+                               {"0.00001378", "0.00001341", "0.00001356"},
+                               {"0.00001375", "0.00001346", "0.00001368"},
+                               {"0.00001395", "0.00001360", "0.00001390"},
+                               {"0.00001424", "0.00001381", "0.00001409"},
+                               {"0.00001422", "0.00001389", "0.00001398"},
+                               {"0.00001420", "0.00001383", "0.00001414"},
+                               {"0.00001427", "0.00001412", "0.00001416"},
+                               {"0.00001446", "0.00001416", "0.00001436"},
+                               {"0.00001470", "0.00001433", "0.00001464"},
+                               {"0.00001465", "0.00001429", "0.00001437"},
+                               {"0.00001451", "0.00001434", "0.00001444"},
+                               {"0.00001466", "0.00001436", "0.00001462"},
+                               {"0.00001468", "0.00001446", "0.00001447"},
+                               {"0.00001448", "0.00001443", "0.00001444"},
+                               {"0.00001455", "0.00001432", "0.00001437"},
+                               {"0.00001437", "0.00001420", "0.00001422"},
+                               {"0.00001424", "0.00001399", "0.00001399"},
+                               {"0.00001399", "0.00001360", "0.00001371"},
+                               {"0.00001375", "0.00001352", "0.00001357"}});
+        ExpectNear(Ema(bars, 10), "0.00001405");
+        ExpectNear(Rsi(bars), "43.13340987");
+        ExpectNear(Atr(bars), "0.00000029");
+        const auto macd = Macd(bars);
+        ASSERT_TRUE(macd);
+        ExpectNear(macd->line, "0.00000019");
+    }
+    {
+        // BTC/KRW-like, around 140,000,000 with 1,000 ticks: good to about
+        // 1e-7 at nine figures.
+        const auto bars = Hlc({{"140139000", "139910000", "139943000"},
+                               {"140142000", "139795000", "140021000"},
+                               {"140024000", "139668000", "139788000"},
+                               {"139929000", "139694000", "139753000"},
+                               {"139873000", "139511000", "139649000"},
+                               {"140032000", "139548000", "139911000"},
+                               {"139970000", "139727000", "139765000"},
+                               {"140099000", "139762000", "140000000"},
+                               {"140040000", "139755000", "139765000"},
+                               {"139780000", "139697000", "139773000"},
+                               {"140056000", "139664000", "139957000"},
+                               {"140208000", "139844000", "140061000"},
+                               {"140154000", "139874000", "139898000"},
+                               {"139932000", "139508000", "139634000"},
+                               {"139700000", "139445000", "139556000"},
+                               {"139671000", "139427000", "139564000"},
+                               {"139805000", "139475000", "139659000"},
+                               {"140054000", "139555000", "139905000"},
+                               {"140262000", "139819000", "140203000"},
+                               {"140274000", "139891000", "139932000"},
+                               {"140104000", "139786000", "139966000"},
+                               {"140274000", "139912000", "140248000"},
+                               {"140603000", "140176000", "140535000"},
+                               {"140551000", "140239000", "140362000"},
+                               {"140579000", "140274000", "140557000"},
+                               {"140662000", "140287000", "140325000"},
+                               {"140400000", "139936000", "140045000"},
+                               {"140200000", "140034000", "140170000"},
+                               {"140266000", "139766000", "139916000"},
+                               {"140095000", "139845000", "139954000"},
+                               {"140231000", "139945000", "140171000"},
+                               {"140189000", "140152000", "140188000"},
+                               {"140325000", "139990000", "139998000"},
+                               {"140102000", "139826000", "139900000"},
+                               {"139939000", "139859000", "139869000"},
+                               {"139996000", "139777000", "139916000"},
+                               {"140012000", "139661000", "139757000"},
+                               {"140061000", "139659000", "139928000"},
+                               {"140226000", "139799000", "140200000"},
+                               {"140310000", "140117000", "140177000"}});
+        ExpectNear(Ema(bars, 10), "140033399.89276030", "0.0000001");
+        ExpectNear(Rsi(bars), "53.81834567");
+        ExpectNear(Atr(bars), "304576.67633517", "0.0000001");
+        const auto macd = Macd(bars);
+        ASSERT_TRUE(macd);
+        ExpectNear(macd->line, "41493.88754215", "0.0000001");
+    }
+}
+
+TEST(Indicators, RsiLargeMoves) {
+    // A 10,000 move (BTC on daily bars) once overflowed the ratio.
+    EXPECT_EQ(Rsi(Closes({"50000", "60000"}), 1), D("100"));
+    EXPECT_EQ(Rsi(Closes({"60000", "50000"}), 1), D("0"));
+    // Gains seeded (10,000 + 0) / 2, losses (0 + 5,000) / 2.
+    EXPECT_EQ(Rsi(Closes({"50000", "60000", "55000"}), 2), D("66.66666667"));
+    EXPECT_EQ(Rsi(Closes({"100000000", "150000000", "125000000"}), 2),
+              D("66.66666667"));
+}
+
+TEST(Indicators, PeriodOne) {
+    // Period 1 is the newest value alone.
+    EXPECT_EQ(Rsi(Closes({"1", "2", "1"}), 1), D("0"));
+    EXPECT_EQ(Rsi(Closes({"1", "2"}), 1), D("100"));
+    const std::vector<types::Bar> bars = {B("10", "10", "10"),
+                                          B("14", "12", "13")};
+    EXPECT_EQ(Atr(bars, 1), D("4"));
+    const auto bands = Bollinger(bars, 1);
+    ASSERT_TRUE(bands);
+    EXPECT_EQ(bands->deviation, D("0"));
+    EXPECT_EQ(bands->upper, D("13"));
+    EXPECT_EQ(bands->lower, D("13"));
+}
+
+TEST(Indicators, BollingerHugeDeviation) {
+    // Squares of 20,000,000 deviations take the square root's reduced
+    // precision: sqrt(2e14) = 14142135.623730950...
+    const auto bands = Bollinger(
+        Closes({"100000000", "120000000", "80000000", "100000000"}), 4);
+    ASSERT_TRUE(bands);
+    EXPECT_EQ(bands->deviation, D("14142135.62373095"));
+    EXPECT_EQ(bands->upper - bands->middle, D("28284271.2474619"));
+}
+
+TEST(Indicators, WindowLimits) {
+    const auto bars = Closes({"1", "2", "3", "4", "5", "6", "7", "8"});
+    // back equal to what is left over still answers; one more does not.
+    EXPECT_TRUE(Rsi(bars, 2, 5));
+    EXPECT_FALSE(Rsi(bars, 2, 6));
+    EXPECT_TRUE(Bollinger(bars, 4, D("1"), 4));
+    EXPECT_FALSE(Bollinger(bars, 4, D("1"), 5));
+    // Enough bars for the slow EMA but not for the signal after it.
+    EXPECT_FALSE(Macd(Closes({"1", "2", "3", "4"}), 2, 3, 3));
+    // Huge periods and backs answer nullopt rather than wrapping.
+    constexpr auto kHuge = std::numeric_limits<std::size_t>::max();
+    EXPECT_FALSE(Sma(bars, 2, kHuge - 1));
+    EXPECT_FALSE(Ema(bars, 2, kHuge - 1));
+    EXPECT_FALSE(Rsi(bars, kHuge));
+    EXPECT_FALSE(Atr(bars, kHuge, 1));
+    EXPECT_FALSE(Bollinger(bars, kHuge));
+    EXPECT_FALSE(Macd(bars, 2, 3, kHuge));
+    EXPECT_FALSE(Macd(bars, 2, kHuge, 2));
 }
 
 }  // namespace

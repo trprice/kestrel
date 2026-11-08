@@ -49,7 +49,11 @@ Every hook gets a `Context&`, valid only during that call:
   value, for rounding prices and quantities.
 - `Bars(symbol, timeframe)`: the last closed bars, oldest first, up to
   `warmup_bars`. The span is invalidated by the next bar for that series, so
-  do not keep it.
+  do not keep it. `strategy/patterns.hpp` computes indicators from it (`Sma`,
+  `Ema`, `Rsi`, `Atr`, `Bollinger`, `Macd`) and finds bar patterns (narrow
+  range, inside bar, ranges, swing points, double bottoms). The smoothed
+  indicators settle over a few times their period, so ask for that many
+  `warmup_bars`.
 - `MarketOpen()`: whether the market can be traded now, and
   `CurrentOrNextSession()`: the session open now, or the next one. Always open
   (and no session) on a crypto venue.

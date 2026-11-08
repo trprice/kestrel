@@ -190,10 +190,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
-- [ ] Indicators library (EMA, RSI, ATR, Bollinger, MACD) as small
-      reusable pieces so strategies do not each reimplement them, in
-      `strategy/patterns.hpp` beside the SMA and the bar patterns (NR,
-      inside bar, range) already there
 - [ ] `breakout`: rest the target as a sell limit beside the protective stop
       once the venue can link them (one-cancels-other), instead of selling
       at market on a close past it; short entries and stop-and-reverse once
@@ -834,6 +830,11 @@ the header of the code concerned.
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),
       `IsInsideBar`, `RangeOf` (the last N bars' high and low) and `Sma`,
       which `SmaCrossover` now uses instead of its own.
+- [x] Indicators in `patterns.hpp`: `Ema`, `Rsi` and `Atr` (Wilder's),
+      `TrueRange`, `Bollinger` (population deviation) and `Macd`, in
+      `Decimal`, each checked against an exact rational computation. No
+      strategy uses them yet (EMA crossover, RSI mean-reversion and an ATR
+      stop are under Strategies).
 
 ### Backtest fills within a bar
 - [x] Bar-only backtests walk each bar of the finest series for the paper

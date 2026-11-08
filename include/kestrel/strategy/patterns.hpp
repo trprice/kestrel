@@ -129,4 +129,74 @@ std::optional<PriceRange> OpeningRangeOf(std::span<const types::Bar> bars,
 std::optional<types::Decimal> Sma(std::span<const types::Bar> bars,
                                   std::size_t period, std::size_t back = 0);
 
+// Indicators. Like Sma, each is the value at the bar `back` bars before the
+// newest (back = 0: the newest), to 8 decimal places, and nullopt for a zero
+// period or a window too short for it. The smoothed ones (Ema, Rsi, Atr,
+// Macd) use the whole window, not just its last `period` bars: they are
+// seeded with a simple average of its first values and smoothed over the
+// rest, so they depend a little on how long it is. The seed's influence
+// fades as (1 - alpha)^bars, so give them warmup_bars of a few times the
+// period for values that match a charting package's. They carry as many
+// places between steps as the prices allow (17 under 1, 11 at six figures),
+// so nothing overflows: values are good to the 8th place up to about 10^8,
+// and to about 10^-7 at nine figures (BTC in KRW). A price-valued result
+// under about 0.01 has few significant digits in 8 places.
+
+// The exponential moving average of closes, alpha = 2 / (period + 1), seeded
+// with the average of the window's first `period` closes. Needs period bars.
+std::optional<types::Decimal> Ema(std::span<const types::Bar> bars,
+                                  std::size_t period, std::size_t back = 0);
+
+// Wilder's relative strength index, 0 to 100: 100 - 100 / (1 + average gain /
+// average loss) of the close-to-close changes, the averages seeded with the
+// first `period` changes and then smoothed with alpha = 1 / period. 100 when
+// there were no losses, 50 when the price never moved. Needs period + 1 bars.
+std::optional<types::Decimal> Rsi(std::span<const types::Bar> bars,
+                                  std::size_t period = 14,
+                                  std::size_t back = 0);
+
+// The true range of `bar` after one that closed at `prev_close`: the largest
+// of its range and its high's and low's distances from that close, so a gap
+// counts.
+types::Decimal TrueRange(const types::Bar& bar,
+                         const types::Decimal& prev_close);
+
+// Wilder's average true range: the true ranges (each bar after the first)
+// averaged over `period`, then smoothed with alpha = 1 / period. Needs
+// period + 1 bars.
+std::optional<types::Decimal> Atr(std::span<const types::Bar> bars,
+                                  std::size_t period = 14,
+                                  std::size_t back = 0);
+
+// Bollinger bands: the `period`-bar average close (Sma) and `width` standard
+// deviations of those closes (the population deviation, as Bollinger defines
+// it) above and below it. Needs period bars; a negative width is an error
+// (nullopt). upper and lower are middle plus and minus one rounded offset,
+// width times the unrounded deviation.
+struct BollingerBands {
+    types::Decimal middle;
+    types::Decimal upper;
+    types::Decimal lower;
+    types::Decimal deviation;  // the standard deviation of the closes
+};
+std::optional<BollingerBands> Bollinger(std::span<const types::Bar> bars,
+                                        std::size_t period = 20,
+                                        const types::Decimal& width = {2, 0},
+                                        std::size_t back = 0);
+
+// MACD: the `fast` EMA of closes less the `slow` one (the line), the
+// `signal`-period EMA of that line (seeded with the average of its first
+// `signal` values), and the line less the signal (the histogram). The line
+// starts once the slow EMA has `slow` bars, so this needs slow + signal - 1
+// bars. Nullopt also unless fast < slow. The histogram is exactly line less
+// signal as returned.
+struct MacdValue {
+    types::Decimal line;
+    types::Decimal signal;
+    types::Decimal histogram;
+};
+std::optional<MacdValue> Macd(std::span<const types::Bar> bars,
+                              std::size_t fast = 12, std::size_t slow = 26,
+                              std::size_t signal = 9, std::size_t back = 0);
+
 }  // namespace kestrel::strategy
