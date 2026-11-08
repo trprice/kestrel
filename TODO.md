@@ -212,9 +212,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Stronger inventory control: a skew that grows faster than linearly
-      with the position (Avellaneda-Stoikov style) and with how long the
-      position has been held. The current skew is linear in the position.
 - [ ] Quote several levels a side with smaller sizes, for pairs that swing
       enough to fill them.
 - [ ] Persist the halt state and protection P&L, so a restart does not reset
@@ -722,6 +719,15 @@ the header of the code concerned.
       and -41.2 against -30.8): Binance.US's book stream is silent while
       the book is unchanged, over 10 s 2,695 times on ZEC/USDT. It guards
       against a stalled feed; it is not an edge.
+- [x] Market maker inventory skew: `skew_power` (the lean raised to a
+      power, Avellaneda-Stoikov's quadratic at 2) and `skew_age_ms` (the
+      skew grows with how long the position has been held, doubling at
+      that age). Off by default. Same replays, vs hold summed, 4 / 6 bps,
+      skew_bps 4: linear -30.8 / -18.9; power 2 -42.9 / -19.4, and with
+      skew_bps 8 -34.7 / -17.5; age 10 min -29.5 / -19.4, 30 min
+      -27.2 / -16.7; linear skew_bps 8 -32.1 / -15.2. The days swing by
+      several USDT each, so none is clearly better; a 30 min age was
+      ahead of the linear skew_bps 4 on both spreads.
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

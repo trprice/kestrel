@@ -60,6 +60,12 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
   as ZEC's tick is too fine for a quote to sit exactly there. Every
   setting lost to holding over the four windows (6 bps: −19), and without
   post-only quotes the same replays lose several times as much.
+- **Stronger inventory skew** (same replays): squaring the lean
+  (`skew_power = 2`) lost more at 4 bps and about the same at 6; growing
+  the skew with the position's age (`skew_age_ms`, 30 min) was a little
+  ahead of the linear skew at both (−27.2 and −16.7 against −30.8 and
+  −18.9), though doubling the linear skew did better at 6 bps (−15.2):
+  all within the days' noise.
 - **Pulling quotes when the feed goes quiet** (`quiet_pull_ms`, same
   replays): neutral at 30 or 60 s; at 2 or 5 s it pulled about 42,000
   and 11,000 times in a quiet market and lost more. A safety guard, not

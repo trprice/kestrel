@@ -72,6 +72,11 @@ post_only        = true
 # changed nothing; see TODO.md.
 # touch          = "join"
 # keep_at_touch  = true
+# Lean harder on a large position (the lean to this power) or an old one
+# (the skew doubling by this age). Neither was clearly better in the Nov
+# 2026 replays (TODO.md); the values are examples, not recommendations.
+# skew_power     = 2
+# skew_age_ms    = 1800000
 # Pull both quotes after this long with no quote (a stalled feed). The book
 # stream is silent while the book is unchanged, so keep it to tens of
 # seconds; 2-5 s pulled thousands of times in the replays and lost money.

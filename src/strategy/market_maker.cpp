@@ -52,10 +52,15 @@ MarketMaker::MarketMaker(MarketMakerParams params)
         (mParams.requote_toward_bps &&
          mParams.requote_toward_bps->IsNegative()) ||
         mParams.max_quote_age < std::chrono::milliseconds::zero() ||
-        mParams.quiet_pull < std::chrono::milliseconds::zero()) {
+        mParams.quiet_pull < std::chrono::milliseconds::zero() ||
+        mParams.skew_age < std::chrono::milliseconds::zero()) {
         throw std::invalid_argument(
-            "skew_bps, requote_bps, requote_toward_bps, max_quote_age and "
-            "quiet_pull cannot be negative");
+            "skew_bps, requote_bps, requote_toward_bps, max_quote_age, "
+            "quiet_pull and skew_age cannot be negative");
+    }
+    if (mParams.skew_power < Decimal::FromInt(1) ||
+        mParams.skew_power > Decimal::FromInt(4)) {
+        throw std::invalid_argument("skew_power must be from 1 to 4");
     }
     if (mParams.vol_multiplier.IsNegative() ||
         mParams.max_half_spread_bps.IsNegative()) {
@@ -187,11 +192,8 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     }
 
     // Lean away from the side the position is heavy on.
-    Decimal lean = Decimal::Divide(mInventory - mStart, mParams.max_inventory,
-                                   kScale, Rounding::kNearest);
-    lean = std::clamp(lean, Decimal::FromInt(-1), Decimal::FromInt(1));
     const Decimal reservation =
-        Centre(quote, mid) - Bps(mid, mParams.skew_bps * lean);
+        Centre(quote, mid) - Bps(mid, SkewBps(context.Now()));
     const Decimal half = Bps(mid, HalfSpreadBps(context.Now(), mid));
 
     Decimal bid = (reservation - half).RoundToIncrement(tick, Rounding::kDown);
@@ -610,7 +612,44 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                  ack->order_id, replaced);
 }
 
-void MarketMaker::OnFill(Context&, const types::Fill& fill) {
+Decimal MarketMaker::SkewBps(types::Timestamp now) const {
+    if (mParams.skew_bps.IsZero()) {
+        return Decimal();
+    }
+    Decimal lean = Decimal::Divide(Position(), mParams.max_inventory, kScale,
+                                   Rounding::kNearest);
+    lean = std::clamp(lean, Decimal::FromInt(-1), Decimal::FromInt(1));
+    if (mParams.skew_power == Decimal::FromInt(1) &&
+        mParams.skew_age == std::chrono::milliseconds::zero()) {
+        return mParams.skew_bps * lean;  // linear, exactly as before
+    }
+    double shift =
+        std::pow(std::abs(ToDouble(lean)), ToDouble(mParams.skew_power)) *
+        (lean.IsNegative() ? -1.0 : 1.0);
+    if (mParams.skew_age > std::chrono::milliseconds::zero() &&
+        mHeldSide != 0) {
+        const double held =
+            std::chrono::duration<double>(now - mHeldSince).count() /
+            std::chrono::duration<double>(mParams.skew_age).count();
+        shift *= 1.0 + std::clamp(held, 0.0, 1.0);
+    }
+    return mParams.skew_bps * Decimal(std::llround(shift * 1e8), 8);
+}
+
+void MarketMaker::NoteHeld(types::Timestamp now) {
+    // Held from half a quote's quantity: a buy's fee taken in the coin
+    // (Binance.US) leaves a full quote's fill a little under its quantity.
+    const Decimal position = Position();
+    const int side = position.Abs() * Decimal::FromInt(2) < mParams.quantity
+                         ? 0
+                         : position.Sign();
+    if (side != mHeldSide) {
+        mHeldSide = side;
+        mHeldSince = now;
+    }
+}
+
+void MarketMaker::OnFill(Context& context, const types::Fill& fill) {
     if (fill.symbol != mParams.symbol) {
         return;
     }
@@ -658,6 +697,7 @@ void MarketMaker::OnFill(Context&, const types::Fill& fill) {
             mUnconfirmed.erase(it);
         }
     }
+    NoteHeld(context.Now());
     spdlog::info("market_maker: {} {} @ {}, inventory {}",
                  types::ToString(fill.side), fill.quantity.ToString(),
                  fill.price.ToString(), mInventory.ToString());

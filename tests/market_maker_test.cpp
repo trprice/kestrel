@@ -132,6 +132,11 @@ TEST(MarketMakerTest, RejectsBadParameters) {
              [](MarketMakerParams& p) { p.max_half_spread_bps = D("5"); },
              [](MarketMakerParams& p) {
                  p.quiet_pull = std::chrono::milliseconds(-1);
+             },
+             [](MarketMakerParams& p) { p.skew_power = D("0.5"); },
+             [](MarketMakerParams& p) { p.skew_power = D("5"); },
+             [](MarketMakerParams& p) {
+                 p.skew_age = std::chrono::milliseconds(-1);
              }}) {
         auto p = Params();
         change(p);
@@ -524,6 +529,121 @@ TEST(MarketMakerTest, LeansAwayFromTheHeavySideOfTheInventory) {
     // 100.00 (still behind the touch).
     EXPECT_EQ(m.Orders()[0].limit_price, D("99.80"));
     EXPECT_EQ(m.Orders()[1].limit_price, D("100.00"));
+}
+
+TEST(MarketMakerTest, ASkewPowerLeansLittleOnASmallPositionAndHardOnALarge) {
+    auto p = Params();
+    p.skew_bps = D("20");
+    p.skew_power = D("2");
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));  // half of the max
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+    // A lean of 0.5 squared, 0.25: 5 bps, reservation 99.95.
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.85"));
+    EXPECT_EQ(m.Orders()[1].limit_price, D("100.05"));
+    // At the full max the lean is 1 either way: 20 bps, reservation 99.80.
+    Maker full("1", p);
+    full.strategy.OnFill(full.context, FillOf(Side::kBuy, "2"));
+    full.Quote("99.99", "100.01");
+    ASSERT_FALSE(full.Orders().empty());
+    EXPECT_EQ(full.Orders()[0].side, Side::kSell);  // no room to buy
+    EXPECT_EQ(full.Orders()[0].limit_price, D("100.00"));
+}
+
+TEST(MarketMakerTest, TheSkewGrowsWithHowLongThePositionIsHeld) {
+    auto p = Params();
+    p.requote_bps = D("0");  // any move replaces the quote
+    p.skew_bps = D("20");
+    p.skew_age = std::chrono::minutes(10);
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));  // lean 0.5
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.80"));  // 10 bps, as linear
+    // Five minutes held: x1.5, 15 bps, the bid at 99.75.
+    m.context.now += std::chrono::minutes(5);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().back().side, Side::kBuy);
+    EXPECT_EQ(m.Orders().back().limit_price, D("99.75"));
+    // Past the age it stops growing at x2: 20 bps, the bid at 99.70.
+    m.context.now += std::chrono::minutes(20);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().back().limit_price, D("99.70"));
+    const auto placed = m.Orders().size();
+    m.context.now += std::chrono::hours(1);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().size(), placed);  // unchanged
+}
+
+TEST(MarketMakerTest, TheHoldingClockStartsAtHalfAQuoteAndResetsWhenFlat) {
+    auto p = Params();  // quantity 0.5
+    p.skew_bps = D("20");
+    p.skew_age = std::chrono::minutes(10);
+    p.requote_bps = D("0");
+    Maker m("1", p);
+    // 0.2 is under half a quote's size: not held, however long.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.2"));
+    m.context.now += std::chrono::minutes(30);
+    m.Quote("99.99", "100.01");
+    // Lean 0.1, 2 bps: reservation 99.98, the bid 99.88.
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.88"));
+    // Now held from here: no age yet.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.8"));  // lean 0.5
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().back().side, Side::kSell);
+    // Back to flat and long again: the clock starts over.
+    m.context.now += std::chrono::minutes(30);
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "1"));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));
+    Maker fresh("1", p);
+    fresh.strategy.OnFill(fresh.context, FillOf(Side::kBuy, "1"));
+    fresh.Quote("99.99", "100.01");
+    m.Quote("99.99", "100.01");
+    // Both just started holding: the same 10 bps of skew, the same bid.
+    const auto bid_of = [](const Maker& maker) {
+        for (auto it = maker.Orders().rbegin(); it != maker.Orders().rend();
+             ++it) {
+            if (it->side == Side::kBuy) {
+                return *it->limit_price;
+            }
+        }
+        return D("0");
+    };
+    EXPECT_EQ(bid_of(m), D("99.80"));
+    EXPECT_EQ(bid_of(fresh), D("99.80"));
+}
+
+TEST(MarketMakerTest, AFullQuoteLessABaseFeeIsHeld) {
+    // Binance.US takes a buy's fee in the coin: 0.5 bought leaves 0.4995.
+    auto p = Params();
+    p.skew_bps = D("20");
+    p.skew_age = std::chrono::minutes(10);
+    Maker m("1", p);
+    auto fill = FillOf(Side::kBuy, "0.5");
+    fill.fee = D("0.0005");
+    fill.fee_asset = "ZEC";
+    m.strategy.OnFill(m.context, fill);
+    m.context.now += std::chrono::minutes(10);
+    m.Quote("99.99", "100.01");
+    // Lean 0.24975, doubled by the age: 9.99 bps, reservation 99.9001.
+    EXPECT_EQ(m.Orders()[0].limit_price, D("99.80"));
+}
+
+TEST(MarketMakerTest, PowerAndAgeTogetherLeanAShortPositionUp) {
+    // Short below the start (held 2, sold 1): the quotes lean up.
+    auto p = Params();
+    p.skew_bps = D("20");
+    p.skew_power = D("2");
+    p.skew_age = std::chrono::minutes(10);
+    Maker m("2", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "1"));  // lean -0.5
+    m.context.now += std::chrono::minutes(10);
+    m.Quote("99.99", "100.01");
+    // -0.5 squared keeps its sign, -0.25, doubled: -10 bps, reservation
+    // 100.10, so the bid 100.00 and the ask 100.20.
+    ASSERT_EQ(m.Orders().size(), 2u);
+    EXPECT_EQ(m.Orders()[0].limit_price, D("100.00"));
+    EXPECT_EQ(m.Orders()[1].limit_price, D("100.20"));
 }
 
 // Volatility scaling over a one-minute window, requoting on any tick's move.

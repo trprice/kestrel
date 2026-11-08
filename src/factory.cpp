@@ -435,6 +435,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
         p.Number("flow_pull_imbalance", params.flow_pull_imbalance);
     auto flow_window = p.Millis("flow_window_ms", params.flow_window);
     auto skew = p.Number("skew_bps", params.skew_bps);
+    auto skew_power = p.Number("skew_power", params.skew_power);
+    auto skew_age = p.Millis("skew_age_ms", params.skew_age);
     auto requote = p.Number("requote_bps", params.requote_bps);
     auto requote_toward =
         p.Number("requote_toward_bps", requote ? *requote : params.requote_bps);
@@ -456,6 +458,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     if (!flow_pull) return std::unexpected(flow_pull.error());
     if (!flow_window) return std::unexpected(flow_window.error());
     if (!skew) return std::unexpected(skew.error());
+    if (!skew_power) return std::unexpected(skew_power.error());
+    if (!skew_age) return std::unexpected(skew_age.error());
     if (!requote) return std::unexpected(requote.error());
     if (!requote_toward) return std::unexpected(requote_toward.error());
     if (!max_age) return std::unexpected(max_age.error());
@@ -478,6 +482,8 @@ Result<StrategyPtr> BuildMarketMaker(ParamReader& p) {
     params.flow_pull_imbalance = *flow_pull;
     params.flow_window = *flow_window;
     params.skew_bps = *skew;
+    params.skew_power = *skew_power;
+    params.skew_age = *skew_age;
     params.requote_bps = *requote;
     params.requote_toward_bps = *requote_toward;
     params.max_quote_age = *max_age;

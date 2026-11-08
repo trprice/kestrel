@@ -562,6 +562,9 @@ TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
     ASSERT_OK(quiet);
     EXPECT_EQ((*quiet)->Needs().timer_interval, std::chrono::milliseconds(500));
     EXPECT_FALSE(make("quiet_pull_ms=-1\n").has_value());
+    EXPECT_TRUE(
+        make("skew_bps=4\nskew_power=2\nskew_age_ms=600000\n").has_value());
+    EXPECT_FALSE(make("skew_power=0.5\n").has_value());
 }
 
 TEST(Factory, MarketMakerVolatilityScalingIsOptIn) {

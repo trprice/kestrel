@@ -234,7 +234,9 @@ its stop.
 | `flow_pull_imbalance` | pull the quote recent trades run against: no bid while the trades of the last `flow_window_ms` were sold into it by at least this imbalance ((bought - sold) / (bought + sold), by size), no ask while they bought it up by as much; 0 to 1 (default 0: off) |
 | `flow_window_ms` | how far back those trades count (default 5000) |
 | `max_inventory` | required; how far the position may stray from where it started, either way |
-| `skew_bps` | how far the reservation price leans when the position is `max_inventory` away (default 0) |
+| `skew_bps` | how far the reservation price leans when the position is `max_inventory` away (default 0); with `skew_age_ms`, up to twice this. A skew larger than the half-spread puts the quote that reduces the position past the mid, so it can sell (or buy back) at a loss against the entry before `stop_loss` fires |
+| `skew_power` | with it above 1, the lean is the position's share of `max_inventory` raised to it, keeping its sign, so a small position barely leans the quotes and a large one leans them hard (2: an inventory penalty growing with the square of the position, as in Avellaneda-Stoikov); 1 to 4 (default 1: linear) |
+| `skew_age_ms` | also grow the skew with how long the position has been held on its side, to double at this age and no further (default 0: off). It is held from when it last reached half a `quantity` on that side; falling under that, or crossing zero, starts the clock again |
 | `requote_bps` | how far the target must move before a resting quote is replaced (default 1) |
 | `requote_toward_bps` | the same when the market has moved towards the quote (the target below a resting bid, above a resting ask), which is the quote about to be filled at a stale price; 0 replaces it on a tick's move (default: `requote_bps`) |
 | `max_quote_age_ms` | replace a quote older than this even if its price is right (0, the default: never) |

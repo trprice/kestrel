@@ -113,6 +113,18 @@ struct MarketMakerParams {
     // is max_inventory away from where it started (in proportion for less):
     // long, both quotes shift down so a sale is likelier than a purchase.
     types::Decimal skew_bps{0, 0};
+    // Stronger inventory control, both off by default. With skew_power above
+    // 1 the lean is the position's share of max_inventory raised to it
+    // (keeping its sign): a small position barely leans the quotes and a
+    // large one leans them hard, as an inventory penalty that grows with the
+    // square of the position (Avellaneda-Stoikov) does at 2. With skew_age
+    // the skew also grows with how long the position has been held on its
+    // side (since it last reached half a quote's quantity there; falling
+    // under that, or crossing zero, starts it again), to double at skew_age
+    // and no further, so a position the market will not take back is leaned
+    // off harder as it ages.
+    types::Decimal skew_power{1, 0};
+    std::chrono::milliseconds skew_age{0};
     // A resting quote is replaced only when its target price has moved by at
     // least this many basis points (and at least one tick), since each
     // replacement goes to the back of the queue.
@@ -273,6 +285,11 @@ class MarketMaker : public Strategy {
     bool ExitPosition(Context& context, const char* why);
     void Halt(const char* why);
     types::Decimal Position() const { return mInventory - mStart; }
+    // The reservation price's shift for the position, in basis points of
+    // the mid: skew_bps times the lean (skew_power) times the age factor.
+    types::Decimal SkewBps(types::Timestamp now) const;
+    // Notes when the position reached its side (skew_age).
+    void NoteHeld(types::Timestamp now);
 
     // Fills the venue has reported in an order's state (an acknowledgement
     // that it filled at once, or its closing state) but whose OnFill has not
@@ -319,6 +336,8 @@ class MarketMaker : public Strategy {
     types::Timestamp mStandUntil;     // spike stand-down ends
     types::Timestamp mCooldownUntil;  // stop-out cooldown ends
     std::optional<Exit> mExit;
+    int mHeldSide = 0;  // -1 short, 0 flat (under half a quote), 1 long
+    types::Timestamp mHeldSince;
     bool mHalted = false;
     std::size_t mWouldTake = 0;  // post-only quotes refused, for the log
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
