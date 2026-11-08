@@ -2,7 +2,7 @@
 
 #include <array>
 
-#include "kestrel/strategy/sma_crossover.hpp"
+#include "kestrel/strategy/ma_crossover.hpp"
 #include "kestrel/types/market_hours.hpp"
 #include "test_helpers.hpp"
 
@@ -44,14 +44,14 @@ std::shared_ptr<ReplayDataSource> Data(const std::vector<const char*>& closes) {
     return data;
 }
 
-std::unique_ptr<strategy::SmaCrossover> Sma() {
-    strategy::SmaCrossoverParams p;
+std::unique_ptr<strategy::MaCrossover> Sma() {
+    strategy::MaCrossoverParams p;
     p.symbol = kSymbol;
     p.timeframe = Timeframe::kH1;
     p.fast_period = 2;
     p.slow_period = 3;
     p.quantity = D("0.5");
-    return std::make_unique<strategy::SmaCrossover>(p);
+    return std::make_unique<strategy::MaCrossover>(p);
 }
 
 // Hours 0-3 are warmup. Fast crosses above slow when hour 5 closes at 20, and
@@ -220,7 +220,7 @@ BacktestOptions AtClose() {
     return o;
 }
 
-TEST(BacktestTest, RunsASmaCrossoverEndToEnd) {
+TEST(BacktestTest, RunsAMaCrossoverEndToEnd) {
     auto result = RunBacktest(Data(kCloses), Sma(), AtClose());
     ASSERT_OK(result);
 

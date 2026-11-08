@@ -14,9 +14,9 @@
 #include "kestrel/db/trade_store.hpp"
 #include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/strategy/breakout.hpp"
+#include "kestrel/strategy/ma_crossover.hpp"
 #include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/momentum_rotation.hpp"
-#include "kestrel/strategy/sma_crossover.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/kraken_trading_venue.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
@@ -341,18 +341,21 @@ class ParamReader {
     std::set<std::string> mUsed;
 };
 
-Result<StrategyPtr> BuildSmaCrossover(ParamReader& p) {
-    strategy::SmaCrossoverParams params;
+Result<StrategyPtr> BuildMaCrossover(ParamReader& p) {
+    strategy::MaCrossoverParams params;
     auto symbol = p.Symbol();
     auto quantity = p.Quantity("quantity");
     auto timeframe = p.Timeframe("timeframe", params.timeframe);
     auto fast = p.Count("fast_period", params.fast_period);
     auto slow = p.Count("slow_period", params.slow_period);
+    std::string average = "sma";
+    auto average_word = p.Word("average", average, {"sma", "ema"});
     if (!symbol) return std::unexpected(symbol.error());
     if (!quantity) return std::unexpected(quantity.error());
     if (!timeframe) return std::unexpected(timeframe.error());
     if (!fast) return std::unexpected(fast.error());
     if (!slow) return std::unexpected(slow.error());
+    if (!average_word) return std::unexpected(average_word.error());
     if (auto ok = p.Finish(); !ok) {
         return std::unexpected(ok.error());
     }
@@ -361,9 +364,12 @@ Result<StrategyPtr> BuildSmaCrossover(ParamReader& p) {
     params.timeframe = *timeframe;
     params.fast_period = *fast;
     params.slow_period = *slow;
+    params.average = *average_word == "ema"
+                         ? strategy::MaCrossoverParams::Average::kEma
+                         : strategy::MaCrossoverParams::Average::kSma;
     try {
         return StrategyPtr(
-            std::make_unique<strategy::SmaCrossover>(std::move(params)));
+            std::make_unique<strategy::MaCrossover>(std::move(params)));
     } catch (const std::invalid_argument& e) {
         return MakeError(ErrorCategory::kInvalidArgument,
                          std::string("[strategy] ") + e.what());
@@ -532,6 +538,8 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
          params.throwback_bars, error);
     Take(p.Number("stop_buffer_bps", params.stop_buffer_bps),
          params.stop_buffer_bps, error);
+    Take(p.Number("atr_stop", params.atr_stop), params.atr_stop, error);
+    Take(p.Count("atr_bars", params.atr_bars), params.atr_bars, error);
     Take(p.Number("target_multiple", params.target_multiple),
          params.target_multiple, error);
     Take(p.Count("arm_bars", params.arm_bars), params.arm_bars, error);
@@ -596,7 +604,7 @@ struct StrategyEntry {
 };
 
 constexpr StrategyEntry kStrategies[] = {
-    {"sma_crossover", BuildSmaCrossover},
+    {"ma_crossover", BuildMaCrossover},
     {"market_maker", BuildMarketMaker},
     {"breakout", BuildBreakout},
     {"momentum_rotation", BuildMomentumRotation},

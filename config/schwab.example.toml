@@ -16,7 +16,7 @@
 #   ./build/kestrel_app -c config/schwab.toml bars 30m 10
 #   ./build/kestrel_app -c config/schwab.toml stream 30         # quotes
 #   ./build/kestrel_app -c config/schwab.toml stream-bars 1m 180
-#   ./build/kestrel_app -c config/schwab.toml backtest sma_crossover \
+#   ./build/kestrel_app -c config/schwab.toml backtest ma_crossover \
 #       --from 2026-10-01 --to 2026-11-01
 
 [general]

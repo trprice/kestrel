@@ -45,10 +45,8 @@ std::vector<std::string> StrategyNames();
 
 // Builds the named strategy from the configuration's [strategy] parameters.
 // kNotFound for an unknown name; kInvalidArgument for a missing, malformed or
-// unknown parameter, or a symbol that is not in [general] symbols.
-//
-//   sma_crossover: symbol (required), quantity (required), timeframe (1h),
-//                  fast_period (10), slow_period (30)
+// unknown parameter, or a symbol that is not in [general] symbols. Each
+// strategy's parameters are listed in docs/configuration.md.
 types::Result<std::unique_ptr<strategy::Strategy>> CreateStrategy(
     const std::string& name, const config::Configuration& configuration);
 

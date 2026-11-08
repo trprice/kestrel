@@ -67,13 +67,15 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
     if (mParams.stop_buffer_bps.IsNegative() ||
         mParams.confirm_percent.IsNegative() ||
         mParams.target_multiple.IsNegative() ||
-        mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative()) {
+        mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative() ||
+        mParams.atr_stop.IsNegative()) {
         throw std::invalid_argument(
-            "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio "
-            "and breakeven_r cannot be negative");
+            "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio, "
+            "breakeven_r and atr_stop cannot be negative");
     }
-    if (mParams.volume_bars == 0) {
-        throw std::invalid_argument("volume_bars must be positive");
+    if (mParams.volume_bars == 0 || mParams.atr_bars == 0) {
+        throw std::invalid_argument(
+            "volume_bars and atr_bars must be positive");
     }
     if (mParams.volume_ratio.Sign() > 0 &&
         mParams.confirm != BreakoutParams::Confirm::kCloses &&
@@ -105,7 +107,11 @@ Requirements Breakout::Needs() const {
     needs.warmup_bars =
         std::max({setup_bars, mParams.trend_sma, mParams.trail_bars,
                   mParams.volume_ratio.Sign() > 0 ? mParams.volume_bars + 1
-                                                  : std::size_t{0}});
+                                                  : std::size_t{0},
+                  // Atr is smoothed over the whole window; Wilder's alpha of
+                  // 1/n leaves the seed under 1% after six periods.
+                  mParams.atr_stop.Sign() > 0 ? 6 * mParams.atr_bars + 1
+                                              : std::size_t{0}});
     return needs;
 }
 
@@ -205,6 +211,21 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                         Rounding::kNearest);
     levels.stop = (floor.value_or(range->low) * (one - buffer))
                       .RoundToIncrement(tick, Rounding::kDown);
+    if (mParams.atr_stop.Sign() > 0) {
+        const auto atr = Atr(bars, mParams.atr_bars);
+        if (!atr || atr->Sign() <= 0) {
+            spdlog::debug(
+                "breakout: {} setup not armed: no average true range over {} "
+                "bars ({} loaded)",
+                mParams.symbol, mParams.atr_bars, bars.size());
+            return std::nullopt;
+        }
+        levels.stop = (level - mParams.atr_stop * *atr)
+                          .RoundToIncrement(tick, Rounding::kDown);
+        if (levels.stop.Sign() <= 0) {
+            return std::nullopt;  // the ATR is wider than the price
+        }
+    }
     return levels;
 }
 
@@ -536,12 +557,8 @@ void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
     }
     if (mParams.trail_bars > 0) {
         const auto bars = context.Bars(mParams.symbol, mParams.timeframe);
-        if (bars.size() >= mParams.trail_bars) {
-            Decimal low = bars.back().low;
-            for (std::size_t i = bars.size() - mParams.trail_bars;
-                 i < bars.size(); ++i) {
-                low = std::min(low, bars[i].low);
-            }
+        if (const auto range = RangeOf(bars, mParams.trail_bars)) {
+            const Decimal& low = range->low;
             const Decimal buffer =
                 Decimal::Divide(mParams.stop_buffer_bps,
                                 Decimal::FromInt(10000), 8, Rounding::kNearest);

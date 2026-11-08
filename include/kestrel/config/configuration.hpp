@@ -111,7 +111,7 @@ struct CommonSettings {
 //   max_consecutive_losses = 3
 //   max_drawdown          = "400"
 //
-//   [risk.sma_crossover]         # optional per-strategy overrides: each key
+//   [risk.ma_crossover]         # optional per-strategy overrides: each key
 //   max_orders_per_day = 6       # given here replaces the [risk] value for
 //                                # that strategy only (allowed_symbols
 //                                # replaces the whole list)

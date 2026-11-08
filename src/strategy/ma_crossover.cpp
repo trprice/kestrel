@@ -1,4 +1,4 @@
-#include "kestrel/strategy/sma_crossover.hpp"
+#include "kestrel/strategy/ma_crossover.hpp"
 
 #include <spdlog/spdlog.h>
 
@@ -11,7 +11,7 @@ namespace kestrel::strategy {
 using types::Decimal;
 using types::Side;
 
-SmaCrossover::SmaCrossover(SmaCrossoverParams params)
+MaCrossover::MaCrossover(MaCrossoverParams params)
     : mParams(std::move(params)) {
     if (mParams.fast_period == 0 ||
         mParams.fast_period >= mParams.slow_period) {
@@ -22,17 +22,20 @@ SmaCrossover::SmaCrossover(SmaCrossoverParams params)
     }
 }
 
-Requirements SmaCrossover::Needs() const {
+Requirements MaCrossover::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
     needs.bar_timeframes = {mParams.timeframe};
-    // The slow average over the previous bar, plus the newest bar.
-    needs.warmup_bars = mParams.slow_period + 1;
+    // The slow average over the previous bar, plus the newest bar; an EMA
+    // is smoothed over the whole window, so give it a few periods to settle.
+    needs.warmup_bars = mParams.average == MaCrossoverParams::Average::kEma
+                            ? 4 * mParams.slow_period + 1
+                            : mParams.slow_period + 1;
     return needs;
 }
 
-void SmaCrossover::OnBar(Context& context, const types::Symbol& symbol,
-                         types::Timeframe timeframe, const types::Bar&) {
+void MaCrossover::OnBar(Context& context, const types::Symbol& symbol,
+                        types::Timeframe timeframe, const types::Bar&) {
     if (mPending || symbol != mParams.symbol ||
         timeframe != mParams.timeframe) {
         return;
@@ -42,11 +45,18 @@ void SmaCrossover::OnBar(Context& context, const types::Symbol& symbol,
         return;
     }
 
-    // The window holds slow_period + 1 bars (checked above).
-    const Decimal fast = *Sma(bars, mParams.fast_period);
-    const Decimal slow = *Sma(bars, mParams.slow_period);
-    const Decimal prev_fast = *Sma(bars, mParams.fast_period, 1);
-    const Decimal prev_slow = *Sma(bars, mParams.slow_period, 1);
+    // The window holds at least slow_period + 1 bars (checked above); an EMA
+    // is steadier with the full warmup, which a backtest or a live warmup
+    // normally loads before the first bar.
+    const auto average = [&](std::size_t period, std::size_t back) {
+        return mParams.average == MaCrossoverParams::Average::kEma
+                   ? *Ema(bars, period, back)
+                   : *Sma(bars, period, back);
+    };
+    const Decimal fast = average(mParams.fast_period, 0);
+    const Decimal slow = average(mParams.slow_period, 0);
+    const Decimal prev_fast = average(mParams.fast_period, 1);
+    const Decimal prev_slow = average(mParams.slow_period, 1);
 
     if (!mLong && prev_fast <= prev_slow && fast > slow) {
         Trade(context, Side::kBuy);
@@ -55,7 +65,7 @@ void SmaCrossover::OnBar(Context& context, const types::Symbol& symbol,
     }
 }
 
-void SmaCrossover::OnFill(Context&, const types::Fill& fill) {
+void MaCrossover::OnFill(Context&, const types::Fill& fill) {
     if (fill.symbol != mParams.symbol) {
         return;
     }
@@ -63,7 +73,7 @@ void SmaCrossover::OnFill(Context&, const types::Fill& fill) {
     mLong = fill.side == Side::kBuy;
 }
 
-void SmaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
+void MaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
     if (!mPending || status.order_id != mOrderId) {
         return;
     }
@@ -73,13 +83,13 @@ void SmaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
                       status.state == types::OrderState::kRejected ||
                       status.state == types::OrderState::kExpired;
     if (dead && status.filled_quantity.Sign() == 0) {
-        spdlog::warn("sma_crossover: order {} closed without a fill: {}",
+        spdlog::warn("ma_crossover: order {} closed without a fill: {}",
                      status.order_id, types::ToString(status.state));
         mPending = false;
     }
 }
 
-void SmaCrossover::Trade(Context& context, Side side) {
+void MaCrossover::Trade(Context& context, Side side) {
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = side;
@@ -88,7 +98,7 @@ void SmaCrossover::Trade(Context& context, Side side) {
 
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
-        spdlog::warn("sma_crossover: {} {} failed: {}", types::ToString(side),
+        spdlog::warn("ma_crossover: {} {} failed: {}", types::ToString(side),
                      mParams.symbol, ack.error().ToString());
         return;
     }
@@ -97,14 +107,14 @@ void SmaCrossover::Trade(Context& context, Side side) {
     if (ack->state == types::OrderState::kCancelled ||
         ack->state == types::OrderState::kRejected ||
         ack->state == types::OrderState::kExpired) {
-        spdlog::warn("sma_crossover: {} {} closed without a fill: {}",
+        spdlog::warn("ma_crossover: {} {} closed without a fill: {}",
                      types::ToString(side), mParams.symbol,
                      types::ToString(ack->state));
         return;
     }
     mPending = true;
     mOrderId = ack->order_id;
-    spdlog::info("sma_crossover: {} {} {} (order {})", types::ToString(side),
+    spdlog::info("ma_crossover: {} {} {} (order {})", types::ToString(side),
                  mParams.quantity.ToString(), mParams.symbol, ack->order_id);
 }
 

@@ -35,7 +35,7 @@ limit_fill_model = "cross"
 
 # Per-strategy overrides: keys given here replace the [risk] values for that
 # strategy only. The name must be a real strategy.
-# [risk.sma_crossover]
+# [risk.ma_crossover]
 # max_orders_per_day     = 6
 # max_consecutive_losses = 2
 
@@ -49,7 +49,7 @@ limit_fill_model = "cross"
 # slow_request_ms = 2000       # warn about calls at least this slow
 
 [strategy]                     # parameters for the run / backtest subcommands
-# sma_crossover's are shown; docs/configuration.md lists every strategy's.
+# ma_crossover's are shown; docs/configuration.md lists every strategy's.
 # symbol      = "BTC/USD"      # must be in [general] symbols
 # quantity    = "0.001"        # base-asset units per order
 # timeframe   = "1h"

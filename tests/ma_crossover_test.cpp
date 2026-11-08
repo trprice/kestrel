@@ -1,4 +1,4 @@
-#include "kestrel/strategy/sma_crossover.hpp"
+#include "kestrel/strategy/ma_crossover.hpp"
 
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
@@ -8,8 +8,8 @@ namespace {
 using namespace kestrel;
 using kestrel::testing::D;
 using kestrel::testing::RecordingVenue;
-using strategy::SmaCrossover;
-using strategy::SmaCrossoverParams;
+using strategy::MaCrossover;
+using strategy::MaCrossoverParams;
 using types::Side;
 using types::Timeframe;
 
@@ -38,8 +38,8 @@ class FakeContext : public strategy::Context {
     std::vector<types::Bar> bars;
 };
 
-SmaCrossoverParams Params() {
-    SmaCrossoverParams p;
+MaCrossoverParams Params() {
+    MaCrossoverParams p;
     p.symbol = "BTC/USD";
     p.timeframe = Timeframe::kH1;
     p.fast_period = 2;
@@ -49,7 +49,7 @@ SmaCrossoverParams Params() {
 }
 
 // Adds a bar and runs the strategy's hook on it.
-void Feed(SmaCrossover& strategy, FakeContext& context, const char* close,
+void Feed(MaCrossover& strategy, FakeContext& context, const char* close,
           const types::Symbol& symbol = "BTC/USD") {
     const types::Bar& bar = context.Add(close);
     strategy.OnBar(context, symbol, Timeframe::kH1, bar);
@@ -62,20 +62,20 @@ types::Fill FillOf(Side side) {
     return fill;
 }
 
-TEST(SmaCrossoverTest, RejectsBadParameters) {
+TEST(MaCrossoverTest, RejectsBadParameters) {
     auto p = Params();
     p.fast_period = 0;
-    EXPECT_THROW(SmaCrossover{p}, std::invalid_argument);
+    EXPECT_THROW(MaCrossover{p}, std::invalid_argument);
     p = Params();
     p.fast_period = 3;  // not below slow_period
-    EXPECT_THROW(SmaCrossover{p}, std::invalid_argument);
+    EXPECT_THROW(MaCrossover{p}, std::invalid_argument);
     p = Params();
     p.quantity = D("0");
-    EXPECT_THROW(SmaCrossover{p}, std::invalid_argument);
+    EXPECT_THROW(MaCrossover{p}, std::invalid_argument);
 }
 
-TEST(SmaCrossoverTest, AsksForOneSeriesWithEnoughWarmup) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, AsksForOneSeriesWithEnoughWarmup) {
+    MaCrossover strategy(Params());
     auto needs = strategy.Needs();
     EXPECT_EQ(needs.symbols, std::vector<types::Symbol>{"BTC/USD"});
     EXPECT_EQ(needs.bar_timeframes, std::vector<Timeframe>{Timeframe::kH1});
@@ -83,8 +83,8 @@ TEST(SmaCrossoverTest, AsksForOneSeriesWithEnoughWarmup) {
     EXPECT_EQ(needs.warmup_bars, 4u);  // slow period + 1
 }
 
-TEST(SmaCrossoverTest, BuysOnUpCrossAndSellsOnDownCross) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, BuysOnUpCrossAndSellsOnDownCross) {
+    MaCrossover strategy(Params());
     FakeContext context;
     for (const char* close : {"10", "10", "10", "10"}) {
         Feed(strategy, context, close);  // flat: averages are equal
@@ -108,8 +108,35 @@ TEST(SmaCrossoverTest, BuysOnUpCrossAndSellsOnDownCross) {
     EXPECT_EQ(context.venue.orders[1].side, Side::kSell);
 }
 
-TEST(SmaCrossoverTest, PlacesNothingWhileAnOrderAwaitsItsFill) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, AnEmaCrossesWhereTheSmasDoNot) {
+    // 10, 10, 10, 10, 4, 16: the simple averages end level at 10 and 10, so
+    // no cross. Exponentially, the dip to 4 pulls the 2-bar EMA to 6 under
+    // the 3-bar's 7, and 16 lifts it to 12.67 over 11.5: a cross.
+    for (const auto average :
+         {MaCrossoverParams::Average::kSma, MaCrossoverParams::Average::kEma}) {
+        auto params = Params();
+        params.average = average;
+        MaCrossover strategy(params);
+        FakeContext context;
+        for (const char* close : {"10", "10", "10", "10", "4", "16"}) {
+            Feed(strategy, context, close);
+        }
+        const bool ema = average == MaCrossoverParams::Average::kEma;
+        ASSERT_EQ(context.venue.orders.size(), ema ? 1u : 0u);
+        if (ema) {
+            EXPECT_EQ(context.venue.orders[0].side, Side::kBuy);
+        }
+    }
+}
+
+TEST(MaCrossoverTest, AnEmaAsksForFourSlowPeriodsOfWarmup) {
+    auto params = Params();
+    params.average = MaCrossoverParams::Average::kEma;
+    EXPECT_EQ(MaCrossover(params).Needs().warmup_bars, 13u);  // 4 * 3 + 1
+}
+
+TEST(MaCrossoverTest, PlacesNothingWhileAnOrderAwaitsItsFill) {
+    MaCrossover strategy(Params());
     FakeContext context;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
         Feed(strategy, context, close);
@@ -122,8 +149,8 @@ TEST(SmaCrossoverTest, PlacesNothingWhileAnOrderAwaitsItsFill) {
     EXPECT_EQ(context.venue.orders.size(), 1u);
 }
 
-TEST(SmaCrossoverTest, DoesNothingBeforeTheWindowIsFull) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, DoesNothingBeforeTheWindowIsFull) {
+    MaCrossover strategy(Params());
     FakeContext context;
     Feed(strategy, context, "10");
     Feed(strategy, context, "10");
@@ -131,8 +158,8 @@ TEST(SmaCrossoverTest, DoesNothingBeforeTheWindowIsFull) {
     EXPECT_EQ(context.venue.attempts, 0);
 }
 
-TEST(SmaCrossoverTest, IgnoresOtherSymbols) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, IgnoresOtherSymbols) {
+    MaCrossover strategy(Params());
     FakeContext context;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
         Feed(strategy, context, close, "ETH/USD");
@@ -140,8 +167,8 @@ TEST(SmaCrossoverTest, IgnoresOtherSymbols) {
     EXPECT_EQ(context.venue.attempts, 0);
 }
 
-TEST(SmaCrossoverTest, RejectedBuyLeavesItFlat) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, RejectedBuyLeavesItFlat) {
+    MaCrossover strategy(Params());
     FakeContext context;
     context.venue.reject_orders = true;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
@@ -154,8 +181,8 @@ TEST(SmaCrossoverTest, RejectedBuyLeavesItFlat) {
     EXPECT_EQ(context.venue.attempts, 1);
 }
 
-TEST(SmaCrossoverTest, OrderClosedWithoutAFillDoesNotLeaveItWaiting) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, OrderClosedWithoutAFillDoesNotLeaveItWaiting) {
+    MaCrossover strategy(Params());
     FakeContext context;
     context.venue.ack_state = types::OrderState::kExpired;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
@@ -180,8 +207,8 @@ types::OrderStatus Update(const char* id, types::OrderState state,
     return status;
 }
 
-TEST(SmaCrossoverTest, OrderCancelledLaterDoesNotLeaveItWaiting) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, OrderCancelledLaterDoesNotLeaveItWaiting) {
+    MaCrossover strategy(Params());
     FakeContext context;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
         Feed(strategy, context, close);
@@ -196,8 +223,8 @@ TEST(SmaCrossoverTest, OrderCancelledLaterDoesNotLeaveItWaiting) {
     EXPECT_EQ(context.venue.orders.size(), 2u);  // tried again
 }
 
-TEST(SmaCrossoverTest, IgnoresUpdatesThatAreNotAFailureOfItsOrder) {
-    SmaCrossover strategy(Params());
+TEST(MaCrossoverTest, IgnoresUpdatesThatAreNotAFailureOfItsOrder) {
+    MaCrossover strategy(Params());
     FakeContext context;
     for (const char* close : {"10", "10", "10", "10", "20"}) {
         Feed(strategy, context, close);

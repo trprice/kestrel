@@ -130,15 +130,18 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 naming an unknown strategy is an error). When a loss, drawdown or order-count
 limit is hit, only orders that reduce a position are allowed; the gate does
 not close the position itself. `max_orders_per_day`, `max_consecutive_losses`
-and `max_drawdown` suit a trend follower like `sma_crossover`.
+and `max_drawdown` suit a trend follower like `ma_crossover`.
 
 ## `[strategy]`
 
 The parameters of the strategy named on the command line. Unknown parameters
 are errors, and the symbol must be listed in `[general] symbols`.
 
-**`sma_crossover`**: `symbol` and `quantity` (required), `timeframe` (`1h`),
-`fast_period` (10), `slow_period` (30).
+**`ma_crossover`** (called `sma_crossover` before Nov 2026): `symbol` and
+`quantity` (required), `timeframe` (`1h`),
+`fast_period` (10), `slow_period` (30), `average` (`sma`, or `ema` for
+exponential averages, which turn sooner; they are computed over four slow
+periods of bars so they settle).
 
 **`breakout`**: long-only breakout of a bar setup (after Fidelity's
 "Identifying Chart Patterns" deck): a buy-stop just above the setup's high, a
@@ -163,6 +166,7 @@ the entry, checked on closes.
 | `entry` | `stop` (enter as `confirm` says) or `throwback` (after a close above the trigger, rest a post-only limit buy at the level broken (the setup's high; for `pipe` and `failed_breakdown`, the high of the bar the entry triggers above) for `throwback_bars` bars) (default `stop`). With `throwback`, `confirm` decides the close: with `closes`, `confirm_closes` of them in a row; with `percent`, above the raised trigger. The first must come within `arm_bars` bars of the setup, so with the default of 1 a breakout that closes above it only two bars later is missed: raise `arm_bars` to wait longer |
 | `throwback_bars` | bars the throwback's limit rests before it is cancelled (default 3) |
 | `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
+| `atr_stop`, `atr_bars` | instead, put the protective stop `atr_stop` average true ranges (Wilder's, over `atr_bars` bars, measured at the setup) below the level broken, so its distance follows the market's volatility rather than the setup's shape (defaults 0: off, and 14). The ATR is smoothed over the bars loaded, so it asks for `6 · atr_bars + 1` of warmup. A setup whose ATR stop would fall to zero or below arms nothing. `breakeven_r` measures the risk from this stop, `trail_bars` can still raise it, and the target is still the setup's height. A tight stop can sit above a `confirm = "closes"` market entry that gaps down: the venue then refuses the stop or fills it at once; without a stop in place, the next close at or below it sells at market, and a close above it places the stop again |
 | `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
 | `arm_bars` | bars an untriggered entry stays (default 1); with `closes`, bars for the closes to start |
 | `max_hold_bars` | exit after this many whole bars held (default 0: never) |

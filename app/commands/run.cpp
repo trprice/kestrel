@@ -100,9 +100,9 @@ class RunCommand : public Command {
 void AddRunCommand(CLI::App& app, CommandSlot& slot) {
     auto* sub = AddSubcommand(
         app, "run",
-        "Run the named strategy (sma_crossover or market_maker) on live data "
-        "with the "
-        "[strategy] parameters, trading through the paper or live venue and "
+        "Run the named strategy (ma_crossover, market_maker, breakout or "
+        "momentum_rotation) on live data with the [strategy] parameters, "
+        "trading through the paper or live venue and "
         "the [risk] limits until Ctrl-C or SIGTERM. Live mode requires [risk]");
     auto name = std::make_shared<std::string>();
     sub->add_option("strategy", *name, "Strategy name")->required();

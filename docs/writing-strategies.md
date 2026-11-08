@@ -2,7 +2,7 @@
 
 A strategy is a class derived from `strategy::Strategy`
 (`include/kestrel/strategy/strategy.hpp`). The runner calls its hooks; the
-strategy reacts by placing orders. `SmaCrossover` is a small worked example,
+strategy reacts by placing orders. `MaCrossover` is a small worked example,
 `MarketMaker` a larger quote-driven one, `Breakout` a bar strategy with
 resting stops and session handling, and `MomentumRotation` one that trades
 several symbols at once. See [design.md](design.md) for where the runner,
@@ -151,19 +151,19 @@ class MyStrategy : public strategy::Strategy {
    `Quantity(key)`, `Timeframe(key, default)`, `Count(key, default)`, and so
    on), calls `p.Finish()` so an unknown parameter is an error, and returns
    the new strategy. A constructor that throws `std::invalid_argument` becomes
-   a config error. Copy `BuildSmaCrossover`.
+   a config error. Copy `BuildMaCrossover`.
 3. Add `{"my_strategy", BuildMyStrategy}` to the `kStrategies` table. That one
    entry makes `kestrel_app run my_strategy` and `backtest my_strategy` work,
    and allows a `[risk.my_strategy]` section.
 4. Document the parameters in [configuration.md](configuration.md#strategy).
-   `config/kestrel.example.toml` shows `sma_crossover`'s only.
+   `config/kestrel.example.toml` shows `ma_crossover`'s only.
 
 ## 5. Test it
 
 `tests/strategy_fakes.hpp` has `RecordingVenue`, a venue that records the
 orders placed through it and can push executions, and `FakeTradeLog`. Each
 strategy test defines a small `FakeContext` around them (see
-`tests/sma_crossover_test.cpp` and `tests/market_maker_test.cpp`). Feed the
+`tests/ma_crossover_test.cpp` and `tests/market_maker_test.cpp`). Feed the
 strategy bars or quotes and assert on the orders it placed. Then run a
 backtest over stored data (`kestrel_app backtest my_strategy --from ... --to
 ...`). Use `limit_fill_model = "conservative"` for anything that rests limit

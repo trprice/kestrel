@@ -956,6 +956,56 @@ TEST(Breakout, TheHigherOfBreakevenAndTheTrailWins) {
     EXPECT_EQ(trades[1].price, D("13.01"));
 }
 
+// The NR4 at hour 4 has true ranges 3, 5, 4 and 2 behind it: over 2 bars,
+// seeded (3 + 5) / 2 = 4, then 4, then 3. An ATR stop one ATR under the
+// broken level, 13, is at 10.
+BreakoutParams AtrStop(const char* multiple) {
+    auto p = Params();
+    p.atr_stop = D(multiple);
+    p.atr_bars = 2;
+    return p;
+}
+
+TEST(Breakout, AnAtrStopSitsThatManyAtrsUnderTheBrokenLevel) {
+    // In at 13.01 in hour 5; hour 6 dips to 10.5, through the setup-low stop
+    // (10.98) but not the ATR one (10); hour 7 falls through 10.
+    const auto data = Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                               {"13", "13.2", "10.5", "11"},
+                               {"11", "11", "9.5", "10"}});
+    const auto trades = Backtest(data, AtrStop("1"));
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].side, Side::kSell);
+    EXPECT_EQ(trades[1].price, D("10"));
+    // Half an ATR: 13 - 1.5 = 11.5, hit in hour 6.
+    const auto tighter = Backtest(data, AtrStop("0.5"));
+    ASSERT_EQ(tighter.size(), 2u);
+    EXPECT_EQ(tighter[1].price, D("11.5"));
+}
+
+TEST(Breakout, BreakevenMeasuresTheRiskFromTheAtrStop) {
+    // UpThenBack: in at 13.01, hour 6 closes at 15.1. Against the setup-low
+    // stop (risk 2.03) that is one risk up, and breakeven sells at 13.01 in
+    // hour 7; against the ATR stop at 10 (risk 3.01) it is not, so the
+    // position is held through hour 7's dip to 12.
+    auto params = AtrStop("1");
+    params.target_multiple = D("0");
+    params.breakeven_r = D("1");
+    EXPECT_EQ(Backtest(UpThenBack(), params).size(), 1u);
+}
+
+TEST(Breakout, AnAtrStopWiderThanThePriceArmsNothing) {
+    // 13 - 5 * 3 is below zero.
+    EXPECT_TRUE(
+        Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"}}), AtrStop("5"))
+            .empty());
+}
+
+TEST(Breakout, AnAtrStopAsksForSixPeriodsOfWarmup) {
+    auto params = Params();
+    params.atr_stop = D("2");
+    EXPECT_EQ(Breakout(params).Needs().warmup_bars, 85u);  // 6 * 14 + 1
+}
+
 // Hourly bars with volume: {open, high, low, close, volume}.
 std::shared_ptr<ReplayDataSource> VolumeBars(
     const std::vector<std::array<const char*, 5>>& bars) {
@@ -1023,6 +1073,12 @@ TEST(Breakout, ACloseOnLowVolumeIsNotABreakout) {
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.atr_stop = D("-1");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.atr_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Params();
     bad.nr_bars = 1;

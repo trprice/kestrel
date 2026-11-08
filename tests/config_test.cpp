@@ -391,7 +391,7 @@ TEST(Config, PerStrategyRiskOverridesTheGlobalLimitsKeyByKey) {
     auto cfg = config::BinanceUSConfiguration::Parse(
         WithTables("[risk]\nmax_order_notional='1000'\nmax_open_orders=5\n"
                    "allowed_symbols=['BTC/USD','ETH/USD']\n"
-                   "[risk.sma_crossover]\nmax_open_orders=1\n"
+                   "[risk.ma_crossover]\nmax_open_orders=1\n"
                    "max_orders_per_day=6\nallowed_symbols=['BTC/USD']\n"),
         NoEnv());
     ASSERT_OK(cfg);
@@ -399,7 +399,7 @@ TEST(Config, PerStrategyRiskOverridesTheGlobalLimitsKeyByKey) {
     EXPECT_EQ(cfg->GetRiskLimits()->max_open_orders, 5u);
     EXPECT_FALSE(cfg->GetRiskLimits()->max_orders_per_day.has_value());
 
-    const auto sma = cfg->GetRiskLimits("sma_crossover");
+    const auto sma = cfg->GetRiskLimits("ma_crossover");
     ASSERT_TRUE(sma.has_value());
     EXPECT_EQ(sma->max_order_notional, D("1000"));  // inherited
     EXPECT_EQ(sma->max_open_orders, 1u);            // overridden
@@ -412,18 +412,18 @@ TEST(Config, PerStrategyRiskOverridesTheGlobalLimitsKeyByKey) {
 
 TEST(Config, PerStrategyRiskWorksWithoutAGlobalSection) {
     auto cfg = config::BinanceUSConfiguration::Parse(
-        WithTables("[risk.sma_crossover]\nmax_open_orders=2\n"), NoEnv());
+        WithTables("[risk.ma_crossover]\nmax_open_orders=2\n"), NoEnv());
     ASSERT_OK(cfg);
     EXPECT_FALSE(cfg->GetRiskLimits().has_value());
-    EXPECT_EQ(cfg->GetRiskLimits("sma_crossover")->max_open_orders, 2u);
+    EXPECT_EQ(cfg->GetRiskLimits("ma_crossover")->max_open_orders, 2u);
     EXPECT_FALSE(cfg->GetRiskLimits("other").has_value());
 }
 
 TEST(Config, PerStrategyRiskIsCheckedLikeTheGlobalSection) {
     for (const char* bad :
-         {"[risk.sma_crossover]\nmax_open_ordrs=1\n",
-          "[risk.sma_crossover]\nmax_open_orders=0\n",
-          "[risk.sma_crossover.deeper]\nmax_open_orders=1\n"}) {
+         {"[risk.ma_crossover]\nmax_open_ordrs=1\n",
+          "[risk.ma_crossover]\nmax_open_orders=0\n",
+          "[risk.ma_crossover.deeper]\nmax_open_orders=1\n"}) {
         auto cfg =
             config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv());
         EXPECT_FALSE(cfg.has_value()) << bad;
@@ -436,16 +436,16 @@ TEST(Factory, ResolveRiskLimitsRefusesAnUnknownStrategySection) {
                    "[risk.sma_crosover]\nmax_open_orders=1\n"),
         NoEnv());
     ASSERT_OK(cfg);
-    auto limits = ResolveRiskLimits("sma_crossover", *cfg);
+    auto limits = ResolveRiskLimits("ma_crossover", *cfg);
     ASSERT_FALSE(limits.has_value());
     EXPECT_EQ(limits.error().category, types::ErrorCategory::kInvalidArgument);
 
     auto good = config::BinanceUSConfiguration::Parse(
         WithTables("[risk]\nmax_open_orders=5\n"
-                   "[risk.sma_crossover]\nmax_open_orders=1\n"),
+                   "[risk.ma_crossover]\nmax_open_orders=1\n"),
         NoEnv());
     ASSERT_OK(good);
-    auto resolved = ResolveRiskLimits("sma_crossover", *good);
+    auto resolved = ResolveRiskLimits("ma_crossover", *good);
     ASSERT_OK(resolved);
     EXPECT_EQ((*resolved)->max_open_orders, 1u);
 }
@@ -500,19 +500,39 @@ TEST(Config, StrategyParametersKeepTheirText) {
                      .has_value());
 }
 
-TEST(Factory, CreateStrategyBuildsSmaCrossoverFromParameters) {
+TEST(Factory, CreateStrategyBuildsMaCrossoverFromParameters) {
     auto cfg = config::BinanceUSConfiguration::Parse(
         WithTables("[strategy]\nsymbol='eth-usd'\nquantity='0.5'\n"
                    "timeframe='4h'\nfast_period=3\nslow_period=8\n"),
         NoEnv());
     ASSERT_OK(cfg);
-    auto strategy = CreateStrategy("sma_crossover", *cfg);
+    auto strategy = CreateStrategy("ma_crossover", *cfg);
     ASSERT_OK(strategy);
     const auto needs = (*strategy)->Needs();
     EXPECT_EQ(needs.symbols, std::vector<types::Symbol>{"ETH/USD"});
     EXPECT_EQ(needs.bar_timeframes,
               std::vector<types::Timeframe>{types::Timeframe::kH4});
     EXPECT_EQ(needs.warmup_bars, 9u);
+}
+
+TEST(Factory, MaCrossoverTakesAnExponentialAverage) {
+    auto make = [](const char* average) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(
+                std::string("[strategy]\nsymbol='eth-usd'\n"
+                            "quantity='0.5'\nfast_period=3\nslow_period=8\n") +
+                average),
+            NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("ma_crossover", *cfg);
+    };
+    auto ema = make("average='ema'\n");
+    ASSERT_OK(ema);
+    EXPECT_EQ((*ema)->Needs().warmup_bars, 33u);  // 4 * 8 + 1
+    auto sma = make("average='sma'\n");
+    ASSERT_OK(sma);
+    EXPECT_EQ((*sma)->Needs().warmup_bars, 9u);
+    EXPECT_FALSE(make("average='wma'\n").has_value());
 }
 
 TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
@@ -635,6 +655,11 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_FALSE(make("volume_ratio=2\n").has_value());  // a buy-stop
     EXPECT_FALSE(make("confirm='closes'\nvolume_bars=0\n").has_value());
     EXPECT_FALSE(make("breakeven_r=-1\n").has_value());
+    auto atr = make("atr_stop=2.5\natr_bars=10\n");
+    ASSERT_OK(atr);
+    EXPECT_EQ((*atr)->Needs().warmup_bars, 61u);  // 6 * 10 + 1
+    EXPECT_FALSE(make("atr_stop=-1\n").has_value());
+    EXPECT_FALSE(make("atr_stop=1\natr_bars=0\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());
@@ -651,7 +676,7 @@ TEST(Factory, CreateStrategyRejectsBadInput) {
         auto cfg = config::BinanceUSConfiguration::Parse(
             WithTables(strategy_table), NoEnv());
         EXPECT_TRUE(cfg.has_value());
-        return CreateStrategy("sma_crossover", *cfg);
+        return CreateStrategy("ma_crossover", *cfg);
     };
     EXPECT_EQ(make("").error().category,
               types::ErrorCategory::kInvalidArgument);  // no symbol
@@ -679,7 +704,7 @@ TEST(Factory, CreateStrategyRejectsBadInput) {
 // CreateRunner opens the provider connection only after every check below has
 // passed, so these need no network.
 types::Error RunnerFailure(const config::Configuration& cfg,
-                           const std::string& strategy = "sma_crossover") {
+                           const std::string& strategy = "ma_crossover") {
     auto runner = CreateRunner(strategy, cfg);
     EXPECT_FALSE(runner.has_value());
     return runner ? types::Error{} : runner.error();
@@ -795,7 +820,7 @@ TEST(Factory, CreateRunnerBuildsARunnerWithAGateWhenLimitsApply) {
         NoEnv());
     ASSERT_OK(cfg);
     FakeComponents fake;
-    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    auto runner = CreateRunner("ma_crossover", *cfg, fake.Factory());
     ASSERT_OK(runner);
     EXPECT_EQ(fake.built, 1);
     ASSERT_NE((*runner)->RiskGate(), nullptr);
@@ -868,7 +893,7 @@ TEST(Factory, CreateRunnerRecordsThroughTheLogWhenEnabled) {
     auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
     std::string strategy_seen, venue_seen;
     auto runner =
-        CreateRunner("sma_crossover", *cfg, fake.Factory(),
+        CreateRunner("ma_crossover", *cfg, fake.Factory(),
                      [&](const config::Configuration&,
                          const std::string& strategy, const std::string& venue)
                          -> types::Result<std::shared_ptr<trading::TradeLog>> {
@@ -877,7 +902,7 @@ TEST(Factory, CreateRunnerRecordsThroughTheLogWhenEnabled) {
                          return log;
                      });
     ASSERT_OK(runner);
-    EXPECT_EQ(strategy_seen, "sma_crossover");
+    EXPECT_EQ(strategy_seen, "ma_crossover");
     EXPECT_EQ(venue_seen, "recording");
 }
 
@@ -888,7 +913,7 @@ TEST(Factory, CreateRunnerDoesNotRecordUnlessEnabled) {
     FakeComponents fake;
     bool asked = false;
     auto runner =
-        CreateRunner("sma_crossover", *cfg, fake.Factory(),
+        CreateRunner("ma_crossover", *cfg, fake.Factory(),
                      [&](const config::Configuration&, const std::string&,
                          const std::string&)
                          -> types::Result<std::shared_ptr<trading::TradeLog>> {
@@ -906,7 +931,7 @@ TEST(Factory, CreateRunnerFailsWhenRecordingCannotBeSetUp) {
     ASSERT_OK(cfg);
     FakeComponents fake;
     auto failing = CreateRunner(
-        "sma_crossover", *cfg, fake.Factory(),
+        "ma_crossover", *cfg, fake.Factory(),
         [](const config::Configuration&, const std::string&, const std::string&)
             -> types::Result<std::shared_ptr<trading::TradeLog>> {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
@@ -915,20 +940,20 @@ TEST(Factory, CreateRunnerFailsWhenRecordingCannotBeSetUp) {
     EXPECT_NE(failing.error().message.find("recording"), std::string::npos);
 
     // The default log needs a [database], which this configuration lacks.
-    auto no_database = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    auto no_database = CreateRunner("ma_crossover", *cfg, fake.Factory());
     ASSERT_FALSE(no_database.has_value());
     EXPECT_EQ(no_database.error().category, types::ErrorCategory::kNotFound);
 }
 
 TEST(Factory, CreateRunnerAppliesThePerStrategyLimits) {
-    // Only the override sets a limit, so only sma_crossover gets a gate.
+    // Only the override sets a limit, so only ma_crossover gets a gate.
     auto cfg = config::BinanceUSConfiguration::Parse(
         WithTables(std::string(kSmaParams) +
-                   "[risk.sma_crossover]\nmax_open_orders=1\n"),
+                   "[risk.ma_crossover]\nmax_open_orders=1\n"),
         NoEnv());
     ASSERT_OK(cfg);
     FakeComponents fake;
-    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    auto runner = CreateRunner("ma_crossover", *cfg, fake.Factory());
     ASSERT_OK(runner);
     EXPECT_NE((*runner)->RiskGate(), nullptr);
 }
@@ -938,7 +963,7 @@ TEST(Factory, CreateRunnerWithoutLimitsHasNoGateInPaperMode) {
         config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
     ASSERT_OK(cfg);
     FakeComponents fake;
-    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    auto runner = CreateRunner("ma_crossover", *cfg, fake.Factory());
     ASSERT_OK(runner);
     EXPECT_EQ((*runner)->RiskGate(), nullptr);
 }
@@ -950,7 +975,7 @@ TEST(Factory, CreateRunnerFailsIfTheDailyLossCountCannotStart) {
     ASSERT_OK(cfg);
     FakeComponents fake;
     fake.venue->fail_reads = true;  // GetPositions fails
-    auto runner = CreateRunner("sma_crossover", *cfg, fake.Factory());
+    auto runner = CreateRunner("ma_crossover", *cfg, fake.Factory());
     ASSERT_FALSE(runner.has_value());
     EXPECT_NE(runner.error().message.find("cannot start the daily loss count"),
               std::string::npos)
@@ -962,7 +987,7 @@ TEST(Factory, CreateRunnerReportsAFailedConnection) {
         config::BinanceUSConfiguration::Parse(WithTables(kSmaParams), NoEnv());
     ASSERT_OK(cfg);
     auto runner = CreateRunner(
-        "sma_crossover", *cfg,
+        "ma_crossover", *cfg,
         [](const config::Configuration&) -> types::Result<Components> {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         });

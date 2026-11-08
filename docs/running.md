@@ -87,8 +87,8 @@ before then (`authorize --status` shows when).
 ## Backtesting and running strategies
 
 ```sh
-./build/kestrel_app -c config/kestrel.toml backtest sma_crossover --from 2026-09-01 --to 2026-10-01
-./build/kestrel_app -c config/kestrel.toml run sma_crossover
+./build/kestrel_app -c config/kestrel.toml backtest ma_crossover --from 2026-09-01 --to 2026-10-01
+./build/kestrel_app -c config/kestrel.toml run ma_crossover
 ```
 
 - `backtest <strategy> --from <date> --to <date>` fetches the strategy's

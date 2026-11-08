@@ -101,7 +101,7 @@ add_library(kestrel
   src/backtest/summary.cpp
   src/strategy/runner.cpp
   src/strategy/run_recorder.cpp
-  src/strategy/sma_crossover.cpp
+  src/strategy/ma_crossover.cpp
   src/strategy/momentum_rotation.cpp
   src/strategy/patterns.cpp
   src/strategy/breakout.cpp
@@ -174,14 +174,14 @@ if(KESTREL_BUILD_APP)
       "cancel_needs_confirm|${_good}|2|add --confirm|cancel,123"
       "cancel_id_or_all|${_good}|2|an order ID or --all|cancel,--confirm"
       "negative_seconds|${_good}|105|not in range|stream,-1"
-      "backtest_needs_range|${_good}|106|--from is required|backtest,sma_crossover"
-      "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,sma_crossover,--from,soon,--to,2026-01-01"
-      "backtest_backwards_range|${_good}|2|must be after its start|backtest,sma_crossover,--from,2026-02-01,--to,2026-01-01"
+      "backtest_needs_range|${_good}|106|--from is required|backtest,ma_crossover"
+      "backtest_bad_date|${_good}|105|invalid ISO-8601 timestamp|backtest,ma_crossover,--from,soon,--to,2026-01-01"
+      "backtest_backwards_range|${_good}|2|must be after its start|backtest,ma_crossover,--from,2026-02-01,--to,2026-01-01"
       "backtest_unknown_strategy|${_good}|1|unknown strategy|backtest,nope,--from,2026-01-01,--to,2026-02-01"
-      "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
-      "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
-      "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,sma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
-      "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,sma_crossover")
+      "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
+      "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
+      "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
+      "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,ma_crossover")
     foreach(_case IN LISTS _cli_cases)
       string(REPLACE "|" ";" _fields "${_case}")
       list(GET _fields 0 _name)
@@ -236,7 +236,7 @@ if(KESTREL_BUILD_TESTS)
     tests/backtest_test.cpp
     tests/backtest_db_test.cpp
     tests/backtest_summary_test.cpp
-    tests/sma_crossover_test.cpp
+    tests/ma_crossover_test.cpp
     tests/momentum_rotation_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp

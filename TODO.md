@@ -201,9 +201,7 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       swing lows), then symmetrical ones (a fitted line through the highs);
       and cup-and-handle (a rounded decline and recovery to the old high, a
       small pullback, then the break; mainly daily bars, and rare).
-- [ ] EMA crossover and RSI mean-reversion
-- [ ] An ATR stop option for `breakout` (the `range` setup is already a
-      Donchian breakout, and `trail_bars` a channel exit)
+- [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Pairs trading
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
@@ -494,6 +492,11 @@ the header of the code concerned.
   end differs by inventory timing (+0.0004 against -0.138 USDT on about
   54 USDT traded), so it is no check. One 30 minute run, 43 fills: a hint,
   not a calibration.
+- Warmup bars are loaded from a span of wall-clock time before `--from`
+  (`warmup_bars + 1` bar lengths), so on a market that closes (stocks)
+  far fewer bars than `warmup_bars` arrive, and indicators smoothed over
+  the window (an EMA crossover, an ATR stop) start the backtest less
+  settled than they would live.
 - Monthly timeframes are rejected with `kUnsupported`. Strategies that need
   quotes replay stored quotes (`QuoteStore`); there are no stored quotes for
   a range that was never recorded. `--quotes-from-trades` replays quotes
@@ -620,7 +623,7 @@ the header of the code concerned.
 - [x] `PnlTracker`: realized P&L from fills, used by the paper venue and the
       risk gate (tested with fakes)
 - [x] Strategy interface, `Runner` (event queue, warmup, gap backfill, fill
-      polling to `OnFill`), example `SmaCrossover` (tested with fakes)
+      polling to `OnFill`), example `MaCrossover` (tested with fakes)
 - [x] `RiskGatedVenue`: order and position size, open orders, order rate,
       daily loss, symbol allowlist, kill switch (tested with fakes)
 - [x] `ReplayDataSource` and `RunBacktest`: the same `Runner`, a paper venue
@@ -635,9 +638,9 @@ the header of the code concerned.
 - [x] `Runner`: queue, warmup, gap backfill, duplicate bars dropped, hook
       exceptions contained, fill polling, `Begin`/`Drain`/`End` for
       deterministic drivers
-- [x] `SmaCrossover` example strategy
+- [x] `MaCrossover` example strategy
 - [x] `OnOrderUpdate` hook and `TradingVenue::GetOrder`; the runner tracks the
-      strategy's active orders and reports state changes; `SmaCrossover` stops
+      strategy's active orders and reports state changes; `MaCrossover` stops
       waiting on an order that closed without a fill
 - [x] Per-symbol quote conflation in the runner
 - [x] `RiskGatedVenue::Halt` cancels again after an in-flight order lands
@@ -829,12 +832,19 @@ the header of the code concerned.
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),
       `IsInsideBar`, `RangeOf` (the last N bars' high and low) and `Sma`,
-      which `SmaCrossover` now uses instead of its own.
+      which `MaCrossover` now uses instead of its own.
 - [x] Indicators in `patterns.hpp`: `Ema`, `Rsi` and `Atr` (Wilder's),
       `TrueRange`, `Bollinger` (population deviation) and `Macd`, in
-      `Decimal`, each checked against an exact rational computation. No
-      strategy uses them yet (EMA crossover, RSI mean-reversion and an ATR
-      stop are under Strategies).
+      `Decimal`, each checked against an exact rational computation.
+- [x] Strategies on the indicators: `ma_crossover` takes `average =
+      "ema"`, and `breakout` an ATR stop (`atr_stop`, `atr_bars`); its
+      trailing stop's low comes from `RangeOf`. With the options off,
+      backtests are identical to before. Range 1h on 7 crypto pairs,
+      May-Oct 2026, 1m fills: the setup-low stop made +4,677 (7.0% worst
+      drawdown); ATR stops of 1.5 / 2 / 3 ATRs +4,571 / +4,935 / +5,053
+      (7.2% / 5.6% / 5.6%), but +1,822 / +1,436 / +1,102 without ZEC
+      against +1,304. The EMA crossover (10/30, 1h) made +1,067 against the
+      SMA's +2,301, 3 of 7 pairs up against 5.
 
 ### Backtest fills within a bar
 - [x] Bar-only backtests walk each bar of the finest series for the paper

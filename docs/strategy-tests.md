@@ -83,6 +83,15 @@ The seven pairs on 1h bars, about $1,000 a trade.
   - None beat the baseline.
 - **Double bottom, 1h:** +1,386 (61% won, 6 of 7 pairs up, 1.9% worst
   drawdown). On 15m it lost, and triple bottoms almost never formed.
+- **ATR stop** (`atr_stop`, 14-bar ATR under the broken level, instead of
+  the setup's low): 1.5 ATRs +4,571, 2 ATRs +4,935, 3 ATRs +5,053, against
+  +4,677 for the setup-low stop. 2 and 3 ATRs cut the worst drawdown from
+  7.0% to 5.6%. Without ZEC the order flips: +1,822, +1,436 and +1,102
+  against +1,304. No clear winner.
+- **Moving-average crossover** (`ma_crossover` 10/30 on 1h): +2,301 (5 of
+  7 pairs up, 14% worst drawdown) with simple averages, +1,067 (3 of 7)
+  with exponential ones, which turn sooner and were whipsawed more. Both
+  are almost all ZEC (+2,023 and +1,053).
 - **Rectangle 15m and nr 15m with the new filters:** rectangle's +2,449 is
   all ZEC, and every filter made it worse. `nr` 15m lost on every pair.
 

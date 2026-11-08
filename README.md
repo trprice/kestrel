@@ -17,7 +17,7 @@ Status, known limitations, work in progress and planned projects are tracked in
 cmake -S . -B build && cmake --build build -j
 cp config/kestrel.example.toml config/kestrel.toml
 ./build/kestrel_app -c config/kestrel.toml bars 1h 24
-./build/kestrel_app -c config/kestrel.toml run sma_crossover   # paper mode
+./build/kestrel_app -c config/kestrel.toml run ma_crossover   # paper mode
 ```
 
 Requires CMake 3.25+ and GCC 12+ or Clang 16+. Paper mode needs no credentials.

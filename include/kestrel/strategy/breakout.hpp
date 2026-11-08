@@ -67,6 +67,13 @@ struct BreakoutParams {
     std::size_t throwback_bars = 3;
     // The protective stop: this far below the setup's low.
     types::Decimal stop_buffer_bps{10, 0};
+    // With atr_stop above zero, the protective stop is instead this many
+    // average true ranges (Atr over atr_bars, at the setup) below the level
+    // broken, so its distance follows the market's volatility rather than
+    // the setup's shape. Zero keeps the stop below the setup's low. The
+    // target is still measured from the setup's height.
+    types::Decimal atr_stop;
+    std::size_t atr_bars = 14;
     // The target: the entry plus this many times the setup's height; zero
     // for none.
     types::Decimal target_multiple{1, 0};
@@ -124,18 +131,18 @@ struct BreakoutParams {
 // missed: the deck's caveat that throwbacks do not always occur.
 //
 // Long: on the entry's fill, a sell-stop rests at the setup's low less
-// stop_buffer_bps. The target is checked on closes: a bar closing at or above
-// it sells at market (the stop is cancelled first; one order cannot hold the
-// shares for both, and the venue has no one-cancels-other). So does the
-// max_hold_bars-th bar held, and with flatten_at_close the session's closing
-// hook. A downward break is only ever an exit: there is no shorting.
-// With breakeven_r or trail_bars, a close that is not an exit can raise the
-// stop (it is cancelled and placed again at the new level; never lowered,
-// and never at or above the close). While the market is closed (daily
-// bars, or a bar that closes the session) the new stop is placed at the next
-// open. A raised stop the venue refuses there (an open gapped through it) is
-// replaced by a market sell, as is a stop to be placed again after a close
-// through it.
+// stop_buffer_bps (with atr_stop, atr_stop ATRs under the level broken). The
+// target is checked on closes: a bar closing at or above it sells at market
+// (the stop is cancelled first; one order cannot hold the shares for both, and
+// the venue has no one-cancels-other). So does the max_hold_bars-th bar held,
+// and with flatten_at_close the session's closing hook. A downward break is
+// only ever an exit: there is no shorting. With breakeven_r or trail_bars, a
+// close that is not an exit can raise the stop (it is cancelled and placed
+// again at the new level; never lowered, and never at or above the close).
+// While the market is closed (daily bars, or a bar that closes the session) the
+// new stop is placed at the next open. A raised stop the venue refuses there
+// (an open gapped through it) is replaced by a market sell, as is a stop to be
+// placed again after a close through it.
 //
 // With volume_ratio, the first close above the trigger (of confirm_closes,
 // or the throwback's) must come on volume_ratio times the average volume of

@@ -1,9 +1,9 @@
 // Backtests that read bars and quotes from the database. Integration tests;
 // they run only when KESTREL_TEST_DBNAME is set (see bar_store_test.cpp).
 
-#include "kestrel/backtest/backtest.hpp"
-#include "kestrel/strategy/sma_crossover.hpp"
 #include "db_fixture.hpp"
+#include "kestrel/backtest/backtest.hpp"
+#include "kestrel/strategy/ma_crossover.hpp"
 
 namespace {
 
@@ -77,14 +77,14 @@ std::shared_ptr<db::Database> ConnectWithoutTables() {
     return shared;
 }
 
-std::unique_ptr<strategy::SmaCrossover> Sma() {
-    strategy::SmaCrossoverParams p;
+std::unique_ptr<strategy::MaCrossover> Sma() {
+    strategy::MaCrossoverParams p;
     p.symbol = kSymbol;
     p.timeframe = Timeframe::kH1;
     p.fast_period = 2;
     p.slow_period = 3;
     p.quantity = D("0.5");
-    return std::make_unique<strategy::SmaCrossover>(p);
+    return std::make_unique<strategy::MaCrossover>(p);
 }
 
 class QuoteOnly : public strategy::Strategy {
