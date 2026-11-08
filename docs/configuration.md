@@ -254,6 +254,19 @@ every quote, and the stop and cap rules close the position instead of only
 blocking entries. `config/binanceus-zec-marketmaker.example.toml` lists every
 rule's parameters and defaults.
 
+With `loss_cap`, `drawdown_cap`, `spike_standdown` or `cooldown_after_stop`
+on, `run` keeps their state in the `[database]` (`strategy_state`): whether
+it is halted, the P&L so far and its peak, and when a stand-down or cooldown
+ends, and the position with its entry price. A restart carries on from it,
+so the caps count every run, not just the current one, the stop loss
+watches a position the last run left, and a halted maker stays halted (and
+exits such a position). `reset_state = true`
+forgets it and starts afresh (set it for one run, then take it out). A saved
+state that cannot be read stops the maker quoting. Without a `[database]`, a
+live run is refused and a paper run warns and keeps nothing; a backtest
+never keeps state. The state is per provider, mode and symbol: run one
+maker per symbol on an account, or they overwrite each other's state.
+
 **`momentum_rotation`**: cross-sectional momentum across every symbol in
 `[general] symbols` (two or more, all with one quote asset, which is the
 cash). Every `rebalance_bars` bars it ranks them by their return over

@@ -93,6 +93,18 @@ types::Result<std::shared_ptr<trading::TradeLog>> OpenTradeLog(
     const config::Configuration& configuration, const std::string& strategy,
     const std::string& venue);
 
+// Where a strategy that keeps state across restarts (Requirements::state)
+// keeps it, for the provider named (the data source's name, so a paper run's
+// state is apart from a live one's by the mode, not by the paper venue). The
+// default, OpenStateStore, connects to the [database], applies the migrations
+// and scopes the keys by venue and mode; it fails with kNotFound without a
+// [database]. Tests pass a fake.
+using StateStoreFactory =
+    std::function<types::Result<std::shared_ptr<strategy::StateStore>>(
+        const config::Configuration&, const std::string& venue)>;
+types::Result<std::shared_ptr<strategy::StateStore>> OpenStateStore(
+    const config::Configuration& configuration, const std::string& venue);
+
 // Builds everything `kestrel_app run` needs, ready for Runner::Run(): checks
 // the configuration may trade (ValidateForRun), resolves the strategy's risk
 // limits, builds the strategy, the provider connection (CreateComponents) and
@@ -101,12 +113,16 @@ types::Result<std::shared_ptr<trading::TradeLog>> OpenTradeLog(
 // failed, and nothing is left running. With `[recording] enabled` the runner
 // records its fills and P&L through `make_log` (a failure to set that up is
 // an error: a run that was asked to be recorded does not start unrecorded).
+// A strategy that keeps state gets a store from `make_state`; without a
+// [database] a live run is refused (its loss caps would restart from zero
+// on each restart), and a paper run warns and keeps none.
 // The runner has no risk gate (see
 // Runner::RiskGate) when no limits apply, which is allowed only in paper mode.
 types::Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const std::string& strategy_name,
     const config::Configuration& configuration,
     const ComponentsFactory& make_components = CreateComponents,
-    const TradeLogFactory& make_log = OpenTradeLog);
+    const TradeLogFactory& make_log = OpenTradeLog,
+    const StateStoreFactory& make_state = OpenStateStore);
 
 }  // namespace kestrel

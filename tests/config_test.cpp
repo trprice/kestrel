@@ -959,6 +959,73 @@ TEST(Factory, CreateRunnerFailsWhenRecordingCannotBeSetUp) {
     EXPECT_EQ(no_database.error().category, types::ErrorCategory::kNotFound);
 }
 
+// A market maker with a loss cap keeps state; `make_state` stands in for
+// the database.
+constexpr const char* kCappedMaker =
+    "[strategy]\nsymbol='BTC/USD'\nquantity='0.01'\nhalf_spread_bps=4\n"
+    "max_inventory='0.1'\nloss_cap=true\nloss_cap_amount='5'\n";
+
+types::Result<std::unique_ptr<strategy::Runner>> MakerRunner(
+    const config::Configuration& cfg, FakeComponents& fake,
+    types::Result<std::shared_ptr<strategy::StateStore>> store,
+    std::string* venue_seen = nullptr) {
+    return CreateRunner(
+        "market_maker", cfg, fake.Factory(),
+        [](const config::Configuration&, const std::string&, const std::string&)
+            -> types::Result<std::shared_ptr<trading::TradeLog>> {
+            return types::MakeError(types::ErrorCategory::kInternal,
+                                    "not asked");
+        },
+        [store, venue_seen](const config::Configuration&,
+                            const std::string& venue) {
+            if (venue_seen) {
+                *venue_seen = venue;
+            }
+            return store;
+        });
+}
+
+TEST(Factory, CreateRunnerGivesAStrategyThatKeepsStateAStore) {
+    auto cfg = config::BinanceUSConfiguration::Parse(WithTables(kCappedMaker),
+                                                     NoEnv());
+    ASSERT_OK(cfg);
+    FakeComponents fake;
+    std::string venue;
+    auto runner = MakerRunner(*cfg, fake,
+                              std::shared_ptr<strategy::StateStore>(), &venue);
+    ASSERT_OK(runner);
+    EXPECT_EQ(venue, "replay");  // the provider: the data source's name
+}
+
+TEST(Factory, WithoutADatabaseAPaperRunKeepsNoStateButALiveOneIsRefused) {
+    const auto none =
+        types::MakeError(types::ErrorCategory::kNotFound, "no [database]");
+    auto paper = config::BinanceUSConfiguration::Parse(WithTables(kCappedMaker),
+                                                       NoEnv());
+    ASSERT_OK(paper);
+    FakeComponents fake;
+    EXPECT_TRUE(
+        MakerRunner(*paper, fake, std::unexpected(none.error())).has_value());
+    // A database that is configured but fails is an error in paper too.
+    auto down = MakerRunner(
+        *paper, fake,
+        types::MakeError(types::ErrorCategory::kNetwork, "refused"));
+    ASSERT_FALSE(down);
+    EXPECT_NE(down.error().message.find("strategy state"), std::string::npos);
+
+    auto live = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kCappedMaker) + "[risk]\nmax_open_orders=5\n",
+                   "live"),
+        NoEnv({{"KESTREL_BINANCEUS_API_KEY", "k"},
+               {"KESTREL_BINANCEUS_API_SECRET", "s"}}));
+    ASSERT_OK(live);
+    FakeComponents live_fake;
+    auto refused = MakerRunner(*live, live_fake, std::unexpected(none.error()));
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().message.find("strategy state"),
+              std::string::npos);
+}
+
 TEST(Factory, CreateRunnerAppliesThePerStrategyLimits) {
     // Only the override sets a limit, so only ma_crossover gets a gate.
     auto cfg = config::BinanceUSConfiguration::Parse(

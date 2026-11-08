@@ -1,8 +1,10 @@
 #include "kestrel/strategy/market_maker.hpp"
 
 #include <algorithm>
+#include <map>
 #include <tuple>
 
+#include "kestrel/util/json.hpp"
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
@@ -50,8 +52,43 @@ class FakeContext : public strategy::Context {
         return {};
     }
 
+    strategy::StateStore* State() override { return state; }
+
     types::Timestamp now = types::FromEpochSeconds(1000);
     CancelVenue venue;
+    strategy::StateStore* state = nullptr;
+};
+
+// An in-memory StateStore, which can be made to fail.
+class MemoryStore : public strategy::StateStore {
+   public:
+    types::Result<std::optional<std::string>> Load(
+        const std::string& key) override {
+        if (fail_load) {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
+        auto it = values.find(key);
+        return it == values.end() ? std::optional<std::string>()
+                                  : std::optional(it->second);
+    }
+    types::Result<void> Save(const std::string& key,
+                             const std::string& value) override {
+        ++saves;
+        if (fail_save) {
+            return types::MakeError(types::ErrorCategory::kTimeout, "slow");
+        }
+        values[key] = value;
+        return {};
+    }
+    types::Result<void> Erase(const std::string& key) override {
+        values.erase(key);
+        return {};
+    }
+
+    std::map<std::string, std::string> values;
+    bool fail_load = false;
+    bool fail_save = false;
+    int saves = 0;  // attempts
 };
 
 MarketMakerParams Params() {
@@ -92,8 +129,10 @@ types::OrderStatus StatusOf(const char* id, OrderState state) {
 
 // A strategy that starts holding `held` base units, with the context ready.
 struct Maker {
-    explicit Maker(const char* held = "1", MarketMakerParams p = Params())
+    explicit Maker(const char* held = "1", MarketMakerParams p = Params(),
+                   strategy::StateStore* store = nullptr)
         : strategy(std::move(p)) {
+        context.state = store;
         if (D(held).Sign() > 0) {
             context.venue.balances = {{"ZEC", D(held), D(held), D("0")},
                                       {"USDT", D("1000"), D("1000"), D("0")}};
@@ -1204,6 +1243,184 @@ TEST(MarketMakerProtectionTest, LossCapHaltsAndFlattensForGood) {
     m.context.now += minutes(60);
     m.Quote("110.00", "110.02");  // recovered, but the halt is permanent
     EXPECT_EQ(m.Orders().size(), placed);
+}
+
+MarketMakerParams LossCapped(const char* amount) {
+    auto p = Params();
+    p.protection.loss_cap = true;
+    p.protection.loss_cap_amount = D(amount);
+    return p;
+}
+
+TEST(MarketMakerProtectionTest, KeepsStateOnlyForRulesWithState) {
+    EXPECT_FALSE(MarketMaker(Params()).Needs().state);
+    EXPECT_TRUE(MarketMaker(LossCapped("1")).Needs().state);
+    auto p = Params();
+    p.protection.stop_loss = true;  // stateless on its own
+    EXPECT_FALSE(MarketMaker(p).Needs().state);
+    p.protection.cooldown_after_stop = true;
+    EXPECT_TRUE(MarketMaker(p).Needs().state);
+}
+
+TEST(MarketMakerProtectionTest, AHaltSurvivesARestart) {
+    MemoryStore store;
+    {
+        Maker m("1", LossCapped("1"), &store);
+        m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));
+        m.Quote("98.98", "99.00");  // -1.01: halted
+        ASSERT_EQ(MarketOrders(m).size(), 1u);
+        // The exit (the first order) fills before the run stops.
+        m.strategy.OnFill(m.context, FillOf(Side::kSell, "1", "order-1"));
+        m.strategy.OnStop(m.context);
+    }
+    ASSERT_EQ(store.values.count("market_maker/ZEC/USDT"), 1u);
+    Maker again("1", LossCapped("1"), &store);
+    again.Quote("110.00", "110.02");
+    EXPECT_TRUE(again.Orders().empty());  // still halted, nothing to exit
+}
+
+TEST(MarketMakerProtectionTest, TheLossCapCountsEarlierRuns) {
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":false,"pnl":"-0.6","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0})";
+    Maker m("1", LossCapped("1"), &store);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));  // -100 cash
+    // Mid 99.50: -0.50 this run, -1.10 with the earlier -0.6: halted.
+    m.Quote("99.49", "99.51");
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+    // Saved at once, with the P&L it was halted at.
+    auto saved = util::ParseJson(store.values["market_maker/ZEC/USDT"]);
+    ASSERT_OK(saved);
+    EXPECT_TRUE((*saved)["halted"].get<bool>());
+    EXPECT_EQ(*util::JsonDecimal((*saved)["pnl"]), D("-1.1"));
+}
+
+TEST(MarketMakerProtectionTest, APositionLeftByTheLastRunIsTakenBackOn) {
+    // The last run held 0.5 beyond its start, entered at 99, marked at 100
+    // in its P&L of -0.8. Holding 1 now, the start is 0.5.
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":false,"pnl":"-0.8","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0,"position":"0.5","entry":"99","mark":"100"})";
+    Maker m("1", LossCapped("1"), &store);
+    // Mid 99.50: the carried position lost 0.25 since its mark, so -1.05:
+    // halted, and it sells the 0.5 it took on, not the starting holding.
+    m.Quote("99.49", "99.51");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+}
+
+TEST(MarketMakerProtectionTest, AResumeThatStopsBeforeAnyQuoteKeepsTheMark) {
+    // Resumed with a position, then stopped before a quote came: the mark
+    // saved is the one resumed, not zero, so a second resume books no
+    // profit out of the position's whole value.
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":false,"pnl":"-0.8","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0,"position":"0.5","entry":"99","mark":"100"})";
+    {
+        Maker m("1", LossCapped("1"), &store);
+        m.strategy.OnStop(m.context);
+    }
+    auto saved = util::ParseJson(store.values["market_maker/ZEC/USDT"]);
+    ASSERT_OK(saved);
+    EXPECT_EQ(*util::JsonDecimal((*saved)["mark"]), D("100"));
+    EXPECT_EQ(*util::JsonDecimal((*saved)["pnl"]), D("-0.8"));
+    // And a resume measures from it: mid 99.50 is -1.05, halted.
+    Maker again("1", LossCapped("1"), &store);
+    again.Quote("99.49", "99.51");
+    EXPECT_EQ(MarketOrders(again).size(), 1u);
+}
+
+TEST(MarketMakerProtectionTest, AHaltedMakerExitsThePositionItWasLeftWith) {
+    // Halted before the exit filled: the restart exits it.
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":true,"pnl":"-2","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0,"position":"0.5","entry":"99","mark":"98"})";
+    Maker m("1", LossCapped("1"), &store);
+    m.Quote("97.99", "98.01");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+    EXPECT_EQ(m.Orders().size(), 1u);  // and no quotes
+}
+
+TEST(MarketMakerProtectionTest, OnlyWhatIsStillHeldIsTakenBackOn) {
+    // The last run held 1.5 beyond its start, but only 1 is held now.
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":true,"pnl":"-2","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0,"position":"1.5","entry":"99","mark":"98"})";
+    Maker m("1", LossCapped("1"), &store);
+    m.Quote("97.99", "98.01");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("1"));
+}
+
+TEST(MarketMakerProtectionTest, AFailedSaveIsRetriedAfterAPause) {
+    MemoryStore store;
+    store.fail_save = true;
+    Maker m("1", LossCapped("5"), &store);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 1);
+    m.Quote("99.99", "100.01");  // not on every quote
+    EXPECT_EQ(store.saves, 1);
+    m.context.now += std::chrono::seconds(10);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 2);
+    EXPECT_EQ(m.Orders().size(), 2u);  // quoting meanwhile
+}
+
+TEST(MarketMakerProtectionTest, ResetStateStartsAfresh) {
+    MemoryStore store;
+    store.values["market_maker/ZEC/USDT"] =
+        R"({"halted":true,"pnl":"-5","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0})";
+    auto p = LossCapped("1");
+    p.protection.reset_state = true;
+    Maker m("1", p, &store);
+    EXPECT_TRUE(store.values.empty());
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().size(), 2u);  // quoting again
+}
+
+TEST(MarketMakerProtectionTest, AStateItCannotReadStopsItQuoting) {
+    MemoryStore broken;
+    broken.values["market_maker/ZEC/USDT"] = "not json";
+    Maker m("1", LossCapped("1"), &broken);
+    m.Quote("99.99", "100.01");
+    EXPECT_TRUE(m.Orders().empty());
+    // A position with no price to value it at.
+    MemoryStore unpriced;
+    unpriced.values["market_maker/ZEC/USDT"] =
+        R"({"halted":false,"pnl":"0","peak":"0","stand_until_ms":0,)"
+        R"("cooldown_until_ms":0,"position":"0.5","entry":"0","mark":"0"})";
+    Maker u("1", LossCapped("1"), &unpriced);
+    u.Quote("99.99", "100.01");
+    EXPECT_TRUE(u.Orders().empty());
+    MemoryStore down;
+    down.fail_load = true;
+    Maker n("1", LossCapped("1"), &down);
+    n.Quote("99.99", "100.01");
+    EXPECT_TRUE(n.Orders().empty());
+}
+
+TEST(MarketMakerProtectionTest,
+     SavesAFillWithTheNextQuoteAndOtherwiseEveryMinute) {
+    MemoryStore store;
+    Maker m("1", LossCapped("5"), &store);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 1);  // the first
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 1);  // nothing new, under a minute
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 2);  // the fill
+    m.context.now += std::chrono::seconds(61);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(store.saves, 3);  // a minute on
 }
 
 TEST(MarketMakerProtectionTest, LossCapCountsFees) {

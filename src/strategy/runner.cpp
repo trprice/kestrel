@@ -294,6 +294,9 @@ void Runner::Guarded(const char* hook, const std::function<void()>& call) {
 
 types::Result<void> Runner::Begin() {
     const Requirements requirements = mStrategy->Needs();
+    if (requirements.state) {
+        mState = mOptions.state_store;
+    }
     if (requirements.quotes) {
         for (const auto& symbol : requirements.symbols) {
             mLastQuote[symbol] = mClock();

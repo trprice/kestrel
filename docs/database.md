@@ -33,6 +33,7 @@ automatically on startup (`src/db/migrations.cpp`, append-only).
 | `quotes` | `stream --store` | hypertable chunked per day: one row per delivered quote |
 | `runs`, `fills`, `pnl_snapshots`, `pnl_totals`, `venue_latency` | `run` with `[recording]` | one run's record; see below |
 | `account_fills` | `account --store` | the account's whole trade history; see below |
+| `strategy_state` | `run`, for a strategy that keeps state | one row per key (provider, mode, strategy and symbol, e.g. `binanceus/live/market_maker/ZEC/USDT`): the strategy's saved state as JSON, and when it was saved. `DELETE` a row, or set the strategy's `reset_state`, to start it afresh |
 | `market_trades` | `trades --store` | hypertable chunked per week: every public trade on the venue, keyed by venue, symbol, trade ID; see below |
 | `schema_migrations` | every command that opens the database | which migrations have been applied |
 

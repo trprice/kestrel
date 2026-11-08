@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "kestrel/strategy/state_store.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 #include "kestrel/types/error.hpp"
 #include "kestrel/types/market.hpp"
@@ -30,6 +31,8 @@ struct Requirements {
     // Call OnTimer every this long of the runner's clock (simulated in a
     // backtest), whether or not anything arrives; zero for never.
     std::chrono::milliseconds timer_interval{0};
+    // Whether the strategy keeps state across restarts (Context::State).
+    bool state = false;
 };
 
 // What a strategy may touch. Valid only for the duration of a hook call.
@@ -64,6 +67,11 @@ class Context {
         const {
         return std::nullopt;
     }
+
+    // Where to keep state across restarts, when Requirements::state asked
+    // for it and the run has a store (`run` with a [database]); null
+    // otherwise, as in a backtest, where every run starts afresh.
+    virtual StateStore* State() { return nullptr; }
 };
 
 // All hooks run on the runner's single strategy thread, one at a time, so a

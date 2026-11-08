@@ -86,6 +86,7 @@ add_library(kestrel
   src/db/quote_store.cpp
   src/db/account_fill_store.cpp
   src/db/market_trade_store.cpp
+  src/db/strategy_state_store.cpp
   src/db/trade_store.cpp
   src/trading/order_rules.cpp
   src/trading/pnl_tracker.cpp
@@ -219,6 +220,7 @@ if(KESTREL_BUILD_TESTS)
     tests/quote_store_test.cpp
     tests/account_fill_store_test.cpp
     tests/market_trade_store_test.cpp
+    tests/strategy_state_store_test.cpp
     tests/trade_store_test.cpp
     tests/fixture_data_test.cpp
     tests/paper_trading_venue_test.cpp

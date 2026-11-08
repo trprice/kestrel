@@ -65,6 +65,15 @@ struct MarketMakerProtection {
     // without stop_loss.
     bool cooldown_after_stop = false;
     std::chrono::milliseconds cooldown{std::chrono::minutes(30)};
+
+    // With loss_cap, drawdown_cap, spike_standdown or cooldown_after_stop
+    // on, their state is kept across restarts where the run has a store
+    // (`run` with a [database]; see Context::State): the halt, the P&L so
+    // far and its peak, and when a stand-down or cooldown ends. A restart
+    // then carries on from it, so the caps count every run since the state
+    // was last reset, and a halted maker stays halted. reset_state starts
+    // afresh (and forgets the saved state).
+    bool reset_state = false;
 };
 
 struct MarketMakerParams {
@@ -297,6 +306,12 @@ class MarketMaker : public Strategy {
     // refused) or nothing needs doing. Does nothing while an exit is pending.
     bool ExitPosition(Context& context, const char* why);
     void Halt(const char* why);
+    // Kept state (MarketMakerProtection::reset_state). LoadState is false
+    // when a saved state cannot be read, and the maker then does not quote.
+    bool KeepsState() const;
+    bool LoadState(Context& context);
+    void SaveState(Context& context, bool now);
+    std::string StateKey() const { return "market_maker/" + mParams.symbol; }
     types::Decimal Position() const { return mInventory - mStart; }
     // The reservation price's shift for the position, in basis points of
     // the mid: skew_bps times the lean (skew_power) times the age factor.
@@ -356,6 +371,16 @@ class MarketMaker : public Strategy {
     int mHeldSide = 0;  // -1 short, 0 flat (under half a quote), 1 long
     types::Timestamp mHeldSince;
     bool mHalted = false;
+    // Kept across restarts: the P&L of the runs before this one, the P&L
+    // last measured (with it), whether something worth saving at once
+    // changed, and when the state was last saved.
+    types::Decimal mCarried;
+    types::Decimal mLastPnl;
+    bool mStateDirty = false;
+    std::optional<types::Timestamp> mStateSaved;
+    types::Timestamp mStateRetryAt;  // no save attempt before this
+    types::Decimal mLastMark;        // the mid mLastPnl was marked at
+    bool mStateWarned = false;
     std::size_t mWouldTake = 0;  // post-only quotes refused, for the log
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
     std::map<std::string, Unconfirmed> mUnconfirmed;  // by order ID

@@ -11,6 +11,7 @@
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
+#include "kestrel/db/strategy_state_store.hpp"
 #include "kestrel/db/trade_store.hpp"
 #include "kestrel/net/timed_http_client.hpp"
 #include "kestrel/strategy/breakout.hpp"
@@ -414,6 +415,7 @@ Result<void> ReadProtection(ParamReader& p,
     Take(p.Flag("cooldown_after_stop", r.cooldown_after_stop),
          r.cooldown_after_stop, error);
     Take(p.Millis("cooldown_ms", r.cooldown), r.cooldown, error);
+    Take(p.Flag("reset_state", r.reset_state), r.reset_state, error);
     if (error) {
         return std::unexpected(*error);
     }
@@ -777,9 +779,31 @@ Result<std::shared_ptr<trading::TradeLog>> OpenTradeLog(
     return std::shared_ptr<trading::TradeLog>(std::move(*store));
 }
 
+Result<std::shared_ptr<strategy::StateStore>> OpenStateStore(
+    const config::Configuration& cfg, const std::string& venue) {
+    const auto& options = cfg.GetDatabase();
+    if (!options) {
+        return MakeError(ErrorCategory::kNotFound,
+                         "keeping strategy state needs a [database] section");
+    }
+    auto connected = db::Database::Connect(*options);
+    if (!connected) {
+        return std::unexpected(connected.error());
+    }
+    std::shared_ptr<db::Database> database = std::move(*connected);
+    if (auto migrated = database->Migrate(); !migrated) {
+        return std::unexpected(migrated.error());
+    }
+    return std::shared_ptr<strategy::StateStore>(
+        std::make_shared<db::StrategyStateStore>(
+            database,
+            venue + "/" + std::string(config::ToString(cfg.GetMode())) + "/"));
+}
+
 Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const std::string& strategy_name, const config::Configuration& cfg,
-    const ComponentsFactory& make_components, const TradeLogFactory& make_log) {
+    const ComponentsFactory& make_components, const TradeLogFactory& make_log,
+    const StateStoreFactory& make_state) {
     auto limits = ResolveRiskLimits(strategy_name, cfg);
     if (!limits) {
         return WithContext(limits.error(), "risk");
@@ -809,6 +833,23 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
         options.pnl_interval = cfg.GetRecording().pnl_interval;
         if (cfg.GetRecording().latency) {
             options.latency_interval = cfg.GetRecording().latency_interval;
+        }
+    }
+    if ((*strategy)->Needs().state) {
+        // Scoped by the provider (the paper venue's own name is "paper").
+        auto store =
+            make_state(cfg, std::string(components->data_source->Name()));
+        if (store) {
+            options.state_store = *store;
+        } else if (cfg.GetMode() == config::Mode::kLive ||
+                   store.error().category != ErrorCategory::kNotFound) {
+            // Live, its loss caps must survive a restart; and a [database]
+            // that is configured but cannot be reached is an error either
+            // way, like recording.
+            return WithContext(store.error(), "strategy state");
+        } else {
+            spdlog::warn("strategy state: {}; {} keeps none across restarts",
+                         store.error().ToString(), strategy_name);
         }
     }
     auto runner = std::make_unique<strategy::Runner>(

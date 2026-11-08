@@ -152,6 +152,13 @@ CREATE INDEX market_trades_venue_symbol_time
         {8, "record the taker side of the last trade in quotes", R"sql(
 ALTER TABLE quotes ADD COLUMN last_taker_side TEXT;
 )sql"},
+        {9, "create strategy state table", R"sql(
+CREATE TABLE strategy_state (
+    key      TEXT PRIMARY KEY,
+    value    TEXT NOT NULL,
+    saved_at TIMESTAMPTZ NOT NULL
+);
+)sql"},
     };
     return kMigrations;
 }

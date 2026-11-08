@@ -46,6 +46,9 @@ struct RunnerOptions {
     // (zero: only at the end) go to this log; see RunRecorder. Run() only:
     // Drain-driven runs (backtests) get the fills but no periodic snapshots.
     std::shared_ptr<trading::TradeLog> trade_log;
+    // Handed to a strategy whose Requirements::state asks for one
+    // (Context::State). Null: none.
+    std::shared_ptr<StateStore> state_store;
     std::chrono::milliseconds pnl_interval{60'000};
     // With a trade_log, the venue's response times are stored in windows of
     // this length (zero: not at all); see RunRecorder::RecordLatency.
@@ -309,6 +312,7 @@ class Runner : private Context {
     std::span<const types::Bar> Bars(const types::Symbol& symbol,
                                      types::Timeframe timeframe) const override;
     bool MarketOpen() const override { return mHours->IsOpen(mClock()); }
+    StateStore* State() override { return mState.get(); }
     std::optional<types::MarketHours::Session> CurrentOrNextSession()
         const override {
         return mHours->CurrentOrNext(mClock());
@@ -322,6 +326,8 @@ class Runner : private Context {
     std::optional<types::MarketHours::Session> mSession;
     bool mOpenCalled = false;
     bool mClosingCalled = false;
+    // Context::State: the store, when the strategy asked for one.
+    std::shared_ptr<StateStore> mState;
     // OnTimer: its interval, and when it is next due.
     std::chrono::milliseconds mTimerInterval{0};
     std::optional<types::Timestamp> mNextTimer;

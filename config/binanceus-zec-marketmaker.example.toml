@@ -118,3 +118,7 @@ post_only        = true
 # After a stop_loss exit, quote neither side for cooldown_ms.
 # cooldown_after_stop = true
 # cooldown_ms         = 1800000
+# The loss and drawdown caps, the stand-down and the cooldown are kept in the
+# [database] across restarts, so the caps count every run and a halt lasts.
+# Set reset_state for one run to start afresh.
+# reset_state         = true

@@ -212,8 +212,6 @@ from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
 fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
 made +0.77 USDT in the five minutes after their fills but +9.99 by the end
 (inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Persist the halt state and protection P&L, so a restart does not reset
-      the loss and drawdown caps (see Known limitations).
 - [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
       timeout (a few backstop polls), ask the venue: `GetOrder` for its real
       filled quantity (correcting a size assumed from the acknowledgement),
@@ -352,8 +350,19 @@ the header of the code concerned.
 - Protection P&L covers only the position beyond the starting balance, so a
   fall in the starting holding itself trips nothing. It values the position
   at the mid, and exits are market orders (taker fee and slippage).
-- A halt is permanent for the run; only restarting the process resumes it.
-  Nothing is persisted, so a restart starts with fresh P&L and a fresh peak.
+- With `loss_cap`, `drawdown_cap`, `spike_standdown` or
+  `cooldown_after_stop` on and a `[database]`, the halt, the P&L, its peak
+  and the stand-down and cooldown ends are kept in `strategy_state`, so a
+  restart carries on from them and a halted maker stays halted until
+  `reset_state = true`. The position is kept too, with its entry and the
+  mid it was marked at, and taken back on at restart (as much of it as the
+  account still holds), so its later moves count, the stop loss watches it
+  and a halted maker exits it. The P&L saved is marked at the mid of the
+  last quote before the save (at least once a minute, at once after a fill
+  or a halt), so a crash loses the move since then. In paper mode the
+  venue starts each run from `[paper] initial_balances`, so a carried
+  position is assumed out of them. Two makers on one symbol, provider and
+  mode share one saved state.
 - Rules run only when a quote arrives, so a silent feed trips none of them;
   `quiet_pull_ms` pulls the quotes after a silence, but checks no rule.
 - Volatility scaling of the spread (`vol_multiplier`) did not beat a fixed
@@ -734,6 +743,13 @@ the header of the code concerned.
       fill, but on the falling days (Nov 1-2) the extra levels build more
       inventory (two levels at 4 bps: -19.6 against -11.8). Three levels
       sent three times the orders (162k against 54k on Nov 7).
+- [x] Market maker state kept across restarts: a `strategy::StateStore`
+      (`Requirements::state`, `Context::State`), kept in the database's
+      `strategy_state` table (migration 9) and scoped by provider and mode.
+      The halt, the protection P&L and its peak, and the stand-down and
+      cooldown ends carry over, so the loss and drawdown caps count every
+      run until `reset_state`. A state it cannot read stops it quoting; a
+      live run without a [database] is refused.
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
+
+#include "kestrel/util/json.hpp"
 
 namespace kestrel::strategy {
 
@@ -17,6 +20,11 @@ namespace {
 constexpr int kScale = 8;
 // The longest window a protection rule looks back over.
 constexpr std::chrono::minutes kHistory{15};
+// Kept state is saved at least this often while the P&L moves, and at once
+// when the halt, a stand-down or a cooldown changes, or a fill lands.
+constexpr std::chrono::seconds kStateSaveInterval{60};
+// After a failed save, the next attempt waits this long.
+constexpr std::chrono::seconds kStateRetryInterval{10};
 // How long a reported fill may go without its OnFill before it is logged.
 constexpr std::chrono::seconds kUnconfirmedWarning{30};
 const Decimal kBpsDivisor = Decimal::FromInt(10000);
@@ -125,6 +133,7 @@ Requirements MarketMaker::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
     needs.quotes = true;
+    needs.state = KeepsState();
     if (mParams.quiet_pull > std::chrono::milliseconds::zero()) {
         needs.timer_interval =
             std::clamp(mParams.quiet_pull / 4, std::chrono::milliseconds(100),
@@ -159,7 +168,162 @@ void MarketMaker::OnStart(Context& context) {
         }
     }
     mStart = mInventory;
-    mReady = true;
+    mReady = LoadState(context);
+}
+
+bool MarketMaker::KeepsState() const {
+    const auto& rules = mParams.protection;
+    return rules.loss_cap || rules.drawdown_cap || rules.spike_standdown ||
+           rules.cooldown_after_stop;
+}
+
+bool MarketMaker::LoadState(Context& context) {
+    StateStore* store = context.State();
+    if (!store) {
+        return true;
+    }
+    if (mParams.protection.reset_state) {
+        if (auto erased = store->Erase(StateKey()); !erased) {
+            spdlog::error("market_maker: cannot reset the saved state: {}",
+                          erased.error().ToString());
+            return false;
+        }
+        spdlog::warn(
+            "market_maker: saved state reset; starting afresh, the caps from "
+            "zero (take reset_state out of the config for the next run)");
+        return true;
+    }
+    auto value = store->Load(StateKey());
+    if (!value) {
+        // Fail closed: without it the caps would restart from zero.
+        spdlog::error(
+            "market_maker: cannot read the saved state ({}); not quoting",
+            value.error().ToString());
+        return false;
+    }
+    if (!*value) {
+        return true;  // nothing saved yet
+    }
+    auto json = util::ParseJson(**value);
+    const auto decimal = [&](const char* key) -> std::optional<Decimal> {
+        if (!json || !json->contains(key)) {
+            return std::nullopt;
+        }
+        auto d = util::JsonDecimal((*json)[key]);
+        return d ? std::optional(*d) : std::nullopt;
+    };
+    const auto pnl = decimal("pnl");
+    const auto peak = decimal("peak");
+    if (!json || !json->is_object() || !pnl || !peak ||
+        !(*json)["halted"].is_boolean() ||
+        !(*json)["stand_until_ms"].is_number_integer() ||
+        !(*json)["cooldown_until_ms"].is_number_integer()) {
+        spdlog::error(
+            "market_maker: the saved state is not readable ({}); not "
+            "quoting. reset_state = true starts afresh",
+            **value);
+        return false;
+    }
+    mHalted = (*json)["halted"].get<bool>();
+    mCarried = *pnl;
+    mLastPnl = *pnl;
+    // A peak below the carried P&L (the caps were off, or it was halted)
+    // is raised to it by the first quote; drawdown is from there.
+    mPeak = *peak;
+    // The position the last run held, with its entry and the mid it was
+    // marked at in the carried P&L. Taken back on, so its moves from that
+    // mark count, the stop loss watches it, and a halted maker exits it.
+    // (States saved before these fields carry no position.)
+    const Decimal position = decimal("position").value_or(Decimal());
+    if (!position.IsZero()) {
+        mEntry = decimal("entry").value_or(Decimal());
+        // The mid its value in the carried P&L was taken at (the entry if
+        // none was saved, or a mark of zero).
+        const auto saved_mark = decimal("mark");
+        const Decimal mark =
+            saved_mark && saved_mark->Sign() > 0 ? *saved_mark : mEntry;
+        if (mark.Sign() <= 0) {
+            // Only a damaged row: its position cannot be valued.
+            spdlog::error(
+                "market_maker: the saved state holds a position of {} with "
+                "no price; not quoting. reset_state = true starts afresh",
+                position.ToString());
+            return false;
+        }
+        Decimal held = position;
+        if (position.Sign() > 0 && position > mInventory) {
+            spdlog::warn(
+                "market_maker: the last run held {} more {} than it started "
+                "with, but only {} is held now; taking that on (the rest "
+                "stays in the carried P&L at its last mark)",
+                position.ToString(), mBaseAsset, mInventory.ToString());
+            held = mInventory;
+        }
+        mStart = mInventory - held;
+        // Its value at the mark is in the carried P&L already, so only its
+        // moves from the mark count. (Its holding age starts again.)
+        mCash = -held * mark;
+        mLastMark = mark;
+        NoteHeld(context.Now());
+    }
+    mStandUntil =
+        types::FromEpochMillis((*json)["stand_until_ms"].get<std::int64_t>());
+    mCooldownUntil = types::FromEpochMillis(
+        (*json)["cooldown_until_ms"].get<std::int64_t>());
+    spdlog::info(
+        "market_maker: resumed the saved state: P&L {} (peak {}), position "
+        "{}{}",
+        mCarried.Normalized().ToString(), mPeak.Normalized().ToString(),
+        Position().Normalized().ToString(), mHalted ? ", halted" : "");
+    if (mHalted) {
+        spdlog::error(
+            "market_maker: halted in an earlier run; not quoting{}. "
+            "reset_state = true starts afresh",
+            Position().IsZero() ? "" : ", exiting its position");
+    }
+    return true;
+}
+
+void MarketMaker::SaveState(Context& context, bool now) {
+    StateStore* store = context.State();
+    if (!store || !mReady) {
+        return;
+    }
+    const auto at = context.Now();
+    if (at < mStateRetryAt) {
+        return;  // a save failed a moment ago
+    }
+    if (!now && mStateSaved && at - *mStateSaved < kStateSaveInterval) {
+        return;
+    }
+    nlohmann::json json;
+    json["halted"] = mHalted;
+    json["pnl"] = mLastPnl.Normalized().ToString();
+    json["peak"] = mPeak.Normalized().ToString();
+    json["stand_until_ms"] = types::ToEpochMillis(mStandUntil);
+    json["cooldown_until_ms"] = types::ToEpochMillis(mCooldownUntil);
+    json["position"] = Position().Normalized().ToString();
+    json["entry"] = mEntry.Normalized().ToString();
+    // The mid the P&L was taken at, which a resumed position is measured
+    // from. Fills since the last quote are in the position but not yet in
+    // the P&L: a resume takes them at this mark (an error of about the
+    // half-spread on them).
+    json["mark"] =
+        (mLastMark.Sign() > 0 ? mLastMark : mEntry).Normalized().ToString();
+    if (auto saved = store->Save(StateKey(), json.dump()); !saved) {
+        if (!mStateWarned) {
+            spdlog::warn("market_maker: cannot save the state: {}",
+                         saved.error().ToString());
+            mStateWarned = true;
+        }
+        // Tried again after a pause, so a database that hangs does not hold
+        // up every quote.
+        mStateRetryAt = at + kStateRetryInterval;
+        return;
+    }
+    mStateWarned = false;
+    mStateSaved = at;
+    mStateDirty = false;
 }
 
 Decimal MarketMaker::Size(const Decimal& room) const {
@@ -464,9 +628,12 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
     const auto now = context.Now();
     Pause pause;
 
-    // Losses, measured on every quote.
+    // Losses, measured on every quote, with the P&L of earlier runs when
+    // the state is kept.
+    mLastPnl = mCarried + mCash + Position() * mid;
+    mLastMark = mid;
     if (!mHalted && (rules.loss_cap || rules.drawdown_cap)) {
-        const Decimal pnl = mCash + Position() * mid;
+        const Decimal pnl = mLastPnl;
         mPeak = std::max(mPeak, pnl);
         if (rules.loss_cap && pnl <= -rules.loss_cap_amount) {
             Halt("loss cap");
@@ -476,6 +643,7 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
         }
     }
     if (mHalted) {
+        SaveState(context, mStateDirty);
         ExitPosition(context, "halted");
         return {true, true};
     }
@@ -489,6 +657,7 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
         if ((long_stopped || short_stopped) &&
             ExitPosition(context, "stop loss") && rules.cooldown_after_stop) {
             mCooldownUntil = now + rules.cooldown;
+            mStateDirty = true;
         }
     }
 
@@ -512,6 +681,7 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
                     m3.ToString(), m5.ToString(), m15.ToString());
             }
             mStandUntil = now + rules.spike_pause;
+            mStateDirty = true;
         }
         if (rules.downtrend_filter && m15 <= -rules.downtrend_bps) {
             pause.bid = true;
@@ -523,11 +693,13 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
     if (mExit || now < mStandUntil || now < mCooldownUntil) {
         pause.bid = pause.ask = true;
     }
+    SaveState(context, mStateDirty);
     return pause;
 }
 
 void MarketMaker::Halt(const char* why) {
     mHalted = true;
+    mStateDirty = true;
     spdlog::error("market_maker: halted ({}), position {}", why,
                   Position().ToString());
 }
@@ -778,6 +950,7 @@ void MarketMaker::OnFill(Context& context, const types::Fill& fill) {
         }
     }
     NoteHeld(context.Now());
+    mStateDirty = true;  // saved with the next quote's mark
     spdlog::info("market_maker: {} {} @ {}, inventory {}",
                  types::ToString(fill.side), fill.quantity.ToString(),
                  fill.price.ToString(), mInventory.ToString());
@@ -861,6 +1034,7 @@ void MarketMaker::OnTimer(Context& context) {
 }
 
 void MarketMaker::OnStop(Context& context) {
+    SaveState(context, true);
     if (mHalfCount > 0) {
         spdlog::info(
             "market_maker: half-spread {:.2f} bps on average, {} at most, "

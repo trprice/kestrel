@@ -20,6 +20,7 @@ subscribes to anything:
 | `quotes` | whether to receive `OnQuote` |
 | `warmup_bars` | closed bars kept per series and loaded before `OnStart`, so indicators start with a full window |
 | `timer_interval` | how often to call `OnTimer` (zero, the default: never) |
+| `state` | whether to keep state across restarts: `Context::State()` then returns a store (`run` with a `[database]`; null in a backtest or without one) |
 
 A backtest replays stored quotes only if `quotes` is true, and fetches the
 warmup bars plus the range from the database or the provider.
@@ -56,6 +57,10 @@ Every hook gets a `Context&`, valid only during that call:
   range, inside bar, ranges, swing points, double bottoms). The smoothed
   indicators settle over a few times their period, so ask for that many
   `warmup_bars`.
+- `State()`: a `StateStore` (`Load`, `Save`, `Erase` of a text value by
+  key) kept across restarts, when `Requirements::state` asked for one and
+  the run has a database; null otherwise. The market maker keeps its halt
+  and loss-cap P&L there.
 - `MarketOpen()`: whether the market can be traded now, and
   `CurrentOrNextSession()`: the session open now, or the next one. Always open
   (and no session) on a crypto venue.
