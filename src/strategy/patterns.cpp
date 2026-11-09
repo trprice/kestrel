@@ -172,6 +172,43 @@ std::vector<Swing> SwingPoints(std::span<const types::Bar> bars,
     return swings;
 }
 
+namespace {
+
+// The value at bar `at` of the line through (`i1`, `p1`) and (`i2`, `p2`),
+// i1 < i2, to 8 places.
+Decimal LineAt(std::size_t i1, const Decimal& p1, std::size_t i2,
+               const Decimal& p2, std::size_t at) {
+    const auto run =
+        static_cast<std::int64_t>(at) - static_cast<std::int64_t>(i1);
+    return p1 +
+           Decimal::Divide((p2 - p1) * Decimal::FromInt(run),
+                           Decimal::FromInt(static_cast<std::int64_t>(i2 - i1)),
+                           8, types::Rounding::kNearest);
+}
+
+// The index of the highest high strictly between `from` and `to` (the first,
+// on a tie). from + 1 < to.
+std::size_t HighestBetween(std::span<const types::Bar> bars, std::size_t from,
+                           std::size_t to) {
+    std::size_t best = from + 1;
+    for (std::size_t i = from + 2; i < to; ++i) {
+        if (bars[i].high > bars[best].high) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+// Whether a swing high lies strictly between `from` and `to`.
+bool PeakBetween(std::span<const Swing> swings, std::size_t from,
+                 std::size_t to) {
+    return std::ranges::any_of(swings, [&](const Swing& s) {
+        return s.high && s.index > from && s.index < to;
+    });
+}
+
+}  // namespace
+
 std::size_t MultipleBottomBars(std::size_t bottoms, std::size_t strength) {
     // The first low needs `strength` bars before it and the last `strength`
     // after, and two swing lows are more than `strength` bars apart (each
@@ -205,10 +242,7 @@ std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
     for (std::size_t k = 0; k + 1 < chosen.size(); ++k) {
         const std::size_t from = chosen[k].index;
         const std::size_t to = chosen[k + 1].index;
-        const bool peak = std::ranges::any_of(swings, [&](const Swing& s) {
-            return s.high && s.index > from && s.index < to;
-        });
-        if (!peak) {
+        if (!PeakBetween(swings, from, to)) {
             return std::nullopt;
         }
     }
@@ -236,6 +270,62 @@ std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
         }
     }
     return MultipleBottom{{neckline, lowest}};
+}
+
+std::optional<InverseHeadShoulders> InverseHeadShouldersOf(
+    std::span<const types::Bar> bars, std::size_t n, std::size_t strength,
+    const Decimal& zone) {
+    if (n == 0 || bars.size() < n) {
+        return std::nullopt;
+    }
+    const auto window = bars.last(n);
+    const std::vector<Swing> swings = SwingPoints(window, strength);
+    std::vector<Swing> lows;
+    for (const Swing& swing : swings) {
+        if (!swing.high) {
+            lows.push_back(swing);
+        }
+    }
+    if (lows.size() < 3) {
+        return std::nullopt;
+    }
+    const Swing& left = lows[lows.size() - 3];
+    const Swing& head = lows[lows.size() - 2];
+    const Swing& right = lows.back();
+    if (!PeakBetween(swings, left.index, head.index) ||
+        !PeakBetween(swings, head.index, right.index)) {
+        return std::nullopt;
+    }
+    const std::size_t i1 = HighestBetween(window, left.index, head.index);
+    const std::size_t i2 = HighestBetween(window, head.index, right.index);
+    const Decimal& p1 = window[i1].high;
+    const Decimal& p2 = window[i2].high;
+    const auto line = [&](std::size_t at) {
+        return LineAt(i1, p1, i2, p2, at);
+    };
+    const Decimal height = line(head.index) - head.price;
+    if (height.Sign() <= 0) {
+        return std::nullopt;
+    }
+    const Decimal margin = height * zone;
+    const Decimal half = Decimal::Divide(height, Decimal::FromInt(2), 8,
+                                         types::Rounding::kNearest);
+    for (const Swing* shoulder : {&left, &right}) {
+        if (shoulder->price - head.price <= margin ||
+            line(shoulder->index) - shoulder->price < half) {
+            return std::nullopt;  // a triple bottom, or a shallow shoulder
+        }
+    }
+    const Decimal floor = right.price - margin;
+    for (std::size_t i = i2 + 1; i < window.size(); ++i) {
+        if (window[i].high > line(i) ||
+            (i > right.index && window[i].low < floor)) {
+            return std::nullopt;  // already broken out, or failed
+        }
+    }
+    return InverseHeadShoulders{
+        {head.price + height, head.price},
+        std::max(line(window.size()), window.back().high)};
 }
 
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,

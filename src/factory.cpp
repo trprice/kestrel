@@ -519,10 +519,10 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Quantity("quantity"), params.quantity, error);
     Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
     std::string setup = "nr";
-    Take(p.Word(
-             "setup", setup,
-             {"nr", "inside", "range", "rectangle", "pipe", "failed_breakdown",
-              "double_bottom", "triple_bottom", "opening_range"}),
+    Take(p.Word("setup", setup,
+                {"nr", "inside", "range", "rectangle", "pipe",
+                 "failed_breakdown", "double_bottom", "triple_bottom",
+                 "opening_range", "inverse_head_shoulders"}),
          setup, error);
     params.setup = setup == "inside"      ? Params::Setup::kInsideBar
                    : setup == "range"     ? Params::Setup::kRange
@@ -533,7 +533,9 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
                    : setup == "double_bottom" || setup == "triple_bottom"
                        ? Params::Setup::kMultipleBottom
                    : setup == "opening_range" ? Params::Setup::kOpeningRange
-                                              : Params::Setup::kNarrowRange;
+                   : setup == "inverse_head_shoulders"
+                       ? Params::Setup::kInverseHeadShoulders
+                       : Params::Setup::kNarrowRange;
     params.bottoms = setup == "triple_bottom" ? 3 : 2;
     Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
     Take(p.Count("range_bars", params.range_bars), params.range_bars, error);

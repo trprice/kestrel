@@ -1070,6 +1070,69 @@ TEST(Breakout, ACloseOnLowVolumeIsNotABreakout) {
     EXPECT_TRUE(Backtest(BreakoutVolumes(), params).empty());
 }
 
+TEST(Breakout, AnInverseHeadAndShouldersBuysAboveItsNeckline) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kInverseHeadShoulders;
+    params.range_bars = 12;
+    params.swing_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    // Shoulders at 10 and 10.2, the head at 8, and a neckline falling from 15
+    // to 14 (0.25 a bar): 12.75 on the bar after the newest, under that bar's
+    // high of 12.9, which the entry goes above instead.
+    for (const auto& b :
+         std::vector<std::array<const char*, 4>>{{"13", "14", "12", "13"},
+                                                 {"12", "12", "10", "11"},
+                                                 {"11", "13", "11", "12"},
+                                                 {"13", "15", "13", "14"},
+                                                 {"14", "13", "11", "12"},
+                                                 {"12", "11", "8", "9"},
+                                                 {"9", "13", "10", "12"},
+                                                 {"12", "14", "12", "13"},
+                                                 {"13", "13", "11", "12"},
+                                                 {"12", "12", "10.2", "11"},
+                                                 {"11", "13", "11", "12"}}) {
+        context.Add(b);
+    }
+    Feed(strategy, context, {"12", "12.9", "12.5", "12.8"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("12.91"));
+    // Filled: the stop is under the head, 8 less 10 bps.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "12.91"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("7.99"));
+}
+
+TEST(Breakout, AnInverseHeadAndShouldersRoundsItsNecklineUpToTheTick) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kInverseHeadShoulders;
+    params.range_bars = 12;
+    params.swing_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    // A neckline rising from 14 to 15.01: 16.2725 at the next bar.
+    for (const auto& b :
+         std::vector<std::array<const char*, 4>>{{"13", "14", "12", "13"},
+                                                 {"12", "12", "10", "11"},
+                                                 {"11", "13", "11", "12"},
+                                                 {"13", "14", "13", "13.5"},
+                                                 {"13.5", "13", "11", "12"},
+                                                 {"12", "11", "8", "9"},
+                                                 {"9", "13", "10", "12"},
+                                                 {"12", "15.01", "12", "13"},
+                                                 {"13", "13", "11", "12"},
+                                                 {"12", "12", "10.2", "11"},
+                                                 {"11", "13", "11", "12"}}) {
+        context.Add(b);
+    }
+    Feed(strategy, context, {"12", "14", "12.5", "13.5"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("16.29"));  // 16.28 + tick
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -1103,6 +1166,10 @@ TEST(Breakout, RefusesBadParameters) {
     bad.range_bars = 7;  // a double at swing_bars 2 needs 8
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad.range_bars = 8;
+    EXPECT_NO_THROW(Breakout{bad});
+    bad.setup = BreakoutParams::Setup::kInverseHeadShoulders;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);  // needs 11
+    bad.range_bars = 11;
     EXPECT_NO_THROW(Breakout{bad});
     bad = Params();
     bad.reclaim_bars = 0;

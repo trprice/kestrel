@@ -117,6 +117,30 @@ std::optional<MultipleBottom> MultipleBottomOf(std::span<const types::Bar> bars,
                                                std::size_t strength,
                                                const types::Decimal& zone);
 
+// An inverse head-and-shoulders in the newest `n` bars: its newest three
+// swing lows (SwingPoints, `strength`), a swing high between each pair, the
+// middle one (the head) lower than the two beside it (the shoulders). The
+// neckline runs through the highest high between the left shoulder and the
+// head and the highest high between the head and the right shoulder, so it
+// may slope; the height is the neckline less the head, measured at the head.
+// The head must be below each shoulder by more than `zone` of the height (or
+// it is a triple bottom), and each shoulder at least half the height below
+// the neckline where it is. It has not broken out yet (no bar since the
+// neckline's second point went above the line; bars between its points may
+// rise above the chord, as a rally into a peak does) nor failed (none since the
+// right shoulder fell below it by more than the zone). Nullopt when it is not
+// one.
+struct InverseHeadShoulders {
+    PriceRange range;  // the neckline at the head, and the head
+    // The level to buy above: the neckline at the bar after the newest, or the
+    // newest bar's high if that is higher (a falling neckline can drop under
+    // the price before it is broken).
+    types::Decimal breakout;
+};
+std::optional<InverseHeadShoulders> InverseHeadShouldersOf(
+    std::span<const types::Bar> bars, std::size_t n, std::size_t strength,
+    const types::Decimal& zone);
+
 // The opening range: the high and low of a session's first `n` bars, answered
 // on the newest bar when it is the n-th to open at or after `start` (the
 // session's open), so once a session. The bar before them is needed to tell:

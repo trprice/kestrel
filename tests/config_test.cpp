@@ -654,6 +654,10 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     ASSERT_OK(triple);
     EXPECT_EQ((*triple)->Needs().warmup_bars, 60u);
     EXPECT_TRUE(make("setup='double_bottom'\n").has_value());
+    auto hs = make("setup='inverse_head_shoulders'\nrange_bars=40\n");
+    ASSERT_OK(hs);
+    EXPECT_EQ((*hs)->Needs().warmup_bars, 40u);
+    EXPECT_FALSE(make("setup='inverse_head_shoulders'\nrange_bars=10\n"));
     EXPECT_FALSE(make("swing_bars=0\n").has_value());
     auto opening =
         make("timeframe='5m'\nsetup='opening_range'\nopening_bars=3\n");

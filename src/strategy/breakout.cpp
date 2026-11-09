@@ -55,9 +55,11 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
     if (mParams.bottoms != 2 && mParams.bottoms != 3) {
         throw std::invalid_argument("bottoms must be 2 or 3");
     }
-    if (mParams.setup == BreakoutParams::Setup::kMultipleBottom &&
-        mParams.range_bars <
-            MultipleBottomBars(mParams.bottoms, mParams.swing_bars)) {
+    if ((mParams.setup == BreakoutParams::Setup::kMultipleBottom &&
+         mParams.range_bars <
+             MultipleBottomBars(mParams.bottoms, mParams.swing_bars)) ||
+        (mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders &&
+         mParams.range_bars < MultipleBottomBars(3, mParams.swing_bars))) {
         throw std::invalid_argument(
             "range_bars is too few to hold the bottoms at this swing_bars");
     }
@@ -95,7 +97,8 @@ Requirements Breakout::Needs() const {
         setup_bars = mParams.nr_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kRange ||
                mParams.setup == BreakoutParams::Setup::kRectangle ||
-               mParams.setup == BreakoutParams::Setup::kMultipleBottom) {
+               mParams.setup == BreakoutParams::Setup::kMultipleBottom ||
+               mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders) {
         setup_bars = mParams.range_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
         setup_bars = mParams.decline_bars + 2;
@@ -164,6 +167,14 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                 range = bottom->range;
             }
             break;
+        case BreakoutParams::Setup::kInverseHeadShoulders:
+            if (const auto hs = InverseHeadShouldersOf(bars, mParams.range_bars,
+                                                       mParams.swing_bars,
+                                                       mParams.touch_zone)) {
+                range = hs->range;
+                breakout = hs->breakout;
+            }
+            break;
         case BreakoutParams::Setup::kOpeningRange: {
             // Called only while the market is open (intraday bars), so a
             // session here is the current one.
@@ -195,7 +206,9 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     const Decimal one = Decimal::FromInt(1);
     Levels levels;
     levels.height = range->Height();
-    const Decimal level = breakout.value_or(range->high);
+    // On the tick already, except a sloping neckline.
+    const Decimal level =
+        breakout.value_or(range->high).RoundToIncrement(tick, Rounding::kUp);
     levels.high = level;
     levels.trigger = level + tick;
     if (mParams.confirm == BreakoutParams::Confirm::kPercent) {

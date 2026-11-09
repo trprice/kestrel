@@ -350,6 +350,102 @@ TEST(Patterns, OpeningRange) {
     EXPECT_FALSE(OpeningRangeOf(all.first(5), 0, open));
 }
 
+// Swing lows of 10 (the left shoulder), 8 (the head) and 10.2 (the right),
+// with peaks of 15 between: a flat neckline at 15, a height of 7, so the
+// zone of 0.1 is 0.7.
+std::vector<types::Bar> HeadShoulders() {
+    return {B("14", "12"),   B("12", "10"), B("13", "11"),
+            B("15", "13"),   B("13", "11"), B("11", "8"),
+            B("13", "10"),   B("15", "12"), B("13", "11"),
+            B("12", "10.2"), B("13", "11"), B("14", "12.5", "13.5")};
+}
+
+TEST(Patterns, InverseHeadShoulders) {
+    const auto hs = InverseHeadShouldersOf(HeadShoulders(), 12, 1, D("0.1"));
+    ASSERT_TRUE(hs.has_value());
+    EXPECT_EQ(hs->range.high, D("15"));
+    EXPECT_EQ(hs->range.low, D("8"));
+    EXPECT_EQ(hs->breakout, D("15"));
+    // A double bottom of the head and the right shoulder does not hold: they
+    // are 2.2 apart.
+    EXPECT_FALSE(MultipleBottomOf(HeadShoulders(), 12, 2, 1, D("0.1")));
+}
+
+TEST(Patterns, InverseHeadShouldersWithASlopingNeckline) {
+    // The second peak 14: the neckline falls 0.25 a bar, 14.5 at the head
+    // (a height of 6.5) and 12.75 at the bar after the newest, under the
+    // newest bar's high of 12.9, which is the level instead.
+    auto bars = HeadShoulders();
+    bars[7] = B("14", "12");
+    bars[11] = B("12.9", "12.5", "12.8");
+    const auto hs = InverseHeadShouldersOf(bars, 12, 1, D("0.1"));
+    ASSERT_TRUE(hs.has_value());
+    EXPECT_EQ(hs->range.high, D("14.5"));
+    EXPECT_EQ(hs->range.low, D("8"));
+    EXPECT_EQ(hs->breakout, D("12.9"));
+    bars[11] = B("12.7", "12.5", "12.6");
+    EXPECT_EQ(InverseHeadShouldersOf(bars, 12, 1, D("0.1"))->breakout,
+              D("12.75"));
+    // A newest bar's high of 13.1 is above the line there (13): broken.
+    bars[11] = B("13.1", "12.5", "13");
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+}
+
+TEST(Patterns, InverseHeadShouldersWithARisingNeckline) {
+    // The first peak 14 and the second 15.01: the neckline rises 0.2525 a
+    // bar, 14.505 at the head and 16.2725 at the bar after the newest.
+    auto bars = HeadShoulders();
+    bars[3] = B("14", "13");
+    bars[7] = B("15.01", "12");
+    const auto hs = InverseHeadShouldersOf(bars, 12, 1, D("0.1"));
+    ASSERT_TRUE(hs.has_value());
+    EXPECT_EQ(hs->range.high, D("14.505"));
+    EXPECT_EQ(hs->breakout, D("16.2725"));
+    // A rally into the second peak above the chord (14.7575 at the sixth)
+    // is part of the pattern, not a break.
+    bars[6] = B("14.9", "10");
+    EXPECT_TRUE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    // After the right shoulder, a bar above the line is (15.7675 at the
+    // tenth).
+    bars[10] = B("15.8", "11");
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+}
+
+TEST(Patterns, InverseHeadShouldersNeedsEachPart) {
+    auto bars = HeadShoulders();
+    bars[9] = B("12", "8.5");  // the right shoulder 0.5 over the head: < 0.7
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars[9] = B("12", "8.75");  // 0.75 over it
+    EXPECT_TRUE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars = HeadShoulders();
+    bars[1] = B("12", "8.5");  // the left shoulder 0.5 over the head
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars = HeadShoulders();
+    // A left shoulder of 12, 3 under the neckline: less than half of 7.
+    bars[0] = B("14", "12.5");
+    bars[1] = B("13", "12");
+    bars[2] = B("13.5", "12.5");
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars = HeadShoulders();
+    bars[11] = B("15.5", "12.5");  // already above the neckline
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars = HeadShoulders();
+    bars[11] = B("11", "9.4");  // under the right shoulder by more than 0.7
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars[11] = B("11", "9.6");  // a dip inside the zone
+    EXPECT_TRUE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    bars = HeadShoulders();
+    // A right shoulder of 12, 3 under the neckline: less than half of 7.
+    bars[8] = B("13.5", "12.5");
+    bars[9] = B("13", "12");
+    bars[10] = B("13.5", "12.5");
+    EXPECT_FALSE(InverseHeadShouldersOf(bars, 12, 1, D("0.1")).has_value());
+    // The left shoulder outside the window: two lows only.
+    EXPECT_FALSE(InverseHeadShouldersOf(HeadShoulders(), 8, 1, D("0.1")));
+    EXPECT_FALSE(InverseHeadShouldersOf(HeadShoulders(), 13, 1, D("0.1")));
+    EXPECT_FALSE(InverseHeadShouldersOf(HeadShoulders(), 0, 1, D("0.1")));
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};
