@@ -94,6 +94,8 @@ struct CommonSettings {
 //   taker_fee_bps = 40
 //   slippage_bps  = 5
 //   limit_fill_model = "cross"   # or "conservative"
+//   allow_short = false          # sells past the holding go short
+//   short_margin = 1.5           # collateral, times the short's value
 //   order_latency_ms  = 0        # orders and cancels reach the book later
 //   report_latency_ms = 0        # fills and order states are pushed later
 //

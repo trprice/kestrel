@@ -45,23 +45,32 @@ void PnlTracker::Apply(const types::Fill& fill) {
     Holding& holding = mHoldings[fill.symbol];
     const Decimal fee = FeeInQuote(fill);
 
-    if (fill.side == Side::kBuy) {
-        const Decimal quantity = holding.quantity + fill.quantity;
-        holding.average_price =
-            Decimal::Divide(holding.average_price * holding.quantity +
-                                fill.price * fill.quantity,
-                            quantity, kScale, Rounding::kNearest);
-        holding.quantity = quantity;
-        holding.realized = Round(holding.realized - fee);
-    } else {
-        const Decimal tracked = std::min(fill.quantity, holding.quantity);
-        holding.realized =
-            Round(holding.realized +
-                  (fill.price - holding.average_price) * tracked - fee);
-        holding.quantity -= tracked;
+    // Signed: what the fill adds to the position, and what of the position it
+    // closes first (a buy closes a short, a sell a long).
+    const bool buy = fill.side == Side::kBuy;
+    const Decimal open = buy ? -holding.quantity : holding.quantity;
+    Decimal closed = std::min(fill.quantity, std::max(open, Decimal()));
+    Decimal opened = fill.quantity - closed;
+    if (!buy && !mShorts && holding.quantity.Sign() >= 0) {
+        opened = Decimal();  // spot: an excess sale has no cost basis
+    }
+    Decimal gained = -fee;
+    if (closed.Sign() > 0) {
+        gained += (buy ? holding.average_price - fill.price
+                       : fill.price - holding.average_price) *
+                  closed;
+        holding.quantity += buy ? closed : -closed;
         if (holding.quantity.IsZero()) {
             holding.average_price = Decimal();
         }
+    }
+    holding.realized = Round(holding.realized + gained);
+    if (opened.Sign() > 0) {
+        const Decimal size = holding.quantity.Abs();
+        holding.average_price =
+            Decimal::Divide(holding.average_price * size + fill.price * opened,
+                            size + opened, kScale, Rounding::kNearest);
+        holding.quantity += buy ? opened : -opened;
     }
 }
 

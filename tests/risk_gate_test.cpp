@@ -609,4 +609,66 @@ TEST_F(RiskGateTest, QueriesAndCancelsPassThrough) {
     EXPECT_EQ(venue->cancel_all_calls, 1);
 }
 
+TEST_F(RiskGateTest, WithShortsAHaltLetsACoverThrough) {
+    limits.shorts = true;
+    venue->positions = {PositionOf("-2")};
+    Build();
+    ASSERT_OK(gate->Halt("test"));
+    ExpectRejected(Market(Side::kSell, "1"));   // deeper
+    ExpectRejected(Market(Side::kBuy, "2.5"));  // more than is short
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "2")));
+}
+
+TEST_F(RiskGateTest, WithoutShortsABuyNeverReducesAPosition) {
+    venue->positions = {PositionOf("-2")};
+    Build();
+    ASSERT_OK(gate->Halt("test"));
+    ExpectRejected(Market(Side::kBuy, "1"));
+}
+
+TEST_F(RiskGateTest, WithShortsPositionNotionalCountsAShort) {
+    limits.shorts = true;
+    limits.max_position_notional = D("1000");
+    venue->positions = {PositionOf("2")};
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    // Selling 12 leaves 10 short: 1,000, at the limit.
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "12")));
+    ExpectRejected(Market(Side::kSell, "12.01"));
+}
+
+TEST_F(RiskGateTest, WithShortsALosingCoverCountsAsALoss) {
+    limits.shorts = true;
+    limits.max_consecutive_losses = 1;
+    Build();  // starts flat
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("s1", Side::kSell, "1", "100", now)};
+    // A short sale is no loss, though it pays a fee.
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    now += std::chrono::seconds(1);
+    venue->fills.push_back(FillOf("b1", Side::kBuy, "1", "110", now));
+    ExpectRejected(Market(Side::kSell, "1"));
+}
+
+TEST_F(RiskGateTest, WithShortsTheVenuesLargerShortCounts) {
+    limits.shorts = true;
+    limits.max_position_notional = D("1000");
+    venue->positions = {PositionOf("-5")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "5")));  // 10 short
+    ExpectRejected(Market(Side::kSell, "5.01"));
+}
+
+TEST_F(RiskGateTest, WithShortsPositionNotionalNeverBlocksAnExit) {
+    limits.shorts = true;
+    limits.max_position_notional = D("100");
+    venue->positions = {PositionOf("50")};
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "50")));
+}
+
 }  // namespace

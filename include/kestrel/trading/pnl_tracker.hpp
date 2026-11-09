@@ -22,11 +22,18 @@ namespace kestrel::trading {
 //   - fees are realized when they are paid, buys included;
 //   - a sell of more than is held realizes nothing on the excess, which has no
 //     known cost basis.
+// With shorts, the excess is sold short instead: the position goes negative at
+// the sale's price (averaged with any short already open), a buy covers it,
+// realizing (average - price) on the quantity covered, and a buy of more than
+// is short goes long with the rest.
 // Fees are valued in the quote asset: a fee in the symbol's base asset is
 // converted at the fill price, and any other fee asset is taken as quote.
 // Amounts are kept to 8 decimal places. Not thread-safe.
 class PnlTracker {
    public:
+    PnlTracker() = default;
+    explicit PnlTracker(bool shorts) : mShorts(shorts) {}
+
     // Forgets everything and takes `positions` as the starting holdings, each
     // at its average price. Realized P&L restarts at zero.
     void Reset(const std::vector<types::Position>& positions);
@@ -42,8 +49,9 @@ class PnlTracker {
     types::Decimal Realized(const types::Symbol& symbol) const;
     types::Decimal Held(const types::Symbol& symbol) const;
 
-    // Every symbol seen, flat ones included, as quantity held, average price
-    // of that quantity (zero when flat) and realized P&L.
+    // Every symbol seen, flat ones included, as quantity held (negative when
+    // short), average price of that quantity (zero when flat) and realized
+    // P&L.
     std::vector<types::Position> Positions() const;
 
    private:
@@ -53,6 +61,7 @@ class PnlTracker {
         types::Decimal realized;
     };
     std::map<types::Symbol, Holding> mHoldings;
+    bool mShorts = false;
 };
 
 }  // namespace kestrel::trading

@@ -210,4 +210,29 @@ TEST_F(PaperReconciliationTest, MatchesTheCashBalanceOnceThePositionIsClosed) {
     EXPECT_TRUE(tracker.Realized().IsNegative());
 }
 
+TEST(PnlTrackerTest, WithoutShortsAnExcessSaleIsNotAShort) {
+    PnlTracker t;
+    t.Apply(F(Side::kBuy, "1", "100"));
+    t.Apply(F(Side::kSell, "3", "110"));
+    EXPECT_EQ(t.Held("BTC/USD"), D("0"));
+    EXPECT_EQ(t.Realized(), D("10"));
+}
+
+TEST(PnlTrackerTest, WithShortsASaleBeyondTheHoldingGoesShort) {
+    PnlTracker t(/*shorts=*/true);
+    t.Apply(F(Side::kBuy, "1", "100"));
+    t.Apply(F(Side::kSell, "3", "110"));  // +10 on the long, then 2 short
+    EXPECT_EQ(t.Held("BTC/USD"), D("-2"));
+    EXPECT_EQ(t.Realized(), D("10"));
+    t.Apply(F(Side::kSell, "2", "120"));  // average 115
+    EXPECT_EQ(t.Positions().front().average_price, D("115"));
+    t.Apply(F(Side::kBuy, "1", "105", "1"));  // +10, less the fee
+    EXPECT_EQ(t.Held("BTC/USD"), D("-3"));
+    EXPECT_EQ(t.Realized(), D("19"));
+    t.Apply(F(Side::kBuy, "4", "125"));  // -30 on the cover, then 1 long
+    EXPECT_EQ(t.Held("BTC/USD"), D("1"));
+    EXPECT_EQ(t.Positions().front().average_price, D("125"));
+    EXPECT_EQ(t.Realized(), D("-11"));
+}
+
 }  // namespace

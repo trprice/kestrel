@@ -277,7 +277,8 @@ class ConfigParser {
                     {"initial_balances", "maker_fee_bps", "taker_fee_bps",
                      "slippage_bps", "default_quote_asset",
                      "cap_limit_fills_at_quote_size", "order_latency_ms",
-                     "report_latency_ms", "limit_fill_model"});
+                     "report_latency_ms", "limit_fill_model", "allow_short",
+                     "short_margin"});
                 !ok) {
                 return std::unexpected(ok.error());
             }
@@ -318,6 +319,26 @@ class ConfigParser {
             }
             if (const auto v = paper->get("cap_limit_fills_at_quote_size")) {
                 p.cap_limit_fills_at_quote_size = v->value_or(false);
+            }
+            if (const auto v = paper->get("allow_short")) {
+                if (!v->is_boolean()) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[paper] allow_short must be true or "
+                                     "false");
+                }
+                p.allow_short = v->value_or(false);
+            }
+            if (const auto* node = paper->get("short_margin")) {
+                auto margin = NumberNode(*node, "short_margin");
+                if (!margin) {
+                    return std::unexpected(margin.error());
+                }
+                if (*margin < Decimal::FromInt(1)) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[paper] short_margin must be at least 1 "
+                                     "(the short's own proceeds)");
+                }
+                p.short_margin = *margin;
             }
             for (const auto& [key, latency] :
                  {std::pair{"order_latency_ms", &p.order_latency},

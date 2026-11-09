@@ -580,6 +580,11 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
          params.target_multiple, error);
     Take(p.Flag("resting_target", params.resting_target), params.resting_target,
          error);
+    std::string direction = "long";
+    Take(p.Word("direction", direction, {"long", "short"}), direction, error);
+    params.direction = direction == "short" ? Params::Direction::kShort
+                                            : Params::Direction::kLong;
+    Take(p.Flag("reverse", params.reverse), params.reverse, error);
     Take(p.Count("arm_bars", params.arm_bars), params.arm_bars, error);
     Take(p.Whole("max_hold_bars", params.max_hold_bars), params.max_hold_bars,
          error);
@@ -833,6 +838,9 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
 
     strategy::RunnerOptions options;
     options.risk = *limits;
+    if (options.risk && cfg.GetMode() == config::Mode::kPaper) {
+        options.risk->shorts = cfg.GetPaperOptions().allow_short;
+    }
     options.cancel_entries_on_stop = true;
     if (cfg.GetRecording().enabled) {
         auto log = make_log(cfg, strategy_name,

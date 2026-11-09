@@ -40,7 +40,8 @@ RiskGatedVenue::RiskGatedVenue(std::shared_ptr<TradingVenue> venue,
                                std::function<types::Timestamp()> clock)
     : mVenue(std::move(venue)),
       mLimits(std::move(limits)),
-      mClock(std::move(clock)) {}
+      mClock(std::move(clock)),
+      mPnl(mLimits.shorts) {}
 
 void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
                                         const Decimal& price) {
@@ -137,10 +138,16 @@ types::Result<void> RiskGatedVenue::CatchUpFills(types::Timestamp now) {
             NewDay(DayOf(fill.time));
         }
         const Decimal before = mPnl.Realized(fill.symbol);
+        const Decimal held = mPnl.Held(fill.symbol);
         mPnl.Apply(fill);
         const Decimal gained = mPnl.Realized(fill.symbol) - before;
         mTotalRealized += gained;
-        if (fill.side == Side::kSell) {
+        // With shorts, the fills that close a position: a sell of a long, a
+        // buy of a short (a short sale realizes only its fee).
+        const bool closing = fill.side == Side::kSell
+                                 ? !mLimits.shorts || held.Sign() > 0
+                                 : mLimits.shorts && held.IsNegative();
+        if (closing) {
             mConsecutiveLosses = gained.Sign() < 0 ? mConsecutiveLosses + 1 : 0;
         }
         mFillCursor = std::max(mFillCursor, fill.time);
@@ -297,7 +304,14 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
         held = Held(*fetched, request.symbol);
         auto caught = caught_up ? types::Result<void>{} : CatchUpFills(now);
         if (caught) {
-            held = std::max(held, mPnl.Held(request.symbol));
+            // With shorts, the larger position either way (the venue's on a
+            // tie).
+            const Decimal seen = mPnl.Held(request.symbol);
+            if (!mLimits.shorts) {
+                held = std::max(held, seen);
+            } else if (seen.Abs() > held.Abs()) {
+                held = seen;
+            }
         } else if (!blocked) {
             return Reject("could not read fills: " + caught.error().ToString());
         } else {
@@ -309,8 +323,9 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
                 caught.error().ToString());
         }
     }
-    const bool reduces =
-        request.side == Side::kSell && request.quantity <= held;
+    const bool reduces = request.side == Side::kSell
+                             ? request.quantity <= held
+                             : mLimits.shorts && request.quantity <= -held;
     if (blocked && !reduces) {
         return Reject(*blocked);
     }
@@ -346,11 +361,16 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
                               " exceeds limit " +
                               mLimits.max_order_notional->ToString());
             }
-            if (mLimits.max_position_notional && request.side == Side::kBuy) {
-                Decimal quantity = held + request.quantity;
+            // A buy adds to a long; with shorts, a sale past what is held
+            // adds to a short.
+            const bool buy = request.side == Side::kBuy;
+            if (mLimits.max_position_notional &&
+                (buy || (mLimits.shorts && !reduces))) {
+                Decimal quantity =
+                    buy ? held + request.quantity : request.quantity - held;
                 for (const auto& order : open) {
                     if (order.symbol == request.symbol &&
-                        order.side == Side::kBuy) {
+                        order.side == request.side) {
                         quantity += order.quantity - order.filled_quantity;
                     }
                 }

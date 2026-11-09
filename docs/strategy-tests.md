@@ -121,6 +121,12 @@ The seven pairs on 1h bars, about $1,000 a trade.
   from +1,386 to +832, though slightly more trades won. Selling on the
   close past the target catches the bars that close well beyond it; a
   limit stops at the target.
+- **Shorts** (`direction = "short"`, with `[paper] allow_short`): `range`
+  +937 (725 trades, ZEC +937 and HYPE −509), the double top +367, the
+  descending triangle +724 and the falling symmetrical triangle +140,
+  against +4,677, +1,386, −34 and +1,187 for the long side.
+- **Stop-and-reverse** (`reverse`): `range` +5,541 on 895 trades against
+  +4,677, 6 of 7 pairs better; the double bottom +1,183 against +1,386.
 - **ATR stop** (`atr_stop`, 14-bar ATR under the broken level, instead of
   the setup's low): 1.5 ATRs +4,571, 2 ATRs +4,935, 3 ATRs +5,053, against
   +4,677 for the setup-low stop. 2 and 3 ATRs cut the worst drawdown from
@@ -221,6 +227,15 @@ Does the early part of the day predict its last half-hour?
 - **Resting target, same 33 symbols, daily:** the double bottom went from
   +0.69% to +0.62% a trade, the ascending triangle from +1.67% to +1.27%,
   for the same reason as on crypto.
+- **Shorts, same 33 symbols, daily** (each setup upside down; no borrow
+  fee): lost on all but one. Double top −0.42% a trade (254 trades),
+  descending triangle −1.32% (278), falling symmetrical triangle −1.02%
+  (475), inverted cup −0.97% (152). The head-and-shoulders top made +0.77%
+  (71), all of it since 2022 (−1.70% in 2016–2021, +3.96% since). Over a
+  rising decade the shorts mostly paid for the market's drift.
+- **Stop-and-reverse, same 33 symbols, daily:** it lowered every result:
+  the double bottom from +0.69% to +0.17% a trade (the reversed shorts
+  −0.94%), the ascending triangle from +1.67% to +0.85% (shorts −0.37%).
 - **Double bottom on 1m, 5m and 15m (Sep 22 – Nov 6):** negative at every
   bar size: −0.05% to −0.21% a trade with each stock's estimated spread.
   The patterns are tiny, and the stop sits about twice as far as the

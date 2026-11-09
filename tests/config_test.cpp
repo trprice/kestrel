@@ -57,6 +57,27 @@ TEST(Config, LimitFillModelDefaultsToCrossAndAcceptsConservative) {
                      .has_value());
 }
 
+TEST(Config, PaperShortingIsOffByDefaultAndTakesAMargin) {
+    auto def = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
+    ASSERT_OK(def);
+    EXPECT_FALSE(def->GetPaperOptions().allow_short);
+    EXPECT_EQ(def->GetPaperOptions().short_margin, D("1.5"));
+
+    const std::string base = kKrakenToml;
+    auto set = config::KrakenConfiguration::Parse(
+        base + "allow_short = true\nshort_margin = 2\n", NoEnv());
+    ASSERT_OK(set);
+    EXPECT_TRUE(set->GetPaperOptions().allow_short);
+    EXPECT_EQ(set->GetPaperOptions().short_margin, D("2"));
+
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "short_margin = 0.9\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "allow_short = \"yes\"\n", NoEnv())
+                     .has_value());
+}
+
 TEST(Config, PaperLatencyDefaultsToNone) {
     auto def = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
     ASSERT_OK(def);
@@ -663,6 +684,8 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_EQ((*tri)->Needs().warmup_bars, 30u);
     EXPECT_TRUE(make("setup='ascending_triangle'\n").has_value());
     EXPECT_TRUE(make("resting_target=true\n").has_value());
+    EXPECT_TRUE(make("direction='short'\nreverse=true\n").has_value());
+    EXPECT_FALSE(make("direction='both'\n").has_value());
     auto cup = make("setup='cup_handle'\nrange_bars=120\n");
     ASSERT_OK(cup);
     EXPECT_EQ((*cup)->Needs().warmup_bars, 120u);

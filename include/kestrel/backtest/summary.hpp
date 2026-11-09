@@ -93,10 +93,11 @@ struct BacktestSummary {
     types::Decimal volume;  // sum of price * quantity
     types::Decimal fees;    // in the quote asset (a base-asset fee at its fill
                             // price)
-    // Sells of something held, and those whose realized P&L (fee included)
-    // was above zero: the rule RiskGatedVenue counts losing sells by.
-    std::size_t closing_sells = 0;
-    std::size_t winning_sells = 0;
+    // Fills that close (part of) a position, a sell of something held or a
+    // buy covering a short, and those whose realized P&L (fee included) was
+    // above zero: the rule RiskGatedVenue counts losing sells by.
+    std::size_t closing_fills = 0;
+    std::size_t winning_fills = 0;
 
     // At the fill, after each of SummaryBuilder::kMarkoutHorizons, and at
     // the end.

@@ -92,6 +92,20 @@ struct PaperOptions {
     // positions are unaffected.
     std::size_t max_fills = 0;
     std::size_t max_closed_orders = 0;
+    // Short selling, for paper runs and backtests (no live venue here
+    // supports it). A sell of more than the free base asset is a short sale:
+    // the base balance goes below zero, and the sale's proceeds and more stay
+    // locked in the quote asset as collateral, short_margin times what the
+    // short sold for (1.5: Reg T's 150%, the proceeds and half as much
+    // again). Placing the sale reserves the part its proceeds will not cover,
+    // and at its fill the order is cancelled if that is no longer free. A buy
+    // of no more than the short not yet covered by other buys reserves
+    // nothing in the quote asset: it is paid from the collateral, released in
+    // proportion to what it covers. There is no borrow fee and no margin
+    // call: a short that rises past its collateral leaves the quote balance
+    // short of what is locked, or below zero once covered.
+    bool allow_short = false;
+    types::Decimal short_margin{15, 1};
 };
 
 // Simulated venue that works with any DataSource. Nothing fills while the
@@ -105,9 +119,11 @@ struct PaperOptions {
 //           PaperOptions::limit_fill_model says it would have been reached
 //   stop    a stop-market: once the touch reaches the stop price it becomes a
 //           market order
-// Spot only: no shorting and no leverage. Buys reserve quote asset (including
-// worst-case fees) and sells reserve base asset, so Balance.locked reflects
-// open orders. Fees are charged in the quote asset.
+// Spot, unless PaperOptions::allow_short; no leverage. Buys reserve quote asset
+// (including worst-case fees) and sells reserve base asset, so Balance.locked
+// reflects open orders (and a short's collateral). Fees are charged in the
+// quote asset. A short shows as a negative balance of the base asset and a
+// negative position.
 //
 // Thread-safe. Quotes typically arrive on the data source's WebSocket thread
 // while strategies call the TradingVenue API from other threads; one mutex
@@ -225,7 +241,12 @@ class PaperTradingVenue : public TradingVenue {
                                types::Timestamp now) const;
     // Whether `order` is post-only and would take at `quote`.
     bool WouldTake(const Order& order, const types::Quote* quote) const;
-    types::Result<void> CheckFunds(const std::string& asset,
+    // The book `order`'s reserve is held in: mCovering for a buy covering a
+    // short, otherwise mLocked.
+    std::map<std::string, types::Decimal>& Locks(const Order& order);
+    // What is free for `order`'s reserve.
+    types::Decimal Free(const Order& order) const;
+    types::Result<void> CheckFunds(const Order& order,
                                    const types::Decimal& needed);
     std::string NextOrderId();
     // Reserves for and books an order with its ID, sending it on its way with
@@ -287,6 +308,10 @@ class PaperTradingVenue : public TradingVenue {
     std::deque<std::string> mClosed;
     std::map<std::string, types::Decimal> mTotal;
     std::map<std::string, types::Decimal> mLocked;
+    // allow_short, by base asset: the short reserved by open covering buys,
+    // and the collateral (in the quote asset, in mLocked) its short holds.
+    std::map<std::string, types::Decimal> mCovering;
+    std::map<std::string, types::Decimal> mCollateral;
     PnlTracker mPnl;  // positions and realized P&L, from the fills
     std::map<types::Symbol, types::Quote> mQuotes;
     std::uint64_t mNextOrder = 1;

@@ -1407,4 +1407,238 @@ TEST(PaperLimit, ADeferredOrderCancelledBeforeItsQuoteIsReleasedOnce) {
     EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kCancelled);
 }
 
+// Shorting, without fees or slippage to keep the sums plain.
+void AllowShort(Fixture& f) {
+    f.options.allow_short = true;
+    f.options.maker_fee_rate = D("0");
+    f.options.taker_fee_rate = D("0");
+    f.options.slippage = D("0");
+}
+
+types::Position PositionOf(trading::TradingVenue& v) {
+    auto positions = v.GetPositions();
+    EXPECT_TRUE(positions.has_value());
+    for (const auto& p : *positions) {
+        if (p.symbol == "BTC/USD") {
+            return p;
+        }
+    }
+    return {};
+}
+
+TEST(PaperShort, WithoutAllowShortASaleNeedsTheAsset) {
+    Fixture f;
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto ack = venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1"));
+    ASSERT_FALSE(ack.has_value());
+    EXPECT_EQ(ack.error().category, ErrorCategory::kInsufficientFunds);
+}
+
+TEST(PaperShort, ASaleOfWhatIsNotHeldGoesShortAgainstCollateral) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto ack = venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1"));
+    ASSERT_TRUE(ack.has_value()) << ack.error().ToString();
+    EXPECT_EQ(ack->state, OrderState::kFilled);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.1"));
+    // The proceeds and half as much again are held.
+    EXPECT_EQ(Bal(*venue, "USD").total, D("15000"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+    const auto position = PositionOf(*venue);
+    EXPECT_EQ(position.quantity, D("-0.1"));
+    EXPECT_EQ(position.average_price, D("50000"));
+}
+
+TEST(PaperShort, ACoveringBuyIsPaidFromTheCollateral) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    // A buy-stop covering it reserves no cash: the short is behind it.
+    auto stop = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kStop, "0.1", nullptr, "51000"));
+    ASSERT_TRUE(stop.has_value()) << stop.error().ToString();
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+    venue->OnQuote(Q("50990.0", "51000.0"));
+    EXPECT_EQ(venue->GetOrder(stop->order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0"));
+    EXPECT_EQ(Bal(*venue, "USD").total, D("9900"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+    auto positions = venue->GetPositions();
+    ASSERT_TRUE(positions.has_value());
+    EXPECT_TRUE(positions->empty());  // flat
+}
+
+TEST(PaperShort, APartCoverReleasesItsShareOfTheCollateral) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.2")));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("15000"));
+    venue->OnQuote(Q("48990.0", "49000.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.1")));
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.1"));
+    EXPECT_EQ(Bal(*venue, "USD").total, D("15100"));  // 20000 - 4900
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+    const auto position = PositionOf(*venue);
+    EXPECT_EQ(position.quantity, D("-0.1"));
+    EXPECT_EQ(position.average_price, D("50000"));
+    EXPECT_EQ(position.realized_pnl, D("100"));
+}
+
+TEST(PaperShort, ASaleBeyondTheHoldingSellsItAndShortsTheRest) {
+    Fixture f;
+    AllowShort(f);
+    f.options.initial_balances["BTC"] = D("0.05");
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.05"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("3750"));  // for the short only
+}
+
+TEST(PaperShort, AShortNeedsCollateral) {
+    Fixture f;
+    AllowShort(f);
+    f.options.initial_balances = {{"USD", D("1000")}};
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    // 0.1 at 50,000 holds 7,500, of which its own proceeds are 5,000.
+    auto ack = venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1"));
+    ASSERT_FALSE(ack.has_value());
+    EXPECT_EQ(ack.error().category, ErrorCategory::kInsufficientFunds);
+    EXPECT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.04")));
+}
+
+TEST(PaperShort, AShortSaleIsCancelledIfTheMarginIsGoneAtItsFill) {
+    Fixture f;
+    AllowShort(f);
+    f.options.initial_balances = {{"USD", D("2600")}};
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    venue->SetDeferMatching(true);
+    // Reserves 2,500 at this bid; at the next quote's, 60,000, the short
+    // needs 9,000 held, 3,000 more than its proceeds.
+    auto ack = venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1"));
+    ASSERT_TRUE(ack.has_value()) << ack.error().ToString();
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("2500"));
+    venue->SetDeferMatching(false);
+    venue->OnQuote(Q("60000.0", "60010.0"));
+    auto order = venue->GetOrder(ack->order_id);
+    ASSERT_TRUE(order.has_value());
+    EXPECT_EQ(order->state, OrderState::kCancelled);
+    EXPECT_EQ(order->reason, "insufficient margin at fill time");
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0"));
+}
+
+TEST(PaperShort, OnlyTheShortNotYetCoveredBacksABuy) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    ASSERT_TRUE(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kStop, "0.1", nullptr, "52000")));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+    // A second cover of the same short is an ordinary buy, paid in cash.
+    ASSERT_TRUE(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "48000")));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("12300"));
+}
+
+TEST(PaperShort, ABuyPairCoversAShort) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    types::OcoRequest pair = SellOco("0.1", "48000", "52000");
+    pair.side = Side::kBuy;
+    auto ack = venue->PlaceOco(pair);
+    ASSERT_TRUE(ack.has_value()) << ack.error().ToString();
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+    venue->OnQuote(Q("47980.0", "47990.0"));
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state, OrderState::kExpired);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0"));
+    EXPECT_EQ(Bal(*venue, "USD").total, D("10200"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+}
+
+TEST(PaperShort, ACancelledCoverFreesTheShortForAnother) {
+    Fixture f;
+    AllowShort(f);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    auto stop = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kStop, "0.1", nullptr, "52000"));
+    ASSERT_TRUE(stop.has_value());
+    EXPECT_EQ(venue->CancelOrder(stop->order_id), CancelOutcome::kCancelled);
+    ASSERT_TRUE(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kStop, "0.1", nullptr, "51000")));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("7500"));
+}
+
+TEST(PaperShort, ACoverFillingPastTheShortIsCheckedLikeABuy) {
+    Fixture f;
+    AllowShort(f);
+    f.options.initial_balances = {{"USD", D("4000")}};
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1")));
+    // A covers the whole short; B, an ordinary buy, covers some first.
+    auto a = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kStop, "0.1", nullptr, "80000"));
+    ASSERT_TRUE(a.has_value()) << a.error().ToString();
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.02")));
+    // A would now buy 0.02 past the short. Checked as a buy, its 8,000 is
+    // more than the 7,999.80 of cash and released collateral: cancelled.
+    venue->OnQuote(Q("79990.0", "80000.0"));
+    EXPECT_EQ(venue->GetOrder(a->order_id)->state, OrderState::kCancelled);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.08"));
+}
+
+TEST(PaperShort, APlainSaleThatDeepensAShortNeedsMarginToo) {
+    Fixture f;
+    AllowShort(f);
+    f.options.initial_balances = {{"USD", D("2000")}, {"BTC", D("0.05")}};
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    // B, a plain sell-stop, holds the 0.05; A, a short sale, then sells 0.08
+    // at once, short 0.03 with 2,250 held.
+    auto b = venue->PlaceOrder(
+        Order(Side::kSell, OrderType::kStop, "0.05", nullptr, "49000"));
+    ASSERT_TRUE(b.has_value()) << b.error().ToString();
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.08")));
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.03"));
+    // A resting buy takes most of the 3,750 free.
+    ASSERT_TRUE(venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.087", "40000")));
+    // B would short 0.05 more at 49,000: 3,675 held, against its 2,450 of
+    // proceeds and the 270 free.
+    venue->OnQuote(Q("49000.0", "49010.0"));
+    auto order = venue->GetOrder(b->order_id);
+    EXPECT_EQ(order->state, OrderState::kCancelled);
+    EXPECT_EQ(order->reason, "insufficient margin at fill time");
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.03"));
+}
+
 }  // namespace

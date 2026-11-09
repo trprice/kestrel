@@ -27,7 +27,9 @@ bool ClosedShort(const types::OrderStatus& status) {
 
 }  // namespace
 
-Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
+Breakout::Breakout(BreakoutParams params)
+    : mParams(std::move(params)),
+      mShort(mParams.direction == BreakoutParams::Direction::kShort) {
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -233,7 +235,6 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
         return std::nullopt;
     }
     const Decimal& tick = info->tick_size;
-    const Decimal one = Decimal::FromInt(1);
     Levels levels;
     levels.height = range->Height();
     // On the tick already, except a sloping neckline.
@@ -245,15 +246,16 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
         const Decimal raise =
             Decimal::Divide(mParams.confirm_percent, Decimal::FromInt(100), 8,
                             Rounding::kNearest);
-        levels.trigger = std::max(
-            levels.trigger,
-            (level * (one + raise)).RoundToIncrement(tick, Rounding::kUp));
+        levels.trigger = std::max(levels.trigger,
+                                  (level + level.Abs() * raise)
+                                      .RoundToIncrement(tick, Rounding::kUp));
     }
     const Decimal buffer =
         Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
                         Rounding::kNearest);
-    levels.stop = (floor.value_or(range->low) * (one - buffer))
-                      .RoundToIncrement(tick, Rounding::kDown);
+    const Decimal base = floor.value_or(range->low);
+    levels.stop =
+        (base - base.Abs() * buffer).RoundToIncrement(tick, Rounding::kDown);
     if (mParams.atr_stop.Sign() > 0) {
         const auto atr = Atr(bars, mParams.atr_bars);
         if (!atr || atr->Sign() <= 0) {
@@ -265,7 +267,7 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
         }
         levels.stop = (level - mParams.atr_stop * *atr)
                           .RoundToIncrement(tick, Rounding::kDown);
-        if (levels.stop.Sign() <= 0) {
+        if (Mirror(levels.stop).Sign() <= 0) {
             return std::nullopt;  // the ATR is wider than the price
         }
     }
@@ -273,10 +275,11 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
 }
 
 void Breakout::OnBar(Context& context, const types::Symbol& symbol,
-                     types::Timeframe timeframe, const types::Bar& bar) {
+                     types::Timeframe timeframe, const types::Bar& raw) {
     if (symbol != mParams.symbol || timeframe != mParams.timeframe) {
         return;
     }
+    const types::Bar bar = Mirror(raw);
     switch (mState) {
         case State::kArmed:
             // Zero already: an earlier cancel failed, or the venue said the
@@ -392,7 +395,7 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
     if (!open && !CarriesOver()) {
         return;
     }
-    const auto levels = FindSetup(context, context.Bars(symbol, timeframe));
+    const auto levels = FindSetup(context, Bars(context));
     if (!levels) {
         return;
     }
@@ -460,7 +463,7 @@ void Breakout::ArmThrowback(Context& context) {
     request.post_only = true;
     if (auto id = Place(context, request, "throwback limit")) {
         spdlog::info("breakout: {} throwback limit at {}", mParams.symbol,
-                     mLevels->high.ToString());
+                     Price(mLevels->high));
         mDue = Due::kThrowback;
         mEntryId = *id;
         mState = State::kArmed;
@@ -490,21 +493,24 @@ void Breakout::GoLong(Context& context) {
     mEntryId.clear();
     mTarget.reset();
     mRisk = mEntryPrice - mLevels->stop;
+    mFirstStop = mLevels->stop;
     mStopMoved = false;
     mTargetHit = false;
     mTargetRefused = false;
     if (mParams.target_multiple.Sign() > 0) {
         mTarget = mEntryPrice + mParams.target_multiple * mLevels->height;
     }
-    spdlog::info("breakout: long {} {} at {}; stop {}, target {}",
-                 mHeld.ToString(), mParams.symbol, mEntryPrice.ToString(),
-                 mLevels->stop.ToString(),
-                 mTarget ? mTarget->ToString() : std::string("none"));
+    spdlog::info("breakout: {} {} {} at {}; stop {}, target {}",
+                 mShort ? "short" : "long", mHeld.ToString(), mParams.symbol,
+                 Price(mEntryPrice), Price(mLevels->stop),
+                 mTarget ? Price(*mTarget) : std::string("none"));
     PlaceStop(context);
 }
 
 void Breakout::GoFlat() {
     mState = State::kFlat;
+    mShort = mParams.direction == BreakoutParams::Direction::kShort;
+    mReversal = false;
     mStopMoved = false;
     mExitDue = nullptr;
     mLevels.reset();
@@ -540,10 +546,10 @@ void Breakout::PlaceStop(Context& context) {
     if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused) {
         types::OcoRequest pair;
         pair.symbol = mParams.symbol;
-        pair.side = Side::kSell;
+        pair.side = mShort ? Side::kBuy : Side::kSell;
         pair.quantity = mHeld;
-        pair.limit_price = *mTarget;
-        pair.stop_price = mLevels->stop;
+        pair.limit_price = Mirror(*mTarget);
+        pair.stop_price = Mirror(mLevels->stop);
         auto ack = context.Venue().PlaceOco(pair);
         if (ack && types::IsActive(ack->limit.state) &&
             types::IsActive(ack->stop.state)) {
@@ -593,7 +599,7 @@ void Breakout::PlaceStop(Context& context) {
             spdlog::warn(
                 "breakout: {}'s target {} cannot rest with the stop: {}; "
                 "selling on a close past it instead",
-                mParams.symbol, mTarget->ToString(), ack.error().ToString());
+                mParams.symbol, Price(*mTarget), ack.error().ToString());
             mTargetRefused = true;
         }
     }
@@ -635,7 +641,7 @@ bool Breakout::VolumeConfirms(Context& context, const types::Bar& bar) const {
         spdlog::info(
             "breakout: {} closed above {} on {} volume, under {}x the average "
             "of {}; not counted",
-            mParams.symbol, mLevels->trigger.ToString(),
+            mParams.symbol, Price(mLevels->trigger),
             bar.volume.Normalized().ToString(),
             mParams.volume_ratio.Normalized().ToString(),
             average.Normalized().ToString());
@@ -664,13 +670,12 @@ void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
         }
     }
     if (mParams.trail_bars > 0) {
-        const auto bars = context.Bars(mParams.symbol, mParams.timeframe);
-        if (const auto range = RangeOf(bars, mParams.trail_bars)) {
+        if (const auto range = RangeOf(Bars(context), mParams.trail_bars)) {
             const Decimal& low = range->low;
             const Decimal buffer =
                 Decimal::Divide(mParams.stop_buffer_bps,
                                 Decimal::FromInt(10000), 8, Rounding::kNearest);
-            const Decimal trail = (low * (Decimal::FromInt(1) - buffer))
+            const Decimal trail = (low - low.Abs() * buffer)
                                       .RoundToIncrement(tick, Rounding::kDown);
             if (trail > level) {
                 level = trail;
@@ -680,9 +685,9 @@ void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
     }
     // A sell-stop at or above the price would sell at once.
     if (why && level < bar.close) {
-        spdlog::info("breakout: {} stop raised from {} to {} ({})",
-                     mParams.symbol, mLevels->stop.ToString(), level.ToString(),
-                     why);
+        spdlog::info("breakout: {} stop {} from {} to {} ({})", mParams.symbol,
+                     mShort ? "lowered" : "raised", Price(mLevels->stop),
+                     Price(level), why);
         mLevels->stop = level;
         mStopMoved = true;
     }
@@ -774,8 +779,17 @@ void Breakout::Disarm(Context& context) {
 }
 
 std::optional<std::string> Breakout::Place(Context& context,
-                                           const types::OrderRequest& request,
+                                           types::OrderRequest request,
                                            const char* what) {
+    if (mShort) {
+        request.side = request.side == Side::kBuy ? Side::kSell : Side::kBuy;
+        if (request.limit_price) {
+            request.limit_price = -*request.limit_price;
+        }
+        if (request.stop_price) {
+            request.stop_price = -*request.stop_price;
+        }
+    }
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
         spdlog::warn("breakout: {} for {} failed: {}", what, mParams.symbol,
@@ -792,9 +806,21 @@ std::optional<std::string> Breakout::Place(Context& context,
     return ack->order_id;
 }
 
-void Breakout::OnFill(Context& context, const types::Fill& fill) {
-    if (fill.symbol != mParams.symbol) {
+void Breakout::OnFill(Context& context, const types::Fill& raw) {
+    if (raw.symbol != mParams.symbol) {
         return;
+    }
+    if (std::ranges::find(mFailedOrders, raw.order_id) != mFailedOrders.end()) {
+        spdlog::error(
+            "breakout: late fill of {} {} ({}) from the trade reversed; not "
+            "counted",
+            raw.quantity.ToString(), mParams.symbol, raw.order_id);
+        return;
+    }
+    types::Fill fill = raw;  // in the trade's terms
+    if (mShort) {
+        fill.side = fill.side == Side::kBuy ? Side::kSell : Side::kBuy;
+        fill.price = -fill.price;
     }
     if (fill.side == Side::kBuy) {
         if (mState == State::kLong) {
@@ -851,6 +877,16 @@ void Breakout::OnFill(Context& context, const types::Fill& fill) {
         }
     }
     if (selling && mHeld.Sign() == 0) {
+        // A failed breakout: the stop, never moved, closed all of it.
+        const bool reverse = mParams.reverse && !mReversal &&
+                             fill.order_id == mStopId && !mTargetHit &&
+                             mState == State::kLong && mLevels &&
+                             mLevels->stop == mFirstStop;
+        const std::optional<Levels> failed = mLevels;
+        if (reverse) {
+            mFailedOrders = {mStopId, mTargetId, mExitId};
+            std::erase(mFailedOrders, std::string());
+        }
         // Sold out, by the stop, the target or the exit: the others must not
         // sell too (the exit's cancel of the stop may not have landed yet).
         if (fill.order_id != mStopId) {
@@ -863,7 +899,65 @@ void Breakout::OnFill(Context& context, const types::Fill& fill) {
             CancelOther(context, mExitId, "exit");
         }
         GoFlat();
+        if (reverse) {
+            Reverse(context, *failed);
+        }
     }
+}
+
+void Breakout::Reverse(Context& context, const Levels& failed) {
+    auto info = context.SymbolInfo(mParams.symbol);
+    if (!info) {
+        spdlog::warn("breakout: cannot reverse {}: no symbol info: {}",
+                     mParams.symbol, info.error().ToString());
+        return;
+    }
+    const Decimal buffer =
+        Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
+                        Rounding::kNearest);
+    // In the failed trade's terms: beyond the level it broke.
+    const Decimal beyond =
+        (failed.high + failed.high.Abs() * buffer)
+            .RoundToIncrement(info->tick_size, Rounding::kUp);
+    // The other way round: the failed trade's prices negated.
+    mShort = !mShort;
+    mReversal = true;
+    Levels levels;
+    levels.trigger = levels.high = -failed.high;
+    levels.stop = -beyond;
+    levels.height = failed.height;
+    mLevels = levels;
+    spdlog::info("breakout: {} failed; reversing, {} at market, stop {}",
+                 mParams.symbol, mShort ? "short" : "long", Price(levels.stop));
+    EnterAtMarket(context);
+    if (mState != State::kEntering) {
+        GoFlat();  // refused: flat, looking for setups the usual way
+    }
+}
+
+types::Bar Breakout::Mirror(const types::Bar& bar) const {
+    if (!mShort) {
+        return bar;
+    }
+    types::Bar out = bar;
+    out.open = -bar.open;
+    out.high = -bar.low;
+    out.low = -bar.high;
+    out.close = -bar.close;
+    return out;
+}
+
+std::span<const types::Bar> Breakout::Bars(Context& context) const {
+    const auto bars = context.Bars(mParams.symbol, mParams.timeframe);
+    if (!mShort) {
+        return bars;
+    }
+    mMirrored.clear();
+    mMirrored.reserve(bars.size());
+    for (const types::Bar& bar : bars) {
+        mMirrored.push_back(Mirror(bar));
+    }
+    return mMirrored;
 }
 
 void Breakout::OnOrderUpdate(Context& context,

@@ -2,7 +2,9 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "kestrel/strategy/patterns.hpp"
 #include "kestrel/strategy/strategy.hpp"
@@ -36,11 +38,27 @@ struct BreakoutParams {
         kStop,       // as confirm says: a buy-stop, or a market buy
         kThrowback,  // after a close above the trigger, a limit at the high
     };
+    enum class Direction {
+        kLong,   // buy a break up through the setup
+        kShort,  // sell short a break down through its mirror image
+    };
 
     types::Symbol symbol;
     types::Decimal quantity;  // base-asset units per entry
     types::Timeframe timeframe = types::Timeframe::kH1;
     Setup setup = Setup::kNarrowRange;
+    // kShort: every setup upside down (a range's low broken, a double top, a
+    // head-and-shoulders top, a descending triangle, an inverted cup), sold
+    // short with the stop above and the target below. Prices are mirrored
+    // (negated) on the way in and out, so everything below that says above,
+    // high or buy means below, low or sell for a short.
+    Direction direction = Direction::kLong;
+    // Stop-and-reverse: when the protective stop, still at its first level,
+    // closes the whole trade (a failed breakout), go the other way at once at
+    // market, with the stop stop_buffer_bps beyond the level the failed
+    // trade broke and the target the setup's height times target_multiple
+    // away. A reversed trade does not reverse again.
+    bool reverse = false;
     std::size_t nr_bars = 4;      // kNarrowRange: 4 is NR4
     // The window of kRange, kRectangle, kFailedBreakdown, kMultipleBottom,
     // kInverseHeadShoulders, kTriangle and kCupHandle.
@@ -130,7 +148,7 @@ struct BreakoutParams {
     std::size_t trail_bars = 0;
 };
 
-// Long-only breakout of a bar setup, after Fidelity's "Identifying Chart
+// Breakout of a bar setup, after Fidelity's "Identifying Chart
 // Patterns" (Kirkpatrick): wait for a setup (an NR4, an inside bar, the last
 // N bars' range, a rectangle: that range when the price has tested both its
 // support and its resistance, see RectangleOf, a pipe bottom, see
@@ -171,8 +189,10 @@ struct BreakoutParams {
 // the target, a risk limit its two orders break), leaves the stop alone and
 // the target to the close, for the rest of the trade; a pair whose placement
 // got no answer may rest, so nothing else is placed until the next bar, and a
-// pair that came back half closed is taken down and tried again then. A
-// downward break is only ever an exit: there is no shorting. With breakeven_r
+// pair that came back half closed is taken down and tried again then. With
+// direction kShort all of this is turned upside down (see
+// BreakoutParams::direction), and with reverse a long stopped out at its first
+// stop goes short at once, or a short long. With breakeven_r
 // or trail_bars, a close that is not an exit can raise the stop (it is
 // cancelled and placed again at the new level; never lowered, and never at or
 // above the close). While the market is closed (daily bars, or a bar that
@@ -318,12 +338,37 @@ class Breakout : public Strategy {
     void CancelOther(Context& context, std::string& id, const char* what);
     const char* StateName() const;
     // Places an order; the ID if the venue took it and it is still active.
+    // `request` is in the trade's terms: mirrored for a short.
     std::optional<std::string> Place(Context& context,
-                                     const types::OrderRequest& request,
+                                     types::OrderRequest request,
                                      const char* what);
+    // A price between the trade's terms and the market's (negated for a
+    // short; its own inverse).
+    types::Decimal Mirror(const types::Decimal& price) const {
+        return mShort ? -price : price;
+    }
+    std::string Price(const types::Decimal& price) const {
+        return Mirror(price).ToString();
+    }
+    types::Bar Mirror(const types::Bar& bar) const;
+    // The symbol's bars, in the trade's terms.
+    std::span<const types::Bar> Bars(Context& context) const;
+    // reverse: after the stop closed the trade with `failed` levels, the
+    // other way at market.
+    void Reverse(Context& context, const Levels& failed);
 
     BreakoutParams mParams;
     State mState = State::kFlat;
+    // The trade, or while flat the setup looked for, is short: prices are
+    // mirrored, and buys are sells.
+    bool mShort = false;
+    bool mReversal = false;     // this trade reverses a failed one
+    types::Decimal mFirstStop;  // kLong: the stop as first placed
+    // The failed trade's orders: a late fill of one must not be read in the
+    // reversed trade's direction.
+    std::vector<std::string> mFailedOrders;
+    // Bars(): a short's mirrored bars.
+    mutable std::vector<types::Bar> mMirrored;
     std::optional<Levels> mLevels;  // the setup being traded
     std::size_t mBarsLeft = 0;      // kArmed / kWatching: bars still allowed
     std::size_t mCloses = 0;        // kWatching: closes above so far

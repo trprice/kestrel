@@ -59,6 +59,13 @@ struct RiskLimits {
     // Reject orders priced from a reference price older than this. Unset
     // means a reference price never goes stale.
     std::optional<std::chrono::milliseconds> max_price_age;
+    // Not a limit: the venue sells short (PaperOptions::allow_short; set by
+    // the factory and the backtest, not the [risk] table). A sale of more
+    // than is held opens a short, which max_position_notional counts as it
+    // counts a long; a buy of no more than is short reduces a position; a
+    // losing cover counts as a losing sell; and the loss count tracks shorts
+    // (PnlTracker's shorts).
+    bool shorts = false;
 };
 
 // A TradingVenue that checks every order against RiskLimits before passing it

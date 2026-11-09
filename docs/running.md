@@ -137,7 +137,7 @@ before then (`authorize --status` shows when).
     fills          1172 (495 buy, 677 sell; 1172 maker, 0 taker)
     volume         55314.00937
     fees           0
-    closing sells  677, 440 won (64%)
+    closing fills  677, 440 won (64%)
     markouts       against the mid, fees not included
       at the fill  +1.37 bps (+7.589135, 1172 fills)
       1 s          -1.02 bps (-5.617535, 1172 fills)
@@ -155,8 +155,9 @@ before then (`authorize --status` shows when).
   - **realized** is average cost, fees included, with the starting holding
     given the first mark as its cost basis; **unrealized** is the rest of the
     change in equity.
-  - **closing sells** are sells of something held, and **won** those that
-    realized more than zero: the rule the risk gate counts losing sells by.
+  - **closing fills** are sells of something held and buys covering a short,
+    and **won** those that realized more than zero: the rule the risk gate
+    counts losing sells by.
   - **markouts** split what the fills made: for a buy, (the mid then - the
     price) * quantity, the reverse for a sell, in quote asset and in bps of
     the fills' volume. **at the fill** is against the mid before the fill:

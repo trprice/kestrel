@@ -148,7 +148,8 @@ provider; the providers know nothing about strategies.
   still-forming bar. Kraken's OHLC endpoint only keeps the latest 720 bars per
   interval, so older ranges return `kUnsupported` rather than truncated data.
   The v2 ticker has no last-trade size, so `Quote::last_size` is empty.
-- **Paper venue**: spot only, no shorting. Market orders fill at ask/bid ±
+- **Paper venue**: spot, or with `allow_short` short sales against quote-asset
+  collateral (no borrow fee, no margin call). Market orders fill at ask/bid ±
   slippage (taker fee); marketable limits take the touch; resting limits fill
   at their price (maker fee); stops become market orders when triggered.
   Buys reserve funds including worst-case fees (`Balance::locked`). Supports

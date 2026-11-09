@@ -71,6 +71,15 @@ struct PaperTradingVenue::Order {
     bool post_only = false;
     // The other order of a one-cancels-other pair, if any.
     std::string linked;
+    // PaperOptions::allow_short. A sell of more than the free base asset: its
+    // reserve is the quote asset its sale adds to the short's collateral. A
+    // buy of no more than the short not yet covered by other orders: its
+    // reserve is that much of the short (mCovering), and the collateral pays.
+    bool short_sale = false;
+    bool cover = false;
+    // One-cancels-other: its partner holds the pair's reserve (reserve_unit
+    // is zero until it takes it over).
+    bool shares_reserve = false;
     // SetDeferMatching: placed while set, the order enters the book (is
     // checked and matched as it would be on placement) at the next quote.
     bool deferred = false;
@@ -94,7 +103,8 @@ PaperTradingVenue::PaperTradingVenue(
       mHours(mDataSource ? mDataSource->Hours()
                          : types::MarketHours::AlwaysOpen()),
       mOptions(std::move(options)),
-      mClock(std::move(clock)) {
+      mClock(std::move(clock)),
+      mPnl(mOptions.allow_short) {
     for (const auto& [asset, amount] : mOptions.initial_balances) {
         mTotal[asset] = ToBookScale(amount, Rounding::kNearest);
     }
@@ -198,7 +208,8 @@ void PaperTradingVenue::Deliver() {
 
 void PaperTradingVenue::Close(Order& order, OrderState state,
                               std::string reason) {
-    Adjust(mLocked, order.reserve_asset, -Reserve(order, order.Remaining()));
+    Adjust(Locks(order), order.reserve_asset,
+           -Reserve(order, order.Remaining()));
     order.status.state = state;
     order.status.updated_time = mClock();
     if (!reason.empty()) {
@@ -363,31 +374,78 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     const Decimal notional = c.price * c.quantity;
     const Decimal fee = ToBookScale(notional * rate, Rounding::kUp);
 
-    if (side == Side::kBuy) {
-        const Decimal cost = ToBookScale(notional, Rounding::kUp) + fee;
-        // Funds already set aside for this order (or held for it by its
-        // one-cancels-other partner) count towards what it may spend.
-        Decimal spendable = mTotal[order.quote_asset] -
-                            mLocked[order.quote_asset] +
-                            Reserve(order, order.Remaining());
+    // Shorting: the collateral a sale adds to the short (if it opens or
+    // deepens one), and what a buy releases (if it covers one), pro rata.
+    const Decimal held = mTotal[order.base_asset];
+    const Decimal short_before = std::max(-held, Decimal());
+    Decimal& collateral = mCollateral[order.base_asset];
+    Decimal margin_added;
+    Decimal margin_released;
+    if (side == Side::kSell) {
+        const Decimal deeper =
+            std::max(c.quantity - held, Decimal()) - short_before;
+        if (deeper.Sign() > 0) {
+            margin_added = ToBookScale(c.price * deeper * mOptions.short_margin,
+                                       Rounding::kUp);
+        }
+    } else if (short_before.Sign() > 0) {
+        const Decimal covered = std::min(c.quantity, short_before);
+        margin_released =
+            covered == short_before
+                ? collateral
+                : ToBookScale(
+                      Decimal::Divide(collateral * covered, short_before,
+                                      kBookScale, Rounding::kDown),
+                      Rounding::kDown);
+    }
+
+    // Funds already set aside for this order (or held for it by its
+    // one-cancels-other partner) count towards what it may spend.
+    Decimal spendable = mTotal[order.quote_asset] - mLocked[order.quote_asset] +
+                        margin_released;
+    // (A plain sell's reserve and a cover's are in the base asset.)
+    if (order.reserve_asset == order.quote_asset && !order.cover) {
+        // A buy may spend all of its own; a short sale what this fill frees.
+        spendable += side == Side::kBuy
+                         ? Reserve(order, order.Remaining())
+                         : Reserve(order, order.Remaining()) -
+                               Reserve(order, order.Remaining() - c.quantity);
         if (const auto partner = mOrders.find(order.linked);
             !order.linked.empty() && partner != mOrders.end() &&
-            types::IsActive(partner->second.status.state)) {
+            types::IsActive(partner->second.status.state) &&
+            partner->second.reserve_asset == order.quote_asset &&
+            !partner->second.cover) {
             spendable += Reserve(partner->second, partner->second.Remaining());
         }
+    }
+    // A cover that fills past the short (another buy covered some first)
+    // buys the rest as an ordinary buy: it is checked like one.
+    if (side == Side::kBuy && (!order.cover || c.quantity > short_before)) {
+        const Decimal cost = ToBookScale(notional, Rounding::kUp) + fee;
         if (cost > spendable) {
             Close(order, OrderState::kCancelled,
                   "insufficient funds at fill time");
             return false;
         }
+    } else if (side == Side::kSell && margin_added.Sign() > 0 &&
+               margin_added >
+                   spendable + ToBookScale(notional, Rounding::kDown) - fee) {
+        Close(order, OrderState::kCancelled,
+              "insufficient margin at fill time");
+        return false;
     }
+    // A buy covering the short is paid from the collateral, which normally
+    // covers it: a margin call is not modelled, so a short whose price has
+    // risen past the collateral leaves the quote asset below zero.
+    collateral += margin_added - margin_released;
+    Adjust(mLocked, order.quote_asset, margin_added - margin_released);
 
     // Release the reserve for the quantity being filled (telescoping, so the
     // lock is exactly zero once the order is done).
     const Decimal before = Reserve(order, order.Remaining());
     order.status.filled_quantity += c.quantity;
     const Decimal after = Reserve(order, order.Remaining());
-    Adjust(mLocked, order.reserve_asset, after - before);
+    Adjust(Locks(order), order.reserve_asset, after - before);
 
     if (side == Side::kBuy) {
         Adjust(mTotal, order.quote_asset,
@@ -429,10 +487,12 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     // order takes over what its remainder needs first.
     if (const auto partner = mOrders.find(order.linked);
         !order.linked.empty() && partner != mOrders.end() &&
-        types::IsActive(order.status.state) && order.reserve_unit.IsZero() &&
+        types::IsActive(order.status.state) && order.shares_reserve &&
         types::IsActive(partner->second.status.state)) {
         order.reserve_unit = partner->second.reserve_unit;
-        Adjust(mLocked, order.reserve_asset, Reserve(order, order.Remaining()));
+        order.shares_reserve = false;
+        Adjust(Locks(order), order.reserve_asset,
+               Reserve(order, order.Remaining()));
     }
     CloseLinked(order, OrderState::kExpired);
     mFills.push_back(std::move(fill));
@@ -691,33 +751,65 @@ Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
     }
 
     const Decimal one(1, 0);
+    // The price per unit to reserve against: a buy's worst case, a short
+    // sale's expected one (selling lower needs less collateral).
+    const auto ref_price = [&]() -> Result<Decimal> {
+        const bool buy = request.side == Side::kBuy;
+        if (request.type == OrderType::kLimit) {
+            return *request.limit_price;
+        }
+        const Decimal slip = buy ? one + mOptions.slippage : one;
+        if (request.type == OrderType::kStop) {
+            return *request.stop_price * slip;
+        }
+        const auto ref =
+            quote ? ReferencePrice(*quote, request.side) : std::nullopt;
+        if (!ref) {
+            return MakeError(ErrorCategory::kNotFound,
+                             "no quote available yet for " + request.symbol);
+        }
+        return *ref * slip;
+    };
+    const Decimal fee_rate =
+        request.type == OrderType::kLimit
+            ? std::max(mOptions.maker_fee_rate, mOptions.taker_fee_rate)
+            : mOptions.taker_fee_rate;
+    const auto held = [](const std::map<std::string, Decimal>& book,
+                         const std::string& asset) {
+        const auto it = book.find(asset);
+        return it == book.end() ? Decimal() : it->second;
+    };
+    const Decimal total = held(mTotal, order.base_asset);
     // How much to set aside per unit: quote asset for buys (price plus the
-    // worst-case fee), base asset for sells.
+    // worst-case fee), base asset for sells. Shorting: a short sale sets
+    // aside the collateral its proceeds do not cover, and a buy covering a
+    // short sets aside that much of the short.
     if (request.side == Side::kSell) {
         order.reserve_asset = order.base_asset;
         order.reserve_unit = one;
-    } else {
-        order.reserve_asset = order.quote_asset;
-        Decimal ref_price;
-        if (request.type == OrderType::kLimit) {
-            ref_price = *request.limit_price;
-        } else if (request.type == OrderType::kStop) {
-            ref_price = *request.stop_price * (one + mOptions.slippage);
-        } else {
-            const auto ref =
-                quote ? ReferencePrice(*quote, request.side) : std::nullopt;
-            if (!ref) {
-                return MakeError(
-                    ErrorCategory::kNotFound,
-                    "no quote available yet for " + request.symbol);
+        if (mOptions.allow_short &&
+            request.quantity > total - held(mLocked, order.base_asset)) {
+            auto price = ref_price();
+            if (!price) {
+                return std::unexpected(price.error());
             }
-            ref_price = *ref * (one + mOptions.slippage);
+            order.short_sale = true;
+            order.reserve_asset = order.quote_asset;
+            order.reserve_unit =
+                *price * (mOptions.short_margin - one + fee_rate);
         }
-        const Decimal fee_rate =
-            request.type == OrderType::kLimit
-                ? std::max(mOptions.maker_fee_rate, mOptions.taker_fee_rate)
-                : mOptions.taker_fee_rate;
-        order.reserve_unit = ref_price * (one + fee_rate);
+    } else if (mOptions.allow_short && total.IsNegative() &&
+               request.quantity <= -total - held(mCovering, order.base_asset)) {
+        order.cover = true;
+        order.reserve_asset = order.base_asset;
+        order.reserve_unit = one;
+    } else {
+        auto price = ref_price();
+        if (!price) {
+            return std::unexpected(price.error());
+        }
+        order.reserve_asset = order.quote_asset;
+        order.reserve_unit = *price * (one + fee_rate);
     }
     if (request.type != OrderType::kLimit && request.type != OrderType::kStop &&
         !quote) {
@@ -738,12 +830,31 @@ bool PaperTradingVenue::WouldTake(const Order& order,
                : quote->bid && *limit <= *quote->bid;
 }
 
-Result<void> PaperTradingVenue::CheckFunds(const std::string& asset,
+std::map<std::string, Decimal>& PaperTradingVenue::Locks(const Order& order) {
+    return order.cover ? mCovering : mLocked;
+}
+
+Decimal PaperTradingVenue::Free(const Order& order) const {
+    const auto amount = [](const auto& book, const std::string& asset) {
+        const auto it = book.find(asset);
+        return it == book.end() ? Decimal() : it->second;
+    };
+    if (order.cover) {
+        return -amount(mTotal, order.base_asset) -
+               amount(mCovering, order.base_asset);
+    }
+    return amount(mTotal, order.reserve_asset) -
+           amount(mLocked, order.reserve_asset);
+}
+
+Result<void> PaperTradingVenue::CheckFunds(const Order& order,
                                            const Decimal& needed) {
-    const Decimal available = mTotal[asset] - mLocked[asset];
+    const Decimal available = Free(order);
+    const std::string& asset = order.reserve_asset;
     if (needed > available) {
         return MakeError(ErrorCategory::kInsufficientFunds,
                          "need " + needed.ToString() + " " + asset +
+                             (order.cover ? " of the short" : "") +
                              " but only " + available.ToString() +
                              " is available");
     }
@@ -758,7 +869,8 @@ std::string PaperTradingVenue::NextOrderId() {
 }
 
 PaperTradingVenue::Order& PaperTradingVenue::Book(Order order) {
-    Adjust(mLocked, order.reserve_asset, Reserve(order, order.Remaining()));
+    Adjust(Locks(order), order.reserve_asset,
+           Reserve(order, order.Remaining()));
     std::string id = order.status.order_id;
     const auto [it, _] = mOrders.emplace(std::move(id), std::move(order));
     Order& placed = it->second;
@@ -800,8 +912,7 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                          "post-only order would take liquidity at " +
                              order.status.limit_price->ToString());
     }
-    if (auto funds =
-            CheckFunds(order.reserve_asset, Reserve(order, order.Remaining()));
+    if (auto funds = CheckFunds(order, Reserve(order, order.Remaining()));
         !funds) {
         return std::unexpected(funds.error());
     }
@@ -897,8 +1008,8 @@ Result<types::OcoAcknowledgement> PaperTradingVenue::PlaceOco(
     Order& holder = stop->reserve_unit > limit->reserve_unit ? *stop : *limit;
     Order& other = &holder == &*stop ? *limit : *stop;
     other.reserve_unit = Decimal();
-    if (auto funds = CheckFunds(holder.reserve_asset,
-                                Reserve(holder, holder.Remaining()));
+    other.shares_reserve = true;
+    if (auto funds = CheckFunds(holder, Reserve(holder, holder.Remaining()));
         !funds) {
         return std::unexpected(funds.error());
     }
@@ -1020,7 +1131,7 @@ Result<std::vector<types::Position>> PaperTradingVenue::GetPositions() {
     for (auto& position : mPnl.Positions()) {
         // Flat positions are not reported, and their realized P&L goes with
         // them.
-        if (position.quantity.Sign() > 0) {
+        if (!position.quantity.IsZero()) {
             out.push_back(std::move(position));
         }
     }

@@ -296,7 +296,7 @@ types::Result<BacktestSummary> SummaryBuilder::Finish(
 
     // The starting holding is given its symbol's first mark as cost basis,
     // so selling it realizes the move since then rather than the whole sale.
-    trading::PnlTracker pnl;
+    trading::PnlTracker pnl(/*shorts=*/true);
     std::vector<types::Position> held;
     for (const SymbolSummary& symbol : s.symbols) {
         if (!symbol.start_held.IsZero()) {
@@ -319,10 +319,11 @@ types::Result<BacktestSummary> SummaryBuilder::Finish(
         const Decimal held_before = pnl.Held(fill.symbol);
         const Decimal before = pnl.Realized(fill.symbol);
         pnl.Apply(fill);
-        if (fill.side == types::Side::kSell && held_before.Sign() > 0) {
-            ++s.closing_sells;
+        if (fill.side == types::Side::kSell ? held_before.Sign() > 0
+                                            : held_before.IsNegative()) {
+            ++s.closing_fills;
             if ((pnl.Realized(fill.symbol) - before).Sign() > 0) {
-                ++s.winning_sells;
+                ++s.winning_fills;
             }
         }
     }

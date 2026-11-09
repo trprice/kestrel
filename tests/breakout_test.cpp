@@ -64,8 +64,46 @@ BreakoutParams Params() {
     return p;
 }
 
+// Bars mirrored about 25 (each price p is 25 - p, a bar's high its low): a
+// setup's break down where the bars given break up.
+std::shared_ptr<ReplayDataSource> Mirrored(
+    const std::vector<std::array<const char*, 4>>& bars) {
+    auto data = std::make_shared<ReplayDataSource>();
+    std::vector<types::Bar> series;
+    const types::Decimal about = D("25");
+    for (std::size_t i = 0; i < bars.size(); ++i) {
+        types::Bar bar;
+        bar.open_time = Hour(static_cast<int>(i));
+        bar.open = about - D(bars[i][0]);
+        bar.high = about - D(bars[i][2]);
+        bar.low = about - D(bars[i][1]);
+        bar.close = about - D(bars[i][3]);
+        series.push_back(bar);
+    }
+    data->AddBars(kSymbol, Timeframe::kH1, std::move(series));
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.0001"), D("0.0001"), {}});
+    return data;
+}
+
+// Nr4Then upside down: the NR4's high is 14 and its low 12, so a short
+// triggers at 11.99 with its stop at 14.02 (14 and 10 bps, rounded up) and
+// its target 2 lower than its entry.
+std::shared_ptr<ReplayDataSource> MirroredNr4Then(
+    std::vector<std::array<const char*, 4>> after) {
+    std::vector<std::array<const char*, 4>> bars = {
+        {"12", "14", "10", "12"}, {"12", "13", "10", "12"},
+        {"12", "15", "10", "12"}, {"12", "14", "10", "12"},
+        {"12", "13", "11", "12"},
+    };
+    bars.insert(bars.end(), after.begin(), after.end());
+    return Mirrored(bars);
+}
+
+bool gAllowShort = false;  // the backtests' paper venue shorts
+
 backtest::BacktestOptions Options(int end_hour) {
     backtest::BacktestOptions o;
+    o.paper.allow_short = gAllowShort;
     o.start = Hour(4);
     o.end = Hour(end_hour);
     o.paper.slippage = D("0");
@@ -1471,4 +1509,147 @@ TEST(Breakout, RefusesBadParameters) {
 }
 
 }  // namespace
+// Runs the backtests of a test with shorting allowed.
+struct AllowShort {
+    AllowShort() { gAllowShort = true; }
+    ~AllowShort() { gAllowShort = false; }
+    AllowShort(const AllowShort&) = delete;
+    AllowShort& operator=(const AllowShort&) = delete;
+};
+
+BreakoutParams ShortParams() {
+    auto p = Params();
+    p.direction = BreakoutParams::Direction::kShort;
+    return p;
+}
+
+TEST(BreakoutShort, SellsTheBreakDownAndCoversAtTheTarget) {
+    AllowShort shorts;
+    // Nr4's first test upside down: hour 5 breaks 11.99, hour 6 closes at
+    // 9.8, past the target 9.99, and hour 7 opens at 10.
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13.8", "15.5", "13.5", "15.2"},
+                                  {"15", "15", "15", "15"}}),
+                 ShortParams());
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[0].side, Side::kSell);
+    EXPECT_EQ(trades[0].price, D("11.99"));
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("10"));
+}
+
+TEST(BreakoutShort, TheProtectiveStopBuysAboveTheSetup) {
+    AllowShort shorts;
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13", "13.2", "10.5", "11"},
+                                  {"11", "11", "11", "11"}}),
+                 ShortParams());
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("14.02"));
+}
+
+TEST(BreakoutShort, AVenueThatCannotShortRefusesTheEntry) {
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13.8", "15.5", "13.5", "15.2"},
+                                  {"15", "15", "15", "15"}}),
+                 ShortParams());
+    EXPECT_TRUE(trades.empty());
+}
+
+TEST(BreakoutShort, TheTrendFilterKeepsItOutAboveTheAverage) {
+    AllowShort shorts;
+    auto params = ShortParams();
+    params.trend_sma = 3;  // the setup bar closes at 13, the average is 13
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13.8", "13.8", "13.8", "13.8"}}),
+                 params);
+    EXPECT_TRUE(trades.empty());
+}
+
+TEST(BreakoutShort, ARestingTargetBuysWhereThePriceReachesIt) {
+    AllowShort shorts;
+    auto params = ShortParams();
+    params.resting_target = true;
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13.8", "15.5", "13.5", "15.2"},
+                                  {"15", "15", "15", "15"}}),
+                 params);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("9.99"));
+}
+
+TEST(BreakoutShort, AFailedLongReversesOnceIntoAShort) {
+    AllowShort shorts;
+    auto params = Params();
+    params.reverse = true;
+    // Long at 13.01 in hour 5; hour 6 falls through the stop at 10.98 and
+    // the short is sold there, with its stop above the NR4's high (13, and
+    // 10 bps: 13.02). Hour 7 rises through that: covered, and not reversed
+    // again.
+    const auto trades = Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                          {"13", "13.2", "10.5", "11"},
+                                          {"11", "13.5", "11", "13.5"},
+                                          {"13.5", "13.5", "13.5", "13.5"}}),
+                                 params, 9);
+    ASSERT_EQ(trades.size(), 4u);
+    EXPECT_EQ(trades[0].side, Side::kBuy);
+    EXPECT_EQ(trades[0].price, D("13.01"));
+    EXPECT_EQ(trades[1].side, Side::kSell);
+    EXPECT_EQ(trades[1].price, D("10.98"));
+    EXPECT_EQ(trades[2].side, Side::kSell);
+    EXPECT_EQ(trades[2].price, D("10.98"));
+    EXPECT_EQ(trades[3].side, Side::kBuy);
+    EXPECT_EQ(trades[3].price, D("13.02"));
+}
+
+TEST(BreakoutShort, AFailedShortReversesIntoALong) {
+    AllowShort shorts;
+    auto params = ShortParams();
+    params.reverse = true;
+    // Short at 11.99; hour 6 rises through its stop at 14.02 and the long is
+    // bought there, its stop below the NR4's low upside down (12, less 10
+    // bps: 11.98). Hour 7 falls through that.
+    const auto trades =
+        Backtest(MirroredNr4Then({{"12.5", "14", "12.4", "13.8"},
+                                  {"13", "13.2", "10.5", "11"},
+                                  {"11", "13.5", "11", "13.5"},
+                                  {"13.5", "13.5", "13.5", "13.5"}}),
+                 params, 9);
+    ASSERT_EQ(trades.size(), 4u);
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("14.02"));
+    EXPECT_EQ(trades[2].side, Side::kBuy);
+    EXPECT_EQ(trades[2].price, D("14.02"));
+    EXPECT_EQ(trades[3].side, Side::kSell);
+    EXPECT_EQ(trades[3].price, D("11.98"));
+}
+
+TEST(BreakoutShort, ATargetOrARaisedStopDoesNotReverse) {
+    AllowShort shorts;
+    auto params = Params();
+    params.reverse = true;
+    const auto target = Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                          {"13.8", "15.5", "13.5", "15.2"},
+                                          {"15", "15", "15", "15"}}),
+                                 params);
+    EXPECT_EQ(target.size(), 2u);
+    // Breakeven at 1R (2.03 above the entry): hour 5 closes at 15.1, the
+    // stop goes to 13.01, and hour 6 falls through it.
+    params.breakeven_r = D("1");
+    params.target_multiple = D("0");
+    const auto raised = Backtest(Nr4Then({{"12.5", "15.1", "12.4", "15.1"},
+                                          {"15", "15", "12", "12"},
+                                          {"12", "12", "12", "12"}}),
+                                 params);
+    ASSERT_EQ(raised.size(), 2u);
+    EXPECT_EQ(raised[1].price, D("13.01"));
+}
+
 }  // namespace kestrel::strategy

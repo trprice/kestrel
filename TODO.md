@@ -190,8 +190,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
-- [ ] `breakout`: short entries and stop-and-reverse once the paper venue
-      can short.
 - [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Pairs trading
@@ -227,7 +225,8 @@ four recorded days. Check a change's markouts, not only "vs hold".
 - [ ] Sanitize the Docker image's build as well, and run TSan against a long
       paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
-- [ ] Shorting and margin in the paper venue and the P&L tracker
+- [ ] Paper shorting: a borrow fee, and a margin call (or a forced cover)
+      when a short rises past its collateral; neither is modelled.
 - [ ] MSVC: `Decimal` uses `__int128`, which MSVC lacks; it needs a small
       wide-integer fallback (the TODO in `src/types/decimal.cpp`).
 - [ ] `PaperTradingVenue::Deliver` calls the execution callbacks under the
@@ -289,8 +288,9 @@ the header of the code concerned.
   treated as if it were quote currency.
 - Market orders are valued at the last reference price (bar close or quote
   mid). `max_price_age` is unset by default, so a price never goes stale.
-- Spot only: a sell larger than the holding is treated as not reducing a
-  position, and shorting is not modelled.
+- Spot only, unless `RiskLimits::shorts` (set for a paper venue with
+  `allow_short`): a sell larger than the holding is treated as not reducing a
+  position.
 - What is held is the venue's position, or what the gate has seen fill since
   its loss count started if that is more. On a venue that reports no
   positions (Binance.US spot), holdings from before the run are invisible:
@@ -577,7 +577,8 @@ the header of the code concerned.
   its subscriptions go quiet. With `[schwab] takeover_reconnect_ms` set it
   reconnects after that wait instead, taking the connection back; two
   processes that both set it take it from each other at every wait.
-- `PaperTradingVenue` is spot only: no shorting, no leverage.
+- `PaperTradingVenue` has no leverage, and its shorts (`allow_short`) pay no
+  borrow fee and are never called.
 - `run` refuses live mode on a provider whose venue is a stub
   (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
   land), but `CreateComponents` still builds the stub, so `bars` in live mode
@@ -853,6 +854,11 @@ the header of the code concerned.
       and a short handle in its upper half, bought above the right rim and
       stopped below the handle; `CupHandleOf` in `patterns.hpp`. The last
       of the deck's patterns.
+- [x] Shorting: the paper venue sells short with `[paper] allow_short`
+      (quote-asset collateral, `short_margin`), `PnlTracker` keeps signed
+      positions, the risk gate counts shorts, and `breakout` trades
+      `direction = "short"` (each setup mirrored) and `reverse`
+      (stop-and-reverse on a failed breakout).
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.

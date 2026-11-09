@@ -98,6 +98,8 @@ Used in paper mode, by `run` and by `backtest`.
 | `cap_limit_fills_at_quote_size` | limit fills capped at the size shown at the touch |
 | `order_latency_ms` | how long an order or a cancel takes to reach the book (default 0); until then a new order cannot fill and an order being cancelled still can. Post-only and fill-or-kill are checked when it arrives. For a backtest, use the whole REST round trip (about 130 ms to Binance.US from the US West Coast), since the replayed quotes already carry the market data's delay |
 | `report_latency_ms` | how long a fill or an order's new state takes to reach the strategy (default 0). Live Binance.US is polled every second, so about 600 ms on average |
+| `allow_short` | sell short (default `false`): a sell of more than the free base asset sells what is free and shorts the rest. The base balance and the position go below zero, and the sale's proceeds and more stay locked in the quote asset as collateral. A buy covering the short is paid from that collateral and reserves no cash of its own (a second order covering the same short is an ordinary buy). No live venue here shorts: on Binance.US such a sale is refused for want of the asset |
+| `short_margin` | the collateral, as a multiple of what the short sold for (default 1.5, Reg T's 150%: the proceeds and half as much again; at least 1). Placing a short sale reserves the part its proceeds will not cover; if that is no longer free at its fill, the order is cancelled. There is no borrow fee and no margin call: a short that rises past its collateral leaves the quote balance short of what is locked, or below zero once covered |
 | `limit_fill_model` | `cross` (optimistic: the touch reaches the limit) or `conservative` (the touch goes through it, a trade prints through it, or trades at it clear the queue ahead, counting only takers from the other side when the quote says which side took); use `conservative` for anything that rests limit orders |
 
 Set both latencies for any backtest meant to predict a live run. Without
@@ -143,10 +145,13 @@ are errors, and the symbol must be listed in `[general] symbols`.
 exponential averages, which turn sooner; they are computed over four slow
 periods of bars so they settle).
 
-**`breakout`**: long-only breakout of a bar setup (after Fidelity's
+**`breakout`**: breakout of a bar setup (after Fidelity's
 "Identifying Chart Patterns" deck): a buy-stop just above the setup's high, a
 protective sell-stop below its low, and a target at the setup's height above
-the entry, checked on closes.
+the entry, checked on closes. With `direction = "short"` everything is upside
+down: the setups' mirror images (a range's low broken, a double top, a
+head-and-shoulders top, a descending triangle) sold short, below the low and
+with the stop above the high. The tables below describe the long side.
 
 | Key | Meaning |
 |---|---|
@@ -168,6 +173,8 @@ the entry, checked on closes.
 | `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
 | `atr_stop`, `atr_bars` | instead, put the protective stop `atr_stop` average true ranges (Wilder's, over `atr_bars` bars, measured at the setup) below the level broken, so its distance follows the market's volatility rather than the setup's shape (defaults 0: off, and 14). The ATR is smoothed over the bars loaded, so it asks for `6 · atr_bars + 1` of warmup. A setup whose ATR stop would fall to zero or below arms nothing. `breakeven_r` measures the risk from this stop, `trail_bars` can still raise it, and the target is still the setup's height. A tight stop can sit above a `confirm = "closes"` market entry that gaps down: the venue then refuses the stop or fills it at once; without a stop in place, the next close at or below it sells at market, and a close above it places the stop again |
 | `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
+| `direction` | `long` (default) or `short`. A short needs a venue that can sell short: the paper venue with `[paper] allow_short` |
+| `reverse` | stop-and-reverse (default `false`): when the protective stop, never moved, closes the whole trade (a failed breakout), go the other way at once at market, with the stop `stop_buffer_bps` beyond the level the failed trade broke and the target the setup's height times `target_multiple` away. A reversed trade does not reverse again; a raised or trailed stop, a target or a time exit never reverses. Shorts need `[paper] allow_short` |
 | `resting_target` | rest the target at the venue as a sell limit paired with the protective stop, one-cancels-other, so it sells where the price reaches it instead of at market on a close past it (default `false`). Whichever fills first, the venue closes the other; if the target fills only in part, the rest is sold at market. The paper venue and Binance.US have such pairs; on a venue without them, or when the venue refuses the pair (the price already past the target, or a risk limit the pair's two orders break), the stop rests alone and the target is left to the close |
 | `arm_bars` | bars an untriggered entry stays (default 1); with `closes`, bars for the closes to start |
 | `max_hold_bars` | exit after this many whole bars held (default 0: never) |

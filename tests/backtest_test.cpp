@@ -263,8 +263,8 @@ TEST(BacktestTest, SummarizesTheRun) {
     EXPECT_EQ(s.realized, D("-7.5"));
     EXPECT_EQ(s.unrealized, D("0"));
     EXPECT_EQ(s.fills, 2u);
-    EXPECT_EQ(s.closing_sells, 1u);
-    EXPECT_EQ(s.winning_sells, 0u);
+    EXPECT_EQ(s.closing_fills, 1u);
+    EXPECT_EQ(s.winning_fills, 0u);
     // 0.5 BTC bought at 20 is worth 10 at hour 7's close of 20 and 2.5 at
     // hour 8's close of 5: equity falls from 10000 to 9992.5.
     EXPECT_EQ(s.max_drawdown, D("7.5"));

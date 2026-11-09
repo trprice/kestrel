@@ -72,6 +72,23 @@ TEST(BacktestSummaryTest, ValuesTheBalancesAndComparesWithHolding) {
     EXPECT_EQ(s->symbols[0].end_held, D("2"));
 }
 
+TEST(BacktestSummaryTest, CountsACoveringBuyAsAClosingFill) {
+    auto created = SummaryBuilder::Create({kZec}, "USD", {{"USDT", D("1000")}},
+                                          At(0), std::chrono::minutes(1));
+    ASSERT_OK(created);
+    auto& b = *created;
+    b.Observe(At(10), kZec, D("100"), Balances("1000", "0"));
+    b.Observe(At(20), kZec, D("100"), Balances("1100", "-1"));
+    b.Observe(At(30), kZec, D("90"), Balances("1010", "0"));
+    auto s = b.Finish(At(40), {FillOf(Side::kSell, "1", "100", 20),
+                               FillOf(Side::kBuy, "1", "90", 30)});
+    ASSERT_OK(s);
+    EXPECT_EQ(s->closing_fills, 1u);  // the cover, not the short sale
+    EXPECT_EQ(s->winning_fills, 1u);
+    EXPECT_EQ(s->realized, D("10"));
+    EXPECT_EQ(s->end_equity, D("1010"));
+}
+
 TEST(BacktestSummaryTest,
      CountsWinningSellsWithTheStartingHoldingAtItsFirstMark) {
     auto b = Builder();
@@ -85,8 +102,8 @@ TEST(BacktestSummaryTest,
                                FillOf(Side::kSell, "1", "95", 40, "0.001",
                                       "ZEC", types::Liquidity::kTaker)});
     ASSERT_OK(s);
-    EXPECT_EQ(s->closing_sells, 2u);
-    EXPECT_EQ(s->winning_sells, 1u);
+    EXPECT_EQ(s->closing_fills, 2u);
+    EXPECT_EQ(s->winning_fills, 1u);
     EXPECT_EQ(s->maker_fills, 2u);
     EXPECT_EQ(s->taker_fills, 1u);
     EXPECT_EQ(s->fees, D("0.095"));       // 0.001 ZEC at 95
@@ -104,7 +121,7 @@ TEST(BacktestSummaryTest, ASellOfNothingHeldIsNotAClosingSell) {
     auto s = b->Finish(At(20), {FillOf(Side::kSell, "1", "100", 15)});
     ASSERT_OK(s);
     EXPECT_EQ(s->sells, 1u);
-    EXPECT_EQ(s->closing_sells, 0u);
+    EXPECT_EQ(s->closing_fills, 0u);
 }
 
 TEST(BacktestSummaryTest, MeasuresTheLargestFallFromAPeak) {

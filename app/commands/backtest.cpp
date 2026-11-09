@@ -202,10 +202,10 @@ class BacktestCommand : public Command {
                   << " maker, " << s.taker_fills << " taker)\n"
                   << "  volume         " << Amount(s.volume) << '\n'
                   << "  fees           " << Amount(s.fees) << '\n'
-                  << "  closing sells  " << s.closing_sells << ", "
-                  << s.winning_sells << " won";
-        if (s.closing_sells > 0) {
-            std::cout << " (" << s.winning_sells * 100 / s.closing_sells
+                  << "  closing fills  " << s.closing_fills << ", "
+                  << s.winning_fills << " won";
+        if (s.closing_fills > 0) {
+            std::cout << " (" << s.winning_fills * 100 / s.closing_fills
                       << "%)";
         }
         std::cout << '\n';
