@@ -512,6 +512,201 @@ TEST(Breakout, TheStopSellingOutCancelsAnExitStillOut) {
     EXPECT_EQ(context.venue.orders.size(), 4u);
 }
 
+TEST(Breakout, ARestingTargetSellsWhereThePriceReachesIt) {
+    // As EntersOnTheBreakAndTakesProfitAtTheTarget, but the target rests:
+    // sold at 15.01 inside hour 6, not at hour 7's open.
+    auto params = Params();
+    params.resting_target = true;
+    const auto trades = Backtest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                          {"13.8", "15.5", "13.5", "15.2"},
+                                          {"15", "15", "15", "15"}}),
+                                 params);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[1].side, Side::kSell);
+    EXPECT_EQ(trades[1].price, D("15.01"));
+}
+
+TEST(Breakout, ARestingTargetIsPairedWithTheStop) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    Feed(strategy, context);  // armed: order-1
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.ocos.size(), 1u);
+    EXPECT_EQ(context.venue.ocos[0].side, Side::kSell);
+    EXPECT_EQ(context.venue.ocos[0].quantity, D("1"));
+    EXPECT_EQ(context.venue.ocos[0].limit_price, D("15.01"));
+    EXPECT_EQ(context.venue.ocos[0].stop_price, D("10.98"));
+    // A close past the target sells nothing more: the limit is there.
+    Feed(strategy, context, {"13", "15.5", "13", "15.2"});
+    EXPECT_EQ(context.venue.orders.size(), 3u);  // entry, limit, stop
+    EXPECT_TRUE(context.venue.cancels.empty());
+    // The limit (order-2) fills: flat, the stop (order-3) taken down.
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "1", "15.01"));
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-3"});
+    Feed(strategy, context, {"12", "14", "10", "12"});
+    Feed(strategy, context, {"12", "13", "10", "12"});
+    Feed(strategy, context, {"12", "15", "10", "12"});
+    Feed(strategy, context, {"12", "13", "11", "12"});
+    ASSERT_EQ(context.venue.orders.size(), 4u);  // the next setup armed
+    EXPECT_EQ(context.venue.orders[3].side, Side::kBuy);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kStop);
+}
+
+TEST(Breakout, ARestingTargetWithoutPairsFallsBackToTheClose) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;  // RecordingVenue has no OCO by default
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, {"13", "15.5", "13", "15.2"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+}
+
+TEST(Breakout, ATargetFilledInPartSellsTheRestAtMarket) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    // The limit (order-2) sells 0.4: the pair is taken down at once and the
+    // rest sold, whether or not the venue has closed the stop (order-3) yet.
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "0.4", "15.01"));
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-2", "order-3"}));
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[3].quantity, D("0.6"));
+    // The stop's expiry, arriving after, changes nothing.
+    types::OrderStatus stop;
+    stop.order_id = "order-3";
+    stop.state = types::OrderState::kExpired;
+    strategy.OnOrderUpdate(context, stop);
+    EXPECT_EQ(context.venue.orders.size(), 4u);
+}
+
+TEST(Breakout, ARefusedPairFallsBackToAStopAtOnce) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    context.venue.oco_error = types::ErrorCategory::kRejected;  // a risk limit
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("10.98"));
+}
+
+TEST(Breakout, APairWithAnUnknownOutcomeIsNotDoubledWithAStop) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    context.venue.oco_error = types::ErrorCategory::kTimeout;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    EXPECT_EQ(context.venue.orders.size(), 1u);  // the pair may exist
+}
+
+TEST(Breakout, APairRefusedStopFirstIsNotPlacedAgain) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    types::OrderStatus status;
+    status.state = types::OrderState::kRejected;
+    status.order_id = "order-3";  // the stop's rejection first
+    strategy.OnOrderUpdate(context, status);
+    status.order_id = "order-2";
+    strategy.OnOrderUpdate(context, status);
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.ocos.size(), 1u);
+}
+
+TEST(Breakout, AHalfPlacedPairIsTakenDown) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    context.venue.oco_limit_state = types::OrderState::kRejected;
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-3"});
+    // The next bar tries the pair again.
+    context.venue.oco_limit_state.reset();
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.ocos.size(), 2u);
+}
+
+TEST(Breakout, ARefusedTargetLeavesTheStopAndTheClose) {
+    auto params = Params();
+    params.resting_target = true;
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    context.venue.oco_error = types::ErrorCategory::kWouldTake;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    // Refused later, on arrival: the stop alone again.
+    context.venue.oco_error.reset();
+    FakeContext later;
+    later.venue.oco = true;
+    Breakout again(params);
+    Feed(again, later);
+    again.OnFill(later, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(later.venue.ocos.size(), 1u);
+    types::OrderStatus status;
+    status.order_id = "order-2";
+    status.state = types::OrderState::kRejected;
+    again.OnOrderUpdate(later, status);
+    status.order_id = "order-3";
+    again.OnOrderUpdate(later, status);
+    ASSERT_EQ(later.venue.orders.size(), 4u);
+    EXPECT_EQ(later.venue.orders[3].type, types::OrderType::kStop);
+    EXPECT_EQ(later.venue.ocos.size(), 1u);
+}
+
+TEST(Breakout, ARaisedStopPlacesThePairAgain) {
+    auto params = Params();
+    params.resting_target = true;
+    params.breakeven_r = D("0.5");
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.oco = true;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    // 14.5 is past half the risk (2.03) above the entry, under the target.
+    Feed(strategy, context, {"13.5", "14.6", "13.4", "14.5"});
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-3"});
+    ASSERT_EQ(context.venue.ocos.size(), 2u);
+    EXPECT_EQ(context.venue.ocos[1].stop_price, D("13.01"));
+    EXPECT_EQ(context.venue.ocos[1].limit_price, D("15.01"));
+}
+
 TEST(Breakout, TheThrowbackLimitIsPostOnlyAtTheSetupsHigh) {
     Breakout strategy(Throwback());
     FakeContext context;

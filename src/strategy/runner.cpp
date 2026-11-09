@@ -53,6 +53,19 @@ class OrderTracker : public trading::TradingVenue {
         }
         return ack;
     }
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override {
+        auto ack = mVenue->PlaceOco(request);
+        if (ack) {
+            std::lock_guard lock(mMutex);
+            for (const auto* leg : {&ack->limit, &ack->stop}) {
+                if (types::IsActive(leg->state)) {
+                    mActive[leg->order_id] = Seen{leg->state, Decimal()};
+                }
+            }
+        }
+        return ack;
+    }
     types::Result<trading::CancelOutcome> CancelOrder(
         const std::string& order_id) override {
         return mVenue->CancelOrder(order_id);

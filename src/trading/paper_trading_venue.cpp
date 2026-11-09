@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 #include "kestrel/trading/order_rules.hpp"
 
@@ -68,6 +69,8 @@ struct PaperTradingVenue::Order {
     bool arrived = true;
     bool cancelling = false;
     bool post_only = false;
+    // The other order of a one-cancels-other pair, if any.
+    std::string linked;
     // SetDeferMatching: placed while set, the order enters the book (is
     // checked and matched as it would be on placement) at the next quote.
     bool deferred = false;
@@ -202,6 +205,30 @@ void PaperTradingVenue::Close(Order& order, OrderState state,
         order.status.reason = std::move(reason);
     }
     Notice(order, std::nullopt);
+    // Its one-cancels-other partner goes with it: cancelled or rejected
+    // alike, otherwise expired.
+    CloseLinked(
+        order, state == OrderState::kCancelled || state == OrderState::kRejected
+                   ? state
+                   : OrderState::kExpired);
+}
+
+void PaperTradingVenue::CloseLinked(Order& order, OrderState state) {
+    if (order.linked.empty()) {
+        return;
+    }
+    // Unlinked first, so the partner's close does not come back to this one
+    // (a part-filled limit stays open when its stop closes).
+    const auto it = mOrders.find(std::exchange(order.linked, {}));
+    if (it == mOrders.end()) {
+        return;
+    }
+    it->second.linked.clear();
+    if (types::IsActive(it->second.status.state)) {
+        Close(it->second, state,
+              "one-cancels-other: " + order.status.order_id + " " +
+                  std::string(types::ToString(order.status.state)));
+    }
 }
 
 std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::Evaluate(
@@ -338,11 +365,16 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
 
     if (side == Side::kBuy) {
         const Decimal cost = ToBookScale(notional, Rounding::kUp) + fee;
-        // Funds already set aside for this order count towards what it may
-        // spend.
-        const Decimal spendable = mTotal[order.quote_asset] -
-                                  mLocked[order.quote_asset] +
-                                  Reserve(order, order.Remaining());
+        // Funds already set aside for this order (or held for it by its
+        // one-cancels-other partner) count towards what it may spend.
+        Decimal spendable = mTotal[order.quote_asset] -
+                            mLocked[order.quote_asset] +
+                            Reserve(order, order.Remaining());
+        if (const auto partner = mOrders.find(order.linked);
+            !order.linked.empty() && partner != mOrders.end() &&
+            types::IsActive(partner->second.status.state)) {
+            spendable += Reserve(partner->second, partner->second.Remaining());
+        }
         if (cost > spendable) {
             Close(order, OrderState::kCancelled,
                   "insufficient funds at fill time");
@@ -393,6 +425,16 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     fill.time = order.status.updated_time;
     mPnl.Apply(fill);
     Notice(order, fill);
+    // Any fill closes a partner. If the partner held the pair's reserve, this
+    // order takes over what its remainder needs first.
+    if (const auto partner = mOrders.find(order.linked);
+        !order.linked.empty() && partner != mOrders.end() &&
+        types::IsActive(order.status.state) && order.reserve_unit.IsZero() &&
+        types::IsActive(partner->second.status.state)) {
+        order.reserve_unit = partner->second.reserve_unit;
+        Adjust(mLocked, order.reserve_asset, Reserve(order, order.Remaining()));
+    }
+    CloseLinked(order, OrderState::kExpired);
     mFills.push_back(std::move(fill));
     if (mOptions.max_fills > 0 && mFills.size() > mOptions.max_fills) {
         mFills.pop_front();
@@ -471,13 +513,10 @@ void PaperTradingVenue::Arrive(Order& order) {
     const auto quote_it = mQuotes.find(order.status.symbol);
     const types::Quote* quote =
         quote_it == mQuotes.end() ? nullptr : &quote_it->second;
-    const auto& limit = order.status.limit_price;
-    if (order.post_only && limit && quote &&
-        (order.status.side == Side::kBuy
-             ? quote->ask && *limit >= *quote->ask
-             : quote->bid && *limit <= *quote->bid)) {
+    if (WouldTake(order, quote)) {
         Close(order, OrderState::kRejected,
-              "post-only order would take liquidity at " + limit->ToString());
+              "post-only order would take liquidity at " +
+                  order.status.limit_price->ToString());
         return;
     }
     if (order.status.time_in_force == types::TimeInForce::kFok) {
@@ -541,7 +580,8 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
 
     ExpireDayOrders();
     for (Order* order : mActive) {
-        if (order->status.symbol != quote.symbol || !order->arrived) {
+        if (order->status.symbol != quote.symbol || !order->arrived ||
+            !types::IsActive(order->status.state)) {
             continue;
         }
         if (order->deferred) {
@@ -549,14 +589,10 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
             // marketable limit takes the touch, and a post-only order that
             // would take is refused.
             order->deferred = false;
-            const auto& limit = order->status.limit_price;
-            if (order->post_only && limit &&
-                (order->status.side == Side::kBuy
-                     ? latest.ask && *limit >= *latest.ask
-                     : latest.bid && *limit <= *latest.bid)) {
+            if (WouldTake(*order, &latest)) {
                 Close(*order, OrderState::kRejected,
                       "post-only order would take liquidity at " +
-                          limit->ToString());
+                          order->status.limit_price->ToString());
                 continue;
             }
             Enter(*order);
@@ -590,8 +626,8 @@ std::vector<Decimal> PaperTradingVenue::RestingPrices(
     return prices;
 }
 
-Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
-    const types::OrderRequest& raw) {
+Result<PaperTradingVenue::Prepared> PaperTradingVenue::Prepare(
+    const types::OrderRequest& raw) const {
     auto symbol = types::NormalizeSymbol(raw.symbol);
     if (!symbol) {
         return std::unexpected(symbol.error());
@@ -613,11 +649,10 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     if (!rules) {
         return std::unexpected(rules.error());
     }
-    request = *rules;
 
-    if (request.type == OrderType::kStop &&
-        request.time_in_force != types::TimeInForce::kGtc &&
-        request.time_in_force != types::TimeInForce::kDay) {
+    if (rules->type == OrderType::kStop &&
+        rules->time_in_force != types::TimeInForce::kGtc &&
+        rules->time_in_force != types::TimeInForce::kDay) {
         return MakeError(ErrorCategory::kInvalidArgument,
                          "stop orders support only GTC and DAY");
     }
@@ -625,23 +660,23 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     if (!parts) {
         return std::unexpected(parts.error());
     }
+    return Prepared{*rules, *info, parts->base,
+                    parts->quote.value_or(mOptions.default_quote_asset)};
+}
 
-    DeliverOnExit deliver{*this};
-    std::lock_guard lock(mMutex);
-    ProcessPending();
-    ExpireDayOrders();
-    const auto now = mClock();
-    const bool delayed = mOptions.order_latency.count() > 0;
-
+Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
+    const Prepared& prepared, const types::Quote* quote,
+    types::Timestamp now) const {
+    const types::OrderRequest& request = prepared.request;
     Order order;
     order.post_only = request.post_only;
     order.deferred = mDeferMatching &&
                      request.time_in_force != types::TimeInForce::kIoc &&
                      request.time_in_force != types::TimeInForce::kFok;
-    order.info = *info;
-    order.base_asset = parts->base;
-    order.quote_asset = parts->quote.value_or(mOptions.default_quote_asset);
-    order.status.symbol = *symbol;
+    order.info = prepared.info;
+    order.base_asset = prepared.base_asset;
+    order.quote_asset = prepared.quote_asset;
+    order.status.symbol = request.symbol;
     order.status.side = request.side;
     order.status.type = request.type;
     order.status.time_in_force = request.time_in_force;
@@ -655,11 +690,7 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
             std::chrono::floor<std::chrono::days>(now) + std::chrono::days(1);
     }
 
-    const auto quote_it = mQuotes.find(*symbol);
-    const types::Quote* quote =
-        quote_it == mQuotes.end() ? nullptr : &quote_it->second;
     const Decimal one(1, 0);
-
     // How much to set aside per unit: quote asset for buys (price plus the
     // worst-case fee), base asset for sells.
     if (request.side == Side::kSell) {
@@ -676,8 +707,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
             const auto ref =
                 quote ? ReferencePrice(*quote, request.side) : std::nullopt;
             if (!ref) {
-                return MakeError(ErrorCategory::kNotFound,
-                                 "no quote available yet for " + *symbol);
+                return MakeError(
+                    ErrorCategory::kNotFound,
+                    "no quote available yet for " + request.symbol);
             }
             ref_price = *ref * (one + mOptions.slippage);
         }
@@ -687,40 +719,97 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
                 : mOptions.taker_fee_rate;
         order.reserve_unit = ref_price * (one + fee_rate);
     }
-    // Delayed, the post-only check is made against the book the order
-    // arrives at (Arrive); deferred, against the next quote (OnQuote).
-    if (!delayed && !order.deferred && request.post_only && quote &&
-        (request.side == Side::kBuy
-             ? quote->ask && *request.limit_price >= *quote->ask
-             : quote->bid && *request.limit_price <= *quote->bid)) {
-        return MakeError(ErrorCategory::kWouldTake,
-                         "post-only order would take liquidity at " +
-                             request.limit_price->ToString());
-    }
     if (request.type != OrderType::kLimit && request.type != OrderType::kStop &&
         !quote) {
         return MakeError(ErrorCategory::kNotFound,
-                         "no quote available yet for " + *symbol);
+                         "no quote available yet for " + request.symbol);
     }
+    return order;
+}
 
-    const Decimal needed = Reserve(order, order.Remaining());
-    const Decimal available =
-        mTotal[order.reserve_asset] - mLocked[order.reserve_asset];
+bool PaperTradingVenue::WouldTake(const Order& order,
+                                  const types::Quote* quote) const {
+    const auto& limit = order.status.limit_price;
+    if (!order.post_only || !limit || !quote) {
+        return false;
+    }
+    return order.status.side == Side::kBuy
+               ? quote->ask && *limit >= *quote->ask
+               : quote->bid && *limit <= *quote->bid;
+}
+
+Result<void> PaperTradingVenue::CheckFunds(const std::string& asset,
+                                           const Decimal& needed) {
+    const Decimal available = mTotal[asset] - mLocked[asset];
     if (needed > available) {
         return MakeError(ErrorCategory::kInsufficientFunds,
-                         "need " + needed.ToString() + " " +
-                             order.reserve_asset + " but only " +
-                             available.ToString() + " is available");
+                         "need " + needed.ToString() + " " + asset +
+                             " but only " + available.ToString() +
+                             " is available");
     }
+    return {};
+}
 
+std::string PaperTradingVenue::NextOrderId() {
     char id[32];
     std::snprintf(id, sizeof id, "PAPER-O%06llu",
                   static_cast<unsigned long long>(mNextOrder++));
-    order.status.order_id = id;
+    return id;
+}
+
+PaperTradingVenue::Order& PaperTradingVenue::Book(Order order) {
+    Adjust(mLocked, order.reserve_asset, Reserve(order, order.Remaining()));
+    std::string id = order.status.order_id;
+    const auto [it, _] = mOrders.emplace(std::move(id), std::move(order));
+    Order& placed = it->second;
+    mActive.push_back(&placed);
+    if (mOptions.order_latency.count() > 0) {
+        placed.arrived = false;
+        mInFlight.push_back(
+            {mClock() + mOptions.order_latency, placed.status.order_id});
+    }
+    return placed;
+}
+
+Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
+    const types::OrderRequest& raw) {
+    auto prepared = Prepare(raw);
+    if (!prepared) {
+        return std::unexpected(prepared.error());
+    }
+
+    DeliverOnExit deliver{*this};
+    std::lock_guard lock(mMutex);
+    ProcessPending();
+    ExpireDayOrders();
+    const auto now = mClock();
+    const bool delayed = mOptions.order_latency.count() > 0;
+    const auto quote_it = mQuotes.find(prepared->request.symbol);
+    const types::Quote* quote =
+        quote_it == mQuotes.end() ? nullptr : &quote_it->second;
+
+    auto built = Build(*prepared, quote, now);
+    if (!built) {
+        return std::unexpected(built.error());
+    }
+    Order& order = *built;
+    // Delayed, the post-only check is made against the book the order
+    // arrives at (Arrive); deferred, against the next quote (OnQuote).
+    if (!delayed && !order.deferred && WouldTake(order, quote)) {
+        return MakeError(ErrorCategory::kWouldTake,
+                         "post-only order would take liquidity at " +
+                             order.status.limit_price->ToString());
+    }
+    if (auto funds =
+            CheckFunds(order.reserve_asset, Reserve(order, order.Remaining()));
+        !funds) {
+        return std::unexpected(funds.error());
+    }
+    order.status.order_id = NextOrderId();
 
     // Fill-or-kill: all or nothing, decided before anything is booked (or,
     // delayed, when it arrives).
-    if (!delayed && request.time_in_force == types::TimeInForce::kFok) {
+    if (!delayed && order.status.time_in_force == types::TimeInForce::kFok) {
         const auto c =
             quote ? Evaluate(order, *quote, /*placing=*/true) : std::nullopt;
         if (!c || c->quantity < order.Remaining()) {
@@ -738,25 +827,105 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
         }
     }
 
-    Adjust(mLocked, order.reserve_asset, needed);
-    const auto [it, _] =
-        mOrders.emplace(order.status.order_id, std::move(order));
-    Order& placed = it->second;
-    mActive.push_back(&placed);
-    if (delayed) {
-        placed.arrived = false;
-        mInFlight.push_back(
-            {now + mOptions.order_latency, placed.status.order_id});
-    } else {
+    Order& placed = Book(std::move(order));
+    if (!delayed) {
         Enter(placed);
     }
     spdlog::debug("paper: order {} {} {} {} -> {}", placed.status.order_id,
-                  types::ToString(request.side),
-                  placed.status.quantity.ToString(), *symbol,
+                  types::ToString(placed.status.side),
+                  placed.status.quantity.ToString(), placed.status.symbol,
                   types::ToString(placed.status.state));
     return types::OrderAcknowledgement{placed.status.order_id,
                                        placed.status.client_order_id,
                                        placed.status.state, now};
+}
+
+Result<types::OcoAcknowledgement> PaperTradingVenue::PlaceOco(
+    const types::OcoRequest& raw) {
+    const bool sell = raw.side == Side::kSell;
+    if (raw.limit_price.Sign() <= 0 || raw.stop_price.Sign() <= 0 ||
+        (sell ? raw.limit_price <= raw.stop_price
+              : raw.limit_price >= raw.stop_price)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         sell ? "a sell OCO's limit must be above its stop"
+                              : "a buy OCO's limit must be below its stop");
+    }
+    types::OrderRequest limit_leg;
+    limit_leg.symbol = raw.symbol;
+    limit_leg.side = raw.side;
+    limit_leg.type = OrderType::kLimit;
+    limit_leg.quantity = raw.quantity;
+    limit_leg.limit_price = raw.limit_price;
+    limit_leg.post_only = true;
+    types::OrderRequest stop_leg = limit_leg;
+    stop_leg.type = OrderType::kStop;
+    stop_leg.limit_price.reset();
+    stop_leg.stop_price = raw.stop_price;
+    stop_leg.post_only = false;
+    auto limit_prepared = Prepare(limit_leg);
+    if (!limit_prepared) {
+        return std::unexpected(limit_prepared.error());
+    }
+    auto stop_prepared = Prepare(stop_leg);
+    if (!stop_prepared) {
+        return std::unexpected(stop_prepared.error());
+    }
+
+    DeliverOnExit deliver{*this};
+    std::lock_guard lock(mMutex);
+    ProcessPending();
+    ExpireDayOrders();
+    const auto now = mClock();
+    const bool delayed = mOptions.order_latency.count() > 0;
+    const auto quote_it = mQuotes.find(limit_prepared->request.symbol);
+    const types::Quote* quote =
+        quote_it == mQuotes.end() ? nullptr : &quote_it->second;
+    auto limit = Build(*limit_prepared, quote, now);
+    if (!limit) {
+        return std::unexpected(limit.error());
+    }
+    auto stop = Build(*stop_prepared, quote, now);
+    if (!stop) {
+        return std::unexpected(stop.error());
+    }
+    if (!delayed && !limit->deferred && WouldTake(*limit, quote)) {
+        return MakeError(ErrorCategory::kWouldTake,
+                         "the OCO's limit would take liquidity at " +
+                             limit->status.limit_price->ToString());
+    }
+    // One reserve for both, the larger: the quantity is only spent once.
+    Order& holder = stop->reserve_unit > limit->reserve_unit ? *stop : *limit;
+    Order& other = &holder == &*stop ? *limit : *stop;
+    other.reserve_unit = Decimal();
+    if (auto funds = CheckFunds(holder.reserve_asset,
+                                Reserve(holder, holder.Remaining()));
+        !funds) {
+        return std::unexpected(funds.error());
+    }
+    limit->status.order_id = NextOrderId();
+    stop->status.order_id = NextOrderId();
+    limit->linked = stop->status.order_id;
+    stop->linked = limit->status.order_id;
+
+    Order& placed_limit = Book(std::move(*limit));
+    Order& placed_stop = Book(std::move(*stop));
+    if (!delayed) {
+        Enter(placed_limit);
+        if (types::IsActive(placed_stop.status.state)) {
+            Enter(placed_stop);
+        }
+    }
+    spdlog::debug(
+        "paper: OCO {} / {} {} {} {} -> {} / {}", placed_limit.status.order_id,
+        placed_stop.status.order_id, types::ToString(raw.side),
+        placed_limit.status.quantity.ToString(), placed_limit.status.symbol,
+        types::ToString(placed_limit.status.state),
+        types::ToString(placed_stop.status.state));
+    return types::OcoAcknowledgement{
+        {placed_limit.status.order_id, placed_limit.status.client_order_id,
+         placed_limit.status.state, now},
+        {placed_stop.status.order_id, placed_stop.status.client_order_id,
+         placed_stop.status.state, now}};
 }
 
 Result<CancelOutcome> PaperTradingVenue::CancelOrder(

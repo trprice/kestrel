@@ -52,6 +52,23 @@ struct OrderAcknowledgement {
     Timestamp time;
 };
 
+// A one-cancels-other pair on one side and quantity: a limit order that only
+// ever rests (like post_only) and a stop-market order. For a sell, the limit
+// is above the market and the stop below it (a take-profit and a stop loss);
+// for a buy, the other way round. Both are GTC.
+struct OcoRequest {
+    Symbol symbol;
+    Side side = Side::kSell;
+    Decimal quantity;  // base-asset units, for each leg
+    Decimal limit_price;
+    Decimal stop_price;
+};
+
+struct OcoAcknowledgement {
+    OrderAcknowledgement limit;
+    OrderAcknowledgement stop;
+};
+
 struct OrderStatus {
     std::string order_id;
     std::string client_order_id;

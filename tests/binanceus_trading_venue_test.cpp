@@ -663,6 +663,166 @@ TEST(BinanceUSOrders, AnUnansweredOrderThatCannotBeFoundIsAnError) {
     EXPECT_EQ(f.sleeps.size(), 1u);  // a pause before the second look
 }
 
+types::OcoRequest SellOco(const char* qty, const char* limit,
+                          const char* stop) {
+    types::OcoRequest r;
+    r.symbol = "ZEC/USDT";
+    r.side = types::Side::kSell;
+    r.quantity = D(qty);
+    r.limit_price = D(limit);
+    r.stop_price = D(stop);
+    return r;
+}
+
+TEST(BinanceUSOrders, PlacesAnOcoWithBothLegsRounded) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order/oco",
+                 "{\"orderListId\":3,\"contingencyType\":\"OCO\","
+                 "\"transactionTime\":1700000000123,\"orderReports\":[" +
+                     Order("ZECUSDT", 11, "NEW", "STOP_LOSS", "SELL", "0.00",
+                           "0.010", "0", "0", "650.00") +
+                     "," +
+                     Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER", "SELL",
+                           "750.01", "0.010", "0", "0") +
+                     "]}");
+    auto ack = venue->PlaceOco(SellOco("0.0105", "750.001", "650"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->limit.order_id, "12");
+    EXPECT_EQ(ack->stop.order_id, "11");
+    EXPECT_EQ(ack->limit.state, types::OrderState::kNew);
+    EXPECT_EQ(ack->stop.time, types::FromEpochMillis(1700000000123));
+
+    const auto sent = f.http->To("/api/v3/order/oco");
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+    const auto& q = sent[0].raw_query;
+    EXPECT_EQ(QueryValue(q, "symbol"), "ZECUSDT");
+    EXPECT_EQ(QueryValue(q, "side"), "SELL");
+    EXPECT_EQ(QueryValue(q, "quantity"), "0.010");  // down to the lot
+    EXPECT_EQ(QueryValue(q, "price"), "750.01");    // a sell limit rounds up
+    EXPECT_EQ(QueryValue(q, "stopPrice"), "650.00");
+    const auto list = QueryValue(q, "listClientOrderId");
+    const auto limit = QueryValue(q, "limitClientOrderId");
+    const auto stop = QueryValue(q, "stopClientOrderId");
+    EXPECT_EQ(list.rfind("kst-", 0), 0u);
+    EXPECT_NE(list, limit);
+    EXPECT_NE(limit, stop);
+    // Both legs' symbols are remembered: a cancel goes straight to it.
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "CANCELED", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    EXPECT_EQ(venue->CancelOrder("11"), CancelOutcome::kCancelled);
+}
+
+TEST(BinanceUSOrders, AnUnansweredOcoIsLookedUpByItsLegs) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError(
+        "/api/v3/order/oco",
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER",
+                                        "SELL", "750.00", "0.010", "0", "0"));
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "NEW", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->limit.order_id, "12");
+    EXPECT_EQ(ack->stop.order_id, "11");
+    const auto placed = f.http->To("/api/v3/order/oco");
+    ASSERT_EQ(placed.size(), 1u);  // never sent twice
+    const auto looked = f.http->To("/api/v3/order");
+    ASSERT_EQ(looked.size(), 2u);
+    EXPECT_EQ(looked[0].method, net::HttpMethod::kGet);
+    EXPECT_EQ(QueryValue(looked[0].raw_query, "origClientOrderId"),
+              QueryValue(placed[0].raw_query, "limitClientOrderId"));
+    EXPECT_EQ(QueryValue(looked[1].raw_query, "origClientOrderId"),
+              QueryValue(placed[0].raw_query, "stopClientOrderId"));
+}
+
+TEST(BinanceUSOrders, AnUnansweredOcoLooksAgainForALegNotFoundYet) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError(
+        "/api/v3/order/oco",
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER",
+                                        "SELL", "750.00", "0.010", "0", "0"));
+    f.http->PushStatus("/api/v3/order", 400,
+                       "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "NEW", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->stop.order_id, "11");
+    EXPECT_EQ(f.http->To("/api/v3/order").size(), 3u);  // limit, stop twice
+    EXPECT_EQ(f.sleeps.size(), 1u);
+}
+
+TEST(BinanceUSOrders, AnOcoWithOneLegFoundSaysThePairExists) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->PushError(
+        "/api/v3/order/oco",
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER",
+                                        "SELL", "750.00", "0.010", "0", "0"));
+    for (int i = 0; i < 2; ++i) {
+        f.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    f.http->Push("/api/v3/orderList", "{\"orderListId\":3}");
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_FALSE(ack.has_value());
+    EXPECT_EQ(ack.error().category, types::ErrorCategory::kTimeout);
+    EXPECT_NE(ack.error().message.find("was placed: its limit 12 rests"),
+              std::string::npos);
+    EXPECT_NE(ack.error().message.find("it was cancelled"), std::string::npos);
+    // Untrackable, so taken down by its list ID.
+    const auto cancels = f.http->To("/api/v3/orderList");
+    ASSERT_EQ(cancels.size(), 1u);
+    EXPECT_EQ(cancels[0].method, net::HttpMethod::kDelete);
+    EXPECT_EQ(QueryValue(cancels[0].raw_query, "listClientOrderId"),
+              QueryValue(f.http->To("/api/v3/order/oco")[0].raw_query,
+                         "listClientOrderId"));
+}
+
+TEST(BinanceUSOrders, APlacedOcoWhoseLegsCannotBeReadIsCancelled) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order/oco", "{\"orderListId\":3}");
+    for (int i = 0; i < 2; ++i) {
+        f.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    f.http->Push("/api/v3/orderList", "{\"orderListId\":3}");
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_FALSE(ack.has_value());
+    EXPECT_EQ(ack.error().category, types::ErrorCategory::kServer);
+    EXPECT_EQ(f.http->To("/api/v3/orderList").size(), 1u);
+}
+
+TEST(BinanceUSOrders, ARefusedOcoIsReportedAndNothingIsSentForBadPrices) {
+    Fixture f;
+    auto venue = f.Venue();
+    auto backwards = venue->PlaceOco(SellOco("0.01", "650", "750"));
+    ASSERT_FALSE(backwards.has_value());
+    EXPECT_EQ(backwards.error().category,
+              types::ErrorCategory::kInvalidArgument);
+    EXPECT_TRUE(f.http->To("/api/v3/order/oco").empty());
+    f.http->PushStatus(
+        "/api/v3/order/oco", 400,
+        "{\"code\":-2010,\"msg\":\"Order would immediately match and "
+        "take.\"}");
+    auto refused = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(f.http->To("/api/v3/order").empty());  // not looked up
+}
+
 TEST(BinanceUSOrders, TestOrderGoesOnlyToTheTestEndpoint) {
     Fixture f;
     auto venue = f.Venue();

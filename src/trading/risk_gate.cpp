@@ -221,6 +221,31 @@ std::optional<Decimal> RiskGatedVenue::PriceFor(
 types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
     const types::OrderRequest& request) {
     std::lock_guard lock(mMutex);
+    if (auto admitted = Admit(request, 1); !admitted) {
+        return std::unexpected(admitted.error());
+    }
+    return mVenue->PlaceOrder(request);
+}
+
+types::Result<types::OcoAcknowledgement> RiskGatedVenue::PlaceOco(
+    const types::OcoRequest& request) {
+    std::lock_guard lock(mMutex);
+    // Checked as its limit order, counting as two orders: both rest, though
+    // only one can fill.
+    types::OrderRequest limit;
+    limit.symbol = request.symbol;
+    limit.side = request.side;
+    limit.type = types::OrderType::kLimit;
+    limit.quantity = request.quantity;
+    limit.limit_price = request.limit_price;
+    if (auto admitted = Admit(limit, 2); !admitted) {
+        return std::unexpected(admitted.error());
+    }
+    return mVenue->PlaceOco(request);
+}
+
+types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
+                                          std::size_t orders) {
     const types::Timestamp now = mClock();
 
     if (request.quantity.Sign() <= 0) {
@@ -251,7 +276,7 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
             mOrderDay = DayOf(now);
             mOrdersToday = 0;
         }
-        if (!blocked && mOrdersToday >= *mLimits.max_orders_per_day) {
+        if (!blocked && mOrdersToday + orders > *mLimits.max_orders_per_day) {
             blocked = std::to_string(mOrdersToday) + " orders today (limit " +
                       std::to_string(*mLimits.max_orders_per_day) + ")";
         }
@@ -303,7 +328,7 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
             open = std::move(*fetched);
         }
         if (mLimits.max_open_orders &&
-            open.size() >= *mLimits.max_open_orders) {
+            open.size() + orders > *mLimits.max_open_orders) {
             return Reject("already " + std::to_string(open.size()) +
                           " open orders (limit " +
                           std::to_string(*mLimits.max_open_orders) + ")");
@@ -344,18 +369,17 @@ types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
                now - mRecentOrders.front() >= kRateWindow) {
             mRecentOrders.pop_front();
         }
-        if (mRecentOrders.size() >= *mLimits.max_orders_per_minute) {
+        if (mRecentOrders.size() + orders > *mLimits.max_orders_per_minute) {
             return Reject("more than " +
                           std::to_string(*mLimits.max_orders_per_minute) +
                           " orders in the last minute");
         }
-        mRecentOrders.push_back(now);
+        mRecentOrders.insert(mRecentOrders.end(), orders, now);
     }
     if (mLimits.max_orders_per_day) {
-        ++mOrdersToday;
+        mOrdersToday += orders;
     }
-
-    return mVenue->PlaceOrder(request);
+    return {};
 }
 
 }  // namespace kestrel::trading

@@ -190,10 +190,8 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
-- [ ] `breakout`: rest the target as a sell limit beside the protective stop
-      once the venue can link them (one-cancels-other), instead of selling
-      at market on a close past it; short entries and stop-and-reverse once
-      the paper venue can short.
+- [ ] `breakout`: short entries and stop-and-reverse once the paper venue
+      can short.
 - [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Pairs trading
@@ -847,6 +845,10 @@ the header of the code concerned.
       over rising swing lows, `min_touches` of each, bought above the
       resistance and stopped below the newest low; `TriangleOf` in
       `patterns.hpp`.
+- [x] `resting_target`: `breakout` rests its target as a sell limit
+      paired with the protective stop, one-cancels-other
+      (`TradingVenue::PlaceOco`, on the paper and Binance.US venues), instead
+      of selling at market on a close past it.
 - [x] `setup = "cup_handle"`: two swing-high rims around a rounded cup
       and a short handle in its upper half, bought above the right rim and
       stopped below the handle; `CupHandleOf` in `patterns.hpp`. The last

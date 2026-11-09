@@ -662,6 +662,7 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     ASSERT_OK(tri);
     EXPECT_EQ((*tri)->Needs().warmup_bars, 30u);
     EXPECT_TRUE(make("setup='ascending_triangle'\n").has_value());
+    EXPECT_TRUE(make("resting_target=true\n").has_value());
     auto cup = make("setup='cup_handle'\nrange_bars=120\n");
     ASSERT_OK(cup);
     EXPECT_EQ((*cup)->Needs().warmup_bars, 120u);
@@ -806,6 +807,10 @@ struct FakeComponents {
         types::Result<types::OrderAcknowledgement> PlaceOrder(
             const types::OrderRequest& r) override {
             return mVenue->PlaceOrder(r);
+        }
+        types::Result<types::OcoAcknowledgement> PlaceOco(
+            const types::OcoRequest& r) override {
+            return mVenue->PlaceOco(r);
         }
         types::Result<trading::CancelOutcome> CancelOrder(
             const std::string& id) override {

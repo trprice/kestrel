@@ -116,6 +116,11 @@ The seven pairs on 1h bars, about $1,000 a trade.
   lost 34 (116 trades). With `min_touches = 3` both traded 14 times.
 - **Cup-and-handle, 1h** (`range_bars = 120`): −519 on 108 trades, 31%
   won.
+- **Resting target** (`resting_target`, the target a sell limit paired
+  with the stop): `range` fell from +4,677 to +3,855 and the double bottom
+  from +1,386 to +832, though slightly more trades won. Selling on the
+  close past the target catches the bars that close well beyond it; a
+  limit stops at the target.
 - **ATR stop** (`atr_stop`, 14-bar ATR under the broken level, instead of
   the setup's low): 1.5 ATRs +4,571, 2 ATRs +4,935, 3 ATRs +5,053, against
   +4,677 for the setup-low stop. 2 and 3 ATRs cut the worst drawdown from
@@ -213,6 +218,9 @@ Does the early part of the day predict its last half-hour?
   120` and the default swings, +1.06% (289 trades, 27% won). The stop
   under the handle is close, so most trades are stopped out and a few
   large ones carry the result.
+- **Resting target, same 33 symbols, daily:** the double bottom went from
+  +0.69% to +0.62% a trade, the ascending triangle from +1.67% to +1.27%,
+  for the same reason as on crypto.
 - **Double bottom on 1m, 5m and 15m (Sep 22 – Nov 6):** negative at every
   bar size: −0.05% to −0.21% a trade with each stock's estimated spread.
   The patterns are tiny, and the stop sits about twice as far as the

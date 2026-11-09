@@ -37,6 +37,46 @@ class RecordingVenue : public trading::TradingVenue {
             "order-" + std::to_string(orders.size()), request.client_order_id,
             ack_state, types::FromEpochSeconds(0)};
     }
+    // With `oco`, records the two legs in `orders` (the limit, then the
+    // stop) and in `ocos`; without, not implemented (the default).
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override {
+        if (!oco) {
+            return TradingVenue::PlaceOco(request);
+        }
+        ++attempts;
+        if (oco_error) {
+            return types::MakeError(*oco_error, "no");
+        }
+        if (reject_orders) {
+            return types::MakeError(types::ErrorCategory::kRejected, "no");
+        }
+        if (reject_category) {
+            return types::MakeError(*reject_category, "no");
+        }
+        ocos.push_back(request);
+        types::OrderRequest leg;
+        leg.symbol = request.symbol;
+        leg.side = request.side;
+        leg.type = types::OrderType::kLimit;
+        leg.quantity = request.quantity;
+        leg.limit_price = request.limit_price;
+        leg.post_only = true;
+        orders.push_back(leg);
+        leg.type = types::OrderType::kStop;
+        leg.limit_price.reset();
+        leg.stop_price = request.stop_price;
+        leg.post_only = false;
+        orders.push_back(leg);
+        const auto ack = [&](std::size_t n, types::OrderState state) {
+            return types::OrderAcknowledgement{"order-" + std::to_string(n), "",
+                                               state,
+                                               types::FromEpochSeconds(0)};
+        };
+        return types::OcoAcknowledgement{
+            ack(orders.size() - 1, oco_limit_state.value_or(ack_state)),
+            ack(orders.size(), ack_state)};
+    }
     types::Result<trading::CancelOutcome> CancelOrder(
         const std::string& order_id) override {
         cancels.push_back(order_id);
@@ -104,6 +144,9 @@ class RecordingVenue : public trading::TradingVenue {
 
     // Set before the venue is shared with other threads.
     bool pushes = false;
+    bool oco = false;                                  // supports PlaceOco
+    std::optional<types::ErrorCategory> oco_error;     // refuse pairs with this
+    std::optional<types::OrderState> oco_limit_state;  // else ack_state
     bool reject_orders = false;
     std::optional<types::ErrorCategory> reject_category;  // refuse with this
     std::optional<types::OrderType> reject_type;  // refuse orders of this type
@@ -127,6 +170,7 @@ class RecordingVenue : public trading::TradingVenue {
     int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
     std::vector<types::OrderRequest> orders;
+    std::vector<types::OcoRequest> ocos;
     trading::ExecutionCallback pushed;
     std::atomic<int> push_stops{0};
 

@@ -159,6 +159,31 @@ TEST_F(RiskGateTest, MaxOpenOrders) {
     ExpectRejected(Market(Side::kBuy, "1"));
 }
 
+TEST_F(RiskGateTest, AnOcoCountsAsTwoOrders) {
+    types::OcoRequest pair;
+    pair.symbol = kSymbol;
+    pair.side = Side::kSell;
+    pair.quantity = D("1");
+    pair.limit_price = D("110");
+    pair.stop_price = D("90");
+    venue->oco = true;
+    limits.max_open_orders = 2;
+    limits.max_orders_per_minute = 3;
+    venue->open_orders.resize(1);
+    Build();
+    auto refused = gate->PlaceOco(pair);  // 1 open + 2 is over 2
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().category, ErrorCategory::kRejected);
+    EXPECT_TRUE(venue->ocos.empty());
+    venue->open_orders.clear();
+    ASSERT_OK(gate->PlaceOco(pair));
+    EXPECT_EQ(venue->ocos.size(), 1u);
+    // Two of the three this minute are used: one more order, not a pair.
+    venue->open_orders.clear();
+    EXPECT_FALSE(gate->PlaceOco(pair).has_value());
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
 TEST_F(RiskGateTest, OrderRateIsASlidingMinute) {
     limits.max_orders_per_minute = 2;
     Build();

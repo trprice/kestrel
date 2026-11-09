@@ -532,6 +532,189 @@ Result<types::OrderAcknowledgement> BinanceUSTradingVenue::PlaceOrder(
     return ack;
 }
 
+namespace {
+
+const std::string* ParamOf(const BinanceUSApi::Params& params,
+                           std::string_view key) {
+    for (const auto& [name, value] : params) {
+        if (name == key) {
+            return &value;
+        }
+    }
+    return nullptr;
+}
+
+types::OrderAcknowledgement AckOf(const types::OrderStatus& order) {
+    return {order.order_id, order.client_order_id, order.state,
+            order.updated_time};
+}
+
+}  // namespace
+
+std::string BinanceUSTradingVenue::CancelList(const std::string& native,
+                                              const std::string& list_id) {
+    auto body =
+        mApi.Signed(net::HttpMethod::kDelete, "/api/v3/orderList",
+                    {{"symbol", native}, {"listClientOrderId", list_id}},
+                    kCancelWeight, false);
+    if (body) {
+        return "it was cancelled";
+    }
+    spdlog::error("binanceus: cannot cancel OCO {}: {}", list_id,
+                  body.error().ToString());
+    return "it could not be cancelled (" + body.error().ToString() +
+           ") and may still rest";
+}
+
+Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
+    const types::OcoRequest& request) {
+    const bool sell = request.side == types::Side::kSell;
+    if (request.limit_price.Sign() <= 0 || request.stop_price.Sign() <= 0 ||
+        (sell ? request.limit_price <= request.stop_price
+              : request.limit_price >= request.stop_price)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         sell ? "a sell OCO's limit must be above its stop"
+                              : "a buy OCO's limit must be below its stop");
+    }
+    // Each leg rounded and checked as PlaceOrder would.
+    types::OrderRequest limit_leg;
+    limit_leg.symbol = request.symbol;
+    limit_leg.side = request.side;
+    limit_leg.type = types::OrderType::kLimit;
+    limit_leg.quantity = request.quantity;
+    limit_leg.limit_price = request.limit_price;
+    limit_leg.post_only = true;
+    types::OrderRequest stop_leg = limit_leg;
+    stop_leg.type = types::OrderType::kStop;
+    stop_leg.limit_price.reset();
+    stop_leg.stop_price = request.stop_price;
+    stop_leg.post_only = false;
+    std::string native;
+    std::string limit_id;
+    std::string stop_id;
+    auto limit_params = OrderParams(limit_leg, native, limit_id);
+    if (!limit_params) {
+        return std::unexpected(limit_params.error());
+    }
+    auto stop_params = OrderParams(stop_leg, native, stop_id);
+    if (!stop_params) {
+        return std::unexpected(stop_params.error());
+    }
+    const std::string* quantity = ParamOf(*limit_params, "quantity");
+    const std::string* price = ParamOf(*limit_params, "price");
+    const std::string* stop_price = ParamOf(*stop_params, "stopPrice");
+    if (!quantity || !price || !stop_price) {
+        return MakeError(ErrorCategory::kInternal,
+                         "binanceus: OCO legs missing a price or quantity");
+    }
+    const std::string list_id = NextClientOrderId();
+    const BinanceUSApi::Params params = {{"symbol", native},
+                                         {"side", sell ? "SELL" : "BUY"},
+                                         {"quantity", *quantity},
+                                         {"price", *price},
+                                         {"stopPrice", *stop_price},
+                                         {"listClientOrderId", list_id},
+                                         {"limitClientOrderId", limit_id},
+                                         {"stopClientOrderId", stop_id},
+                                         {"newOrderRespType", "RESULT"}};
+    // Two orders towards the order rate.
+    mOrderLimiter.Acquire();
+    mOrderLimiter.Acquire();
+    auto body = mApi.Signed(net::HttpMethod::kPost, "/api/v3/order/oco", params,
+                            kNewOrderWeight, false);
+    if (!body) {
+        if (!OutcomeUnknown(body.error())) {
+            return std::unexpected(body.error());  // refused: nothing placed
+        }
+        spdlog::warn(
+            "binanceus: placing OCO {} ended without an answer ({}); looking "
+            "up its legs",
+            list_id, body.error().ToString());
+        std::optional<types::Error> lookup_failure;
+        std::optional<types::OrderStatus> found[2];
+        const std::string* ids[2] = {&limit_id, &stop_id};
+        for (int look = 0; look < 2 && !lookup_failure; ++look) {
+            if (look > 0) {
+                mSleep(kLookupPause);
+            }
+            for (int leg = 0; leg < 2; ++leg) {
+                if (found[leg]) {
+                    continue;
+                }
+                auto order = LookupClientOrder(native, *ids[leg]);
+                if (order) {
+                    found[leg] = *order;
+                } else if (order.error().category != ErrorCategory::kNotFound) {
+                    lookup_failure = order.error();
+                    break;
+                }
+            }
+            if (found[0] && found[1]) {
+                return types::OcoAcknowledgement{AckOf(*found[0]),
+                                                 AckOf(*found[1])};
+            }
+        }
+        types::Error error = body.error();
+        if (found[0] || found[1]) {
+            // A pair is placed as a whole: it exists and holds the quantity,
+            // but cannot be tracked without both legs. Take it down, so the
+            // caller can place again what it was told failed.
+            error.message += " (OCO " + list_id + " was placed: its " +
+                             (found[0] ? "limit " + found[0]->order_id
+                                       : "stop " + found[1]->order_id) +
+                             " rests, but the other leg could not be found; " +
+                             CancelList(native, list_id) + ")";
+        } else {
+            error.message +=
+                lookup_failure
+                    ? " (OCO " + list_id + " could not be looked up either: " +
+                          lookup_failure->ToString() + "; it may exist)"
+                    : " (OCO " + list_id +
+                          " was not found afterwards, but may still appear)";
+        }
+        return std::unexpected(std::move(error));
+    }
+    // The legs' reports: the LIMIT_MAKER and the STOP_LOSS.
+    std::optional<types::OrderStatus> limit;
+    std::optional<types::OrderStatus> stop;
+    if (body->contains("orderReports") && (*body)["orderReports"].is_array()) {
+        for (const json& report : (*body)["orderReports"]) {
+            auto order = ParseOrder(report);
+            if (!order) {
+                continue;
+            }
+            Remember(order->order_id, order->symbol);
+            if (order->type == types::OrderType::kLimit) {
+                limit = *order;
+            } else if (order->type == types::OrderType::kStop) {
+                stop = *order;
+            }
+        }
+    }
+    if (!limit || !stop) {
+        // Placed, but the answer is not one we can read: find the legs.
+        spdlog::warn("binanceus: OCO {} placed; looking up its legs", list_id);
+        auto found_limit = LookupClientOrder(native, limit_id);
+        auto found_stop = LookupClientOrder(native, stop_id);
+        if (!found_limit || !found_stop) {
+            // Not tracked without both legs: take it down, and say it is not
+            // placed (a server failure: the caller tries again later).
+            return MakeError(
+                ErrorCategory::kServer,
+                "binanceus: OCO " + list_id +
+                    " was placed but its legs could not be read; " +
+                    CancelList(native, list_id));
+        }
+        limit = *found_limit;
+        stop = *found_stop;
+    }
+    types::OcoAcknowledgement ack{AckOf(*limit), AckOf(*stop)};
+    if (auto time = IntegerMember(*body, "transactionTime"); time) {
+        ack.limit.time = ack.stop.time = types::FromEpochMillis(*time);
+    }
+    return ack;
+}
+
 Result<CancelOutcome> BinanceUSTradingVenue::CancelOutcomeOf(
     const std::string& order_id) {
     auto order = GetOrder(order_id);

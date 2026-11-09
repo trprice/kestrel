@@ -233,6 +233,7 @@ if(KESTREL_BUILD_TESTS)
     tests/binanceus_api_test.cpp
     tests/binanceus_trading_venue_test.cpp
     tests/risk_gate_test.cpp
+    tests/session_gated_venue_test.cpp
     tests/runner_test.cpp
     tests/run_recorder_test.cpp
     tests/backtest_test.cpp

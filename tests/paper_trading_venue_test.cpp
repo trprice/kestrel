@@ -1236,4 +1236,175 @@ TEST(PaperLatency, FillsArePushedReportLatencyLater) {
     EXPECT_EQ(pushed.updates[0].fill->order_id, ack->order_id);
 }
 
+types::OcoRequest SellOco(const char* qty, const char* limit,
+                          const char* stop) {
+    types::OcoRequest r;
+    r.symbol = "BTC/USD";
+    r.side = Side::kSell;
+    r.quantity = D(qty);
+    r.limit_price = D(limit);
+    r.stop_price = D(stop);
+    return r;
+}
+
+TEST(PaperOco, TheLimitFillingExpiresTheStop) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto ack = venue->PlaceOco(SellOco("1", "51000", "49000"));
+    ASSERT_TRUE(ack.has_value()) << ack.error().ToString();
+    EXPECT_EQ(ack->limit.state, OrderState::kNew);
+    EXPECT_EQ(ack->stop.state, OrderState::kNew);
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("1"));  // held once for both
+    auto open = venue->GetOpenOrders();
+    ASSERT_TRUE(open.has_value());
+    EXPECT_EQ(open->size(), 2u);
+    // Both legs rest at their prices for a bar walk.
+    EXPECT_EQ(venue->RestingPrices("BTC/USD").size(), 2u);
+
+    venue->OnQuote(Q("51010.0", "51020.0"));
+    auto limit = venue->GetOrder(ack->limit.order_id);
+    auto stop = venue->GetOrder(ack->stop.order_id);
+    ASSERT_TRUE(limit.has_value());
+    ASSERT_TRUE(stop.has_value());
+    EXPECT_EQ(limit->state, OrderState::kFilled);
+    EXPECT_EQ(limit->average_fill_price, D("51000"));  // as a maker
+    EXPECT_EQ(stop->state, OrderState::kExpired);
+    ASSERT_TRUE(stop->reason.has_value());
+    EXPECT_NE(stop->reason->find("one-cancels-other"), std::string::npos);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0"));
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+TEST(PaperOco, TheStopTriggeringExpiresTheLimit) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto ack = venue->PlaceOco(SellOco("1", "51000", "49000"));
+    ASSERT_TRUE(ack.has_value());
+    venue->OnQuote(Q("48990.0", "49000.0"));
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state,
+              OrderState::kExpired);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0"));
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+TEST(PaperOco, CancellingEitherCancelsBoth) {
+    for (const bool limit_first : {true, false}) {
+        Fixture f;
+        f.options.initial_balances["BTC"] = D("1");
+        auto venue = f.Make();
+        venue->OnQuote(Q("50000.0", "50010.0"));
+        auto ack = venue->PlaceOco(SellOco("1", "51000", "49000"));
+        ASSERT_TRUE(ack.has_value());
+        const auto& first = limit_first ? ack->limit : ack->stop;
+        const auto& second = limit_first ? ack->stop : ack->limit;
+        EXPECT_EQ(venue->CancelOrder(first.order_id),
+                  CancelOutcome::kCancelled);
+        EXPECT_EQ(venue->GetOrder(second.order_id)->state,
+                  OrderState::kCancelled);
+        EXPECT_EQ(venue->CancelOrder(second.order_id),
+                  CancelOutcome::kAlreadyClosed);
+        EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+        EXPECT_EQ(Bal(*venue, "BTC").total, D("1"));
+    }
+}
+
+TEST(PaperOco, APartFillOfTheLimitExpiresTheStop) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    f.options.cap_limit_fills_at_quote_size = true;
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto ack = venue->PlaceOco(SellOco("1", "51000", "49000"));
+    ASSERT_TRUE(ack.has_value());
+    venue->OnQuote(Q("51010.0", "51020.0", "0.4", "1"));
+    auto limit = venue->GetOrder(ack->limit.order_id);
+    EXPECT_EQ(limit->state, OrderState::kPartiallyFilled);
+    EXPECT_EQ(limit->filled_quantity, D("0.4"));
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state, OrderState::kExpired);
+    // The limit still holds what it has left to sell.
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0.6"));
+}
+
+TEST(PaperOco, ABuyPairsPartFilledLimitKeepsItsFunds) {
+    Fixture f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    types::OcoRequest pair;
+    pair.symbol = "BTC/USD";
+    pair.side = Side::kBuy;
+    pair.quantity = D("0.1");
+    pair.limit_price = D("49000");
+    pair.stop_price = D("51000");
+    auto ack = venue->PlaceOco(pair);
+    ASSERT_TRUE(ack.has_value()) << ack.error().ToString();
+    // The stop's reserve (the larger) holds for both.
+    EXPECT_GT(Bal(*venue, "USD").locked, D("5100"));
+    venue->OnQuote(Q("48980.0", "48990.0", "1", "0.04"));
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state, OrderState::kExpired);
+    // The limit's remaining 0.06 is still set aside.
+    EXPECT_GT(Bal(*venue, "USD").locked, D("2900"));
+    venue->OnQuote(Q("48980.0", "48990.0", "1", "1"));
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(Bal(*venue, "BTC").total, D("0.1"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+}
+
+TEST(PaperOco, RefusesALimitThatWouldTakeOrBadPrices) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("51000.0", "51010.0"));
+    auto taking = venue->PlaceOco(SellOco("1", "51000", "49000"));
+    ASSERT_FALSE(taking.has_value());
+    EXPECT_EQ(taking.error().category, ErrorCategory::kWouldTake);
+    auto backwards = venue->PlaceOco(SellOco("1", "49000", "51000"));
+    ASSERT_FALSE(backwards.has_value());
+    EXPECT_EQ(backwards.error().category, ErrorCategory::kInvalidArgument);
+    auto too_much = venue->PlaceOco(SellOco("2", "52000", "49000"));
+    ASSERT_FALSE(too_much.has_value());
+    EXPECT_EQ(too_much.error().category, ErrorCategory::kInsufficientFunds);
+    EXPECT_TRUE(venue->GetOpenOrders()->empty());
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+TEST(PaperOco, ADeferredPairRefusedAtItsFirstQuoteClosesBoth) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    venue->SetDeferMatching(true);
+    auto ack = venue->PlaceOco(SellOco("1", "51000", "49000"));
+    ASSERT_TRUE(ack.has_value());
+    venue->SetDeferMatching(false);
+    venue->OnQuote(Q("51000.0", "51010.0"));  // the limit would take here
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state,
+              OrderState::kRejected);
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state,
+              OrderState::kRejected);
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+TEST(PaperLimit, ADeferredOrderCancelledBeforeItsQuoteIsReleasedOnce) {
+    Fixture f;
+    f.options.initial_balances["BTC"] = D("1");
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    venue->SetDeferMatching(true);
+    auto r = Order(Side::kSell, OrderType::kLimit, "1", "50000");
+    r.post_only = true;
+    auto ack = venue->PlaceOrder(r);
+    ASSERT_TRUE(ack.has_value());
+    venue->SetDeferMatching(false);
+    EXPECT_EQ(venue->CancelOrder(ack->order_id), CancelOutcome::kCancelled);
+    venue->OnQuote(Q("50000.0", "50010.0"));  // it would have been refused
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+    EXPECT_EQ(venue->GetOrder(ack->order_id)->state, OrderState::kCancelled);
+}
+
 }  // namespace

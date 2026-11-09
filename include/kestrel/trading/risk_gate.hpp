@@ -116,6 +116,10 @@ class RiskGatedVenue : public TradingVenue {
     std::string_view Name() const override { return mVenue->Name(); }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
+    // Checked as its limit order, counting as two orders towards the order
+    // limits.
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override;
     types::Result<CancelOutcome> CancelOrder(
         const std::string& order_id) override {
         return mVenue->CancelOrder(order_id);
@@ -146,6 +150,10 @@ class RiskGatedVenue : public TradingVenue {
     }
 
    private:
+    // The checks PlaceOrder makes, for `orders` orders at once (an OCO is
+    // two), counting them if they pass. mMutex must be held.
+    types::Result<void> Admit(const types::OrderRequest& request,
+                              std::size_t orders);
     struct ReferencePrice {
         types::Decimal price;
         types::Timestamp time;

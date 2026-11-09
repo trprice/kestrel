@@ -107,6 +107,12 @@ struct BreakoutParams {
     std::size_t trend_sma = 0;
     // On a market that closes: sell in OnSessionClosing.
     bool flatten_at_close = false;
+    // Rest the target (target_multiple) at the venue as a sell limit, paired
+    // with the protective stop as one-cancels-other (TradingVenue::PlaceOco),
+    // so it fills where the price reaches it instead of selling at market on a
+    // close past it. A venue without them, or a target the price is already
+    // past, falls back to the close.
+    bool resting_target = false;
     // Volume confirmation: the breakout's first close above the trigger
     // counts only if its bar traded at least this many times the average
     // volume of the volume_bars bars before it; zero turns it off. Needs
@@ -155,16 +161,24 @@ struct BreakoutParams {
 // Long: on the entry's fill, a sell-stop rests at the setup's low less
 // stop_buffer_bps (with atr_stop, atr_stop ATRs under the level broken). The
 // target is checked on closes: a bar closing at or above it sells at market
-// (the stop is cancelled first; one order cannot hold the shares for both, and
-// the venue has no one-cancels-other). So does the max_hold_bars-th bar held,
-// and with flatten_at_close the session's closing hook. A downward break is
-// only ever an exit: there is no shorting. With breakeven_r or trail_bars, a
-// close that is not an exit can raise the stop (it is cancelled and placed
-// again at the new level; never lowered, and never at or above the close).
-// While the market is closed (daily bars, or a bar that closes the session) the
-// new stop is placed at the next open. A raised stop the venue refuses there
-// (an open gapped through it) is replaced by a market sell, as is a stop to be
-// placed again after a close through it.
+// (the stop is cancelled first; one order cannot hold the shares for both).
+// So does the max_hold_bars-th bar held, and with flatten_at_close the
+// session's closing hook. With resting_target, the target instead rests as a
+// sell limit paired with the stop, one-cancels-other: the venue closes the
+// stop once the target fills, and the other way round. If the target fills
+// only in part, the pair is taken down and the rest sold at market. A venue
+// without such pairs, or one that refuses the pair (the price already past
+// the target, a risk limit its two orders break), leaves the stop alone and
+// the target to the close, for the rest of the trade; a pair whose placement
+// got no answer may rest, so nothing else is placed until the next bar, and a
+// pair that came back half closed is taken down and tried again then. A
+// downward break is only ever an exit: there is no shorting. With breakeven_r
+// or trail_bars, a close that is not an exit can raise the stop (it is
+// cancelled and placed again at the new level; never lowered, and never at or
+// above the close). While the market is closed (daily bars, or a bar that
+// closes the session) the new stop is placed at the next open. A raised stop
+// the venue refuses there (an open gapped through it) is replaced by a market
+// sell, as is a stop to be placed again after a close through it.
 //
 // With volume_ratio, the first close above the trigger (of confirm_closes,
 // or the throwback's) must come on volume_ratio times the average volume of
@@ -326,6 +340,11 @@ class Breakout : public Strategy {
     std::string mEntryId;
     std::string mStopId;
     std::string mExitId;
+    // resting_target: the target's limit, paired with mStopId.
+    std::string mTargetId;
+    bool mTargetHit = false;      // the target has sold some of the position
+    bool mTargetRefused = false;  // refused this trade: the close checks it
+    bool mNoOco = false;          // the venue has no one-cancels-other
 };
 
 }  // namespace kestrel::strategy

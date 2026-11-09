@@ -53,6 +53,23 @@ class TradingVenue {
     virtual types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) = 0;
 
+    // Places a one-cancels-other pair (types::OcoRequest), rounded and checked
+    // as PlaceOrder does each order. Each leg is an ordinary order to
+    // CancelOrder, GetOrder, GetOpenOrders and the fills. The quantity is held
+    // for both at once: once either fills, or the stop triggers, the venue
+    // closes the other (kExpired or kCancelled), and cancelling either cancels
+    // both. The paper venue also closes the other after a part fill; Binance.US
+    // documents only the cancel, so a caller should not rely on that. A pair
+    // whose limit would take at once is refused as a whole. Optional: a venue
+    // without them returns kNotImplemented.
+    virtual types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) {
+        (void)request;
+        return types::MakeError(
+            types::ErrorCategory::kNotImplemented,
+            std::string(Name()) + " has no one-cancels-other orders");
+    }
+
     // An unknown ID is kNotFound; an order that already filled is a normal
     // outcome reported via CancelOutcome.
     virtual types::Result<CancelOutcome> CancelOrder(

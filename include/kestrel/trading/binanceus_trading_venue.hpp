@@ -80,6 +80,13 @@ class BinanceUSTradingVenue : public TradingVenue {
 
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
+    // POST /api/v3/order/oco: a LIMIT_MAKER leg and a STOP_LOSS leg. Like
+    // PlaceOrder it is never sent twice: a placement without an answer is
+    // looked up by its legs' client order IDs. A pair found with only one leg,
+    // or placed with an answer that cannot be read, is cancelled and reported
+    // as not placed.
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override;
     types::Result<CancelOutcome> CancelOrder(
         const std::string& order_id) override;
     types::Result<std::vector<std::string>> CancelAll() override;
@@ -106,6 +113,10 @@ class BinanceUSTradingVenue : public TradingVenue {
     // GET /api/v3/order by client order ID; kNotFound if Binance has none.
     types::Result<types::OrderStatus> LookupClientOrder(
         const std::string& native, const std::string& client_id);
+    // Cancels an order list by its client ID (DELETE /api/v3/orderList), for a
+    // pair placed but not trackable; says what happened, for an error message.
+    std::string CancelList(const std::string& native,
+                           const std::string& list_id);
     // What became of an order a cancel could not settle.
     types::Result<CancelOutcome> CancelOutcomeOf(const std::string& order_id);
 

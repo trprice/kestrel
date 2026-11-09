@@ -578,6 +578,8 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Count("atr_bars", params.atr_bars), params.atr_bars, error);
     Take(p.Number("target_multiple", params.target_multiple),
          params.target_multiple, error);
+    Take(p.Flag("resting_target", params.resting_target), params.resting_target,
+         error);
     Take(p.Count("arm_bars", params.arm_bars), params.arm_bars, error);
     Take(p.Whole("max_hold_bars", params.max_hold_bars), params.max_hold_bars,
          error);

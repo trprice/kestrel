@@ -160,6 +160,10 @@ class PaperTradingVenue : public TradingVenue {
     std::string_view Name() const override { return "paper"; }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
+    // Both legs are booked together; the limit is post-only, and the larger
+    // of the two reserves is held once for both.
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override;
     types::Result<CancelOutcome> CancelOrder(
         const std::string& order_id) override;
     types::Result<std::vector<std::string>> CancelAll() override;
@@ -191,6 +195,14 @@ class PaperTradingVenue : public TradingVenue {
         ~DeliverOnExit() { venue.Deliver(); }
     };
     struct Candidate;
+    // An order request rounded to its symbol's rules, with the symbol's
+    // assets.
+    struct Prepared {
+        types::OrderRequest request;
+        types::SymbolInfo info;
+        std::string base_asset;
+        std::string quote_asset;
+    };
     // A trade seen in a quote stream.
     struct Trade {
         types::Decimal price;
@@ -202,7 +214,25 @@ class PaperTradingVenue : public TradingVenue {
     // without mMutex.
     void Deliver();
 
+    // Checks and rounds an order; without mMutex (it may fetch symbol info).
+    types::Result<Prepared> Prepare(const types::OrderRequest& raw) const;
+
     // All of these require mMutex to be held.
+    // The order `prepared` describes, not yet booked, with its reserve per
+    // unit priced from `quote` (a market buy needs one).
+    types::Result<Order> Build(const Prepared& prepared,
+                               const types::Quote* quote,
+                               types::Timestamp now) const;
+    // Whether `order` is post-only and would take at `quote`.
+    bool WouldTake(const Order& order, const types::Quote* quote) const;
+    types::Result<void> CheckFunds(const std::string& asset,
+                                   const types::Decimal& needed);
+    std::string NextOrderId();
+    // Reserves for and books an order with its ID, sending it on its way with
+    // order_latency; without, the caller enters it.
+    Order& Book(Order order);
+    // Closes the one-cancels-other partner of `order`, if it is still active.
+    void CloseLinked(Order& order, types::OrderState state);
     // Queues `order`'s state, and `fill` if there is one, for the listeners.
     void Notice(const Order& order, const std::optional<types::Fill>& fill);
     // Carries out the orders and cancels whose order_latency is up.

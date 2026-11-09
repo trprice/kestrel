@@ -339,8 +339,8 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
             }
             {
                 const char* due = nullptr;
-                if (mTarget && bar.close >= *mTarget) {
-                    due = "target";
+                if (mTarget && mTargetId.empty() && bar.close >= *mTarget) {
+                    due = "target";  // not resting at the venue
                 } else if (mParams.max_hold_bars > 0 &&
                            mBarsHeld >= mParams.max_hold_bars) {
                     due = "held long enough";
@@ -491,6 +491,8 @@ void Breakout::GoLong(Context& context) {
     mTarget.reset();
     mRisk = mEntryPrice - mLevels->stop;
     mStopMoved = false;
+    mTargetHit = false;
+    mTargetRefused = false;
     if (mParams.target_multiple.Sign() > 0) {
         mTarget = mEntryPrice + mParams.target_multiple * mLevels->height;
     }
@@ -510,6 +512,9 @@ void Breakout::GoFlat() {
     mEntryId.clear();
     mStopId.clear();
     mExitId.clear();
+    mTargetId.clear();
+    mTargetHit = false;
+    mTargetRefused = false;
 }
 
 void Breakout::CancelOther(Context& context, std::string& id,
@@ -532,6 +537,66 @@ void Breakout::CancelOther(Context& context, std::string& id,
 
 void Breakout::PlaceStop(Context& context) {
     mStopMoved = false;  // placed at mLevels->stop, or retried next bar
+    if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused) {
+        types::OcoRequest pair;
+        pair.symbol = mParams.symbol;
+        pair.side = Side::kSell;
+        pair.quantity = mHeld;
+        pair.limit_price = *mTarget;
+        pair.stop_price = mLevels->stop;
+        auto ack = context.Venue().PlaceOco(pair);
+        if (ack && types::IsActive(ack->limit.state) &&
+            types::IsActive(ack->stop.state)) {
+            mStopId = ack->stop.order_id;
+            mTargetId = ack->limit.order_id;
+            return;
+        }
+        if (ack) {
+            // One leg closed at once: take the other down (cancelling either
+            // cancels both) and try again on the next bar. A stop that sold
+            // at once makes us flat by its fill.
+            spdlog::error(
+                "breakout: {}'s target and stop came back {} and {}; trying "
+                "again on the next bar",
+                mParams.symbol, types::ToString(ack->limit.state),
+                types::ToString(ack->stop.state));
+            for (const auto* leg : {&ack->limit, &ack->stop}) {
+                if (types::IsActive(leg->state)) {
+                    std::string id = leg->order_id;
+                    CancelOther(context, id, "half-placed pair");
+                }
+            }
+            return;
+        }
+        const auto category = ack.error().category;
+        if (category == types::ErrorCategory::kNetwork ||
+            category == types::ErrorCategory::kTimeout ||
+            category == types::ErrorCategory::kServer ||
+            category == types::ErrorCategory::kRateLimit) {
+            // It may have been placed, or may be next time: not a second
+            // sell beside it now.
+            spdlog::error(
+                "breakout: {}'s target and stop failed: {}; unprotected "
+                "until the next bar",
+                mParams.symbol, ack.error().ToString());
+            return;
+        }
+        if (category == types::ErrorCategory::kNotImplemented) {
+            spdlog::warn(
+                "breakout: {} cannot rest the target with the stop ({}); "
+                "selling on a close past it instead",
+                context.Venue().Name(), ack.error().ToString());
+            mNoOco = true;
+        } else {
+            // Refused (the price already past the target, a risk limit the
+            // pair's two orders break): the stop alone, the close the target.
+            spdlog::warn(
+                "breakout: {}'s target {} cannot rest with the stop: {}; "
+                "selling on a close past it instead",
+                mParams.symbol, mTarget->ToString(), ack.error().ToString());
+            mTargetRefused = true;
+        }
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kSell;
@@ -640,7 +705,12 @@ void Breakout::MoveStop(Context& context) {
     if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
         return;  // it sold first; its fill makes us flat
     }
+    if (*cancelled == trading::CancelOutcome::kAlreadyClosed &&
+        !mTargetId.empty()) {
+        return;  // the target sold first; its updates settle it
+    }
     mStopId.clear();
+    mTargetId.clear();  // cancelled with its stop
     PlaceStop(context);
     if (mStopId.empty()) {
         // Refused: most likely the price is already through it (an open
@@ -661,7 +731,12 @@ void Breakout::Exit(Context& context, const char* why) {
                          mStopId, cancelled.error().ToString());
             return;  // it still protects; try again on the next bar
         }
+        if (*cancelled == trading::CancelOutcome::kAlreadyClosed &&
+            !mTargetId.empty()) {
+            return;  // the target sold first; its updates settle it
+        }
         mStopId.clear();
+        mTargetId.clear();  // cancelled with its stop
     }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
@@ -731,6 +806,7 @@ void Breakout::OnFill(Context& context, const types::Fill& fill) {
                 fill.quantity.ToString(), mParams.symbol);
             mHeld += fill.quantity;
             CancelOther(context, mStopId, "protective stop");
+            mTargetId.clear();  // cancelled with its stop
             PlaceStop(context);
             return;
         }
@@ -758,11 +834,30 @@ void Breakout::OnFill(Context& context, const types::Fill& fill) {
                       StateName());
     }
     mHeld = std::max(mHeld - fill.quantity, Decimal());
+    if (!mTargetId.empty() && fill.order_id == mTargetId) {
+        mTargetHit = true;
+        if (mState == State::kLong && mHeld.Sign() > 0) {
+            // In part: the price got there, so sell the rest now rather
+            // than leave it to a stop sized for the whole (cancelling the
+            // target cancels its stop too, on a venue that has not already).
+            const auto cancelled =
+                context.Venue().CancelOrder(std::exchange(mTargetId, {}));
+            if (cancelled &&
+                *cancelled == trading::CancelOutcome::kAlreadyFilled) {
+                return;  // it sold the rest too; that fill makes us flat
+            }
+            Exit(context, "target, the rest");
+            return;
+        }
+    }
     if (selling && mHeld.Sign() == 0) {
-        // Sold out, by the stop or the exit: the other must not sell too
-        // (the exit's cancel of the stop may not have landed yet).
+        // Sold out, by the stop, the target or the exit: the others must not
+        // sell too (the exit's cancel of the stop may not have landed yet).
         if (fill.order_id != mStopId) {
             CancelOther(context, mStopId, "protective stop");
+        }
+        if (fill.order_id != mTargetId) {
+            CancelOther(context, mTargetId, "target");
         }
         if (fill.order_id != mExitId) {
             CancelOther(context, mExitId, "exit");
@@ -789,12 +884,36 @@ void Breakout::OnOrderUpdate(Context& context,
         } else {
             GoFlat();
         }
+    } else if (status.order_id == mTargetId && mState == State::kLong) {
+        // The pair closes together: the stop's own update follows.
+        mTargetId.clear();
+        if (status.state == OrderState::kRejected) {
+            mTargetRefused = true;  // the price is past it: the close checks
+        }
     } else if (status.order_id == mStopId && mState == State::kLong) {
+        mStopId.clear();
+        if (!mTargetId.empty() && status.state == OrderState::kRejected) {
+            mTargetRefused = true;  // the pair was refused: not again
+        }
+        if (!mTargetId.empty()) {
+            // Closed with its target, which may have sold some: take the
+            // target down too (if it is still working) before going on.
+            const std::string target = std::exchange(mTargetId, {});
+            const auto cancelled = context.Venue().CancelOrder(target);
+            if (cancelled &&
+                *cancelled == trading::CancelOutcome::kAlreadyFilled) {
+                return;  // the target sold it all; its fill makes us flat
+            }
+        }
+        if (mTargetHit) {
+            // The target sold part: the price got there, so sell the rest.
+            Exit(context, "target, the rest");
+            return;
+        }
         spdlog::warn(
             "breakout: protective stop {} closed: {}; placing it "
             "again for {}",
             status.order_id, types::ToString(status.state), mHeld.ToString());
-        mStopId.clear();
         PlaceStop(context);
     } else if (status.order_id == mExitId && mState == State::kExiting) {
         spdlog::warn("breakout: exit {} closed: {}; {} still held",

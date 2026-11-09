@@ -168,6 +168,7 @@ the entry, checked on closes.
 | `stop_buffer_bps` | how far below the setup's low the protective stop sits (default 10) |
 | `atr_stop`, `atr_bars` | instead, put the protective stop `atr_stop` average true ranges (Wilder's, over `atr_bars` bars, measured at the setup) below the level broken, so its distance follows the market's volatility rather than the setup's shape (defaults 0: off, and 14). The ATR is smoothed over the bars loaded, so it asks for `6 · atr_bars + 1` of warmup. A setup whose ATR stop would fall to zero or below arms nothing. `breakeven_r` measures the risk from this stop, `trail_bars` can still raise it, and the target is still the setup's height. A tight stop can sit above a `confirm = "closes"` market entry that gaps down: the venue then refuses the stop or fills it at once; without a stop in place, the next close at or below it sells at market, and a close above it places the stop again |
 | `target_multiple` | the target is the entry plus this many times the setup's height (default 1; 0: none) |
+| `resting_target` | rest the target at the venue as a sell limit paired with the protective stop, one-cancels-other, so it sells where the price reaches it instead of at market on a close past it (default `false`). Whichever fills first, the venue closes the other; if the target fills only in part, the rest is sold at market. The paper venue and Binance.US have such pairs; on a venue without them, or when the venue refuses the pair (the price already past the target, or a risk limit the pair's two orders break), the stop rests alone and the target is left to the close |
 | `arm_bars` | bars an untriggered entry stays (default 1); with `closes`, bars for the closes to start |
 | `max_hold_bars` | exit after this many whole bars held (default 0: never) |
 | `trend_sma` | enter only while the close is above this many bars' average close (default 0: off) |
@@ -203,8 +204,9 @@ height shown above the fill:
 
 The target and the time exit sell at market on a bar's close; only the
 protective stop rests at the venue, since a spot account cannot hold the same
-shares for two sell orders. A bar-only backtest fills the entry and the stop
-inside the bar at their own prices (see `RunBacktest`).
+shares for two sell orders unless they are paired (`resting_target`). A
+bar-only backtest fills the entry, the stop and a resting target inside the
+bar at their own prices (see `RunBacktest`).
 
 On a market that closes (Schwab), daily bars close after the market, so the
 entry a daily setup calls for is placed at the next open (a buy-stop the open

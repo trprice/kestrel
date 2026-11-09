@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "kestrel/trading/trading_venue.hpp"
 #include "kestrel/types/market_hours.hpp"
@@ -26,6 +27,8 @@ class SessionGatedVenue final : public TradingVenue {
     std::string_view Name() const override { return mVenue->Name(); }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
+    types::Result<types::OcoAcknowledgement> PlaceOco(
+        const types::OcoRequest& request) override;
     types::Result<CancelOutcome> CancelOrder(
         const std::string& order_id) override {
         return mVenue->CancelOrder(order_id);
@@ -56,6 +59,9 @@ class SessionGatedVenue final : public TradingVenue {
     }
 
    private:
+    // The refusal for an order on `symbol` now, if the market is closed.
+    std::optional<types::Error> Closed(const types::Symbol& symbol) const;
+
     const std::shared_ptr<TradingVenue> mVenue;
     const std::shared_ptr<const types::MarketHours> mHours;
     const std::function<types::Timestamp()> mClock;
