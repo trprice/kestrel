@@ -4,10 +4,12 @@
 // placeholders, Decimal and timestamp text, and the columns of a fill row,
 // which the `fills` and `account_fills` tables have in common.
 
+#include <charconv>
 #include <cstddef>
-#include <exception>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "kestrel/db/database.hpp"
@@ -49,6 +51,40 @@ inline std::optional<types::Decimal> ParseOptional(
 
 inline types::Decimal ParseDecimal(const std::optional<std::string>& text) {
     return ParseOptional(text).value_or(types::Decimal());
+}
+
+// A whole-number or floating-point column. NULL or anything that is not
+// wholly a number is kParse (naming `what`), rather than a guess or an
+// exception, so a bad row is noticed by the caller.
+template <typename T>
+types::Result<T> ParseNumber(const std::optional<std::string>& text,
+                             std::string_view what) {
+    T value{};
+    if (text) {
+        const char* end = text->data() + text->size();
+        const auto [ptr, ec] = std::from_chars(text->data(), end, value);
+        if (ec == std::errc() && ptr == end && !text->empty()) {
+            return value;
+        }
+    }
+    return types::MakeError(types::ErrorCategory::kParse,
+                            std::string(what) + ": unreadable number '" +
+                                text.value_or("NULL") + "'");
+}
+
+inline types::Result<std::int64_t> ParseInt(
+    const std::optional<std::string>& text, std::string_view what) {
+    return ParseNumber<std::int64_t>(text, what);
+}
+
+// A column selected as epoch milliseconds (kMillis).
+inline types::Result<types::Timestamp> ParseMillis(
+    const std::optional<std::string>& text, std::string_view what) {
+    auto ms = ParseInt(text, what);
+    if (!ms) {
+        return std::unexpected(ms.error());
+    }
+    return types::FromEpochMillis(*ms);
 }
 
 // Opens a timestamp column as epoch milliseconds:
@@ -129,11 +165,11 @@ inline types::Result<types::Fill> ParseFill(const Database::Row& row,
     } else {
         return bad("unknown liquidity '" + at(9) + "' for " + f.fill_id);
     }
-    try {
-        f.time = types::FromEpochMillis(std::stoll(at(10)));
-    } catch (const std::exception&) {
+    auto time = ParseMillis(row[first + 10], "fill row: time");
+    if (!time) {
         return bad("unreadable time '" + at(10) + "' for " + f.fill_id);
     }
+    f.time = *time;
     return f;
 }
 

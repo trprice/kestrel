@@ -75,6 +75,8 @@ class SchwabCalendar : public types::TradingCalendar {
         mDays;  // answered
     mutable std::deque<std::chrono::year_month_day> mQueue;
     mutable std::set<std::chrono::year_month_day> mQueued;  // or being asked
+    // Held back while mRetryAt is ahead, and queued once it has passed.
+    std::set<std::chrono::year_month_day> mDeferred;
     mutable types::Timestamp mRetryAt{};  // after a failed request
     bool mStopping = false;
 

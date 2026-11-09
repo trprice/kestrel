@@ -99,4 +99,53 @@ TEST(RecentBars, StopsWhenTheHistoryRunsOut) {
 }
 
 }  // namespace
+// Refuses a span reaching past the newest `kept` hours, as Kraken refuses one
+// past the 720 bars it keeps.
+class KeepsOnly : public HistorySource {
+   public:
+    types::Result<std::vector<types::Bar>> GetBars(const types::Symbol& s,
+                                                   Timeframe tf,
+                                                   Timestamp start,
+                                                   Timestamp end) override {
+        if (start < end - std::chrono::hours(kept)) {
+            requests.emplace_back(start, end);
+            return types::MakeError(types::ErrorCategory::kUnsupported,
+                                    "kept only so many");
+        }
+        return HistorySource::GetBars(s, tf, start, end);
+    }
+    int kept = 0;
+};
+
+TEST(RecentBars, ARetentionLimitGivesWhatTheSourceKeeps) {
+    KeepsOnly source;
+    for (int h = 0; h < 100; ++h) {
+        source.hours.push_back(h);
+    }
+    source.kept = 10;
+    // Ten asked for, with a padding bar: one span too far, then one that fits.
+    auto bars = RecentBars(source, "X", Timeframe::kH1, 10, Hour(100));
+    ASSERT_OK(bars);
+    EXPECT_EQ(bars->size(), 10u);
+    EXPECT_EQ(bars->back().open_time, Hour(99));
+}
+
+TEST(RecentBars, ARetentionLimitWellShortOfTheCountIsFoundByBisection) {
+    KeepsOnly source;
+    for (int h = 0; h < 2000; ++h) {
+        source.hours.push_back(h);
+    }
+    source.kept = 720;
+    auto bars = RecentBars(source, "X", Timeframe::kH1, 1000, Hour(2000));
+    ASSERT_OK(bars);
+    EXPECT_EQ(bars->size(), 720u);  // all the source keeps
+    EXPECT_LT(source.requests.size(), 16u);
+}
+
+TEST(RecentBars, OtherErrorsStillFail) {
+    KeepsOnly source;
+    source.kept = 0;  // refuses everything
+    EXPECT_FALSE(RecentBars(source, "X", Timeframe::kH1, 3, Hour(100)));
+}
+
 }  // namespace kestrel::data

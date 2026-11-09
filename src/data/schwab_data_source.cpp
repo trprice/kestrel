@@ -196,15 +196,36 @@ types::Result<std::optional<types::TradingDay>> SchwabCalendar::Ask(
 
 void SchwabCalendar::Work() {
     std::unique_lock lock(mMutex);
+    const auto ready = [this] { return mStopping || !mQueue.empty(); };
     for (;;) {
-        mWake.wait(lock, [this] { return mStopping || !mQueue.empty(); });
+        if (!mDeferred.empty() && mClock() >= mRetryAt) {
+            // The wait after a failure is over: ask about the dates it held
+            // back, which no caller may ask about again.
+            for (const year_month_day& date : mDeferred) {
+                if (!mDays.contains(date) && mQueued.insert(date).second) {
+                    mQueue.push_back(date);
+                }
+            }
+            mDeferred.clear();
+        }
+        if (mDeferred.empty()) {
+            mWake.wait(lock, ready);
+        } else {
+            // mRetryAt is on mClock, which need not be the system clock:
+            // look again every 30 s.
+            mWake.wait_for(lock, std::chrono::seconds(30), ready);
+        }
         if (mStopping) {
             return;
+        }
+        if (mQueue.empty()) {
+            continue;
         }
         const year_month_day date = mQueue.front();
         mQueue.pop_front();
         if (mClock() < mRetryAt) {
-            mQueued.erase(date);  // asked again once the wait is over
+            mQueued.erase(date);
+            mDeferred.insert(date);  // asked once the wait is over
             mIdle.notify_all();
             continue;
         }

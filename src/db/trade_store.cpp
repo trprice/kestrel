@@ -33,8 +33,12 @@ Result<std::unique_ptr<TradeStore>> TradeStore::StartRun(
     if (!rows) {
         return std::unexpected(rows.error());
     }
+    auto run_id = sql::ParseInt((*rows)[0][0], "runs: run_id");
+    if (!run_id) {
+        return std::unexpected(run_id.error());
+    }
     return std::unique_ptr<TradeStore>(
-        new TradeStore(std::move(database), std::stoll(*(*rows)[0][0])));
+        new TradeStore(std::move(database), *run_id));
 }
 
 Result<void> TradeStore::WriteFills(std::span<const types::Fill> fills) {
@@ -171,7 +175,11 @@ Result<std::vector<TradeStore::StoredPnl>> TradeStore::LoadPnl() const {
     std::vector<StoredPnl> out;
     for (const auto& row : *rows) {
         StoredPnl s;
-        s.time = types::FromEpochMillis(std::stoll(*row[0]));
+        auto time = sql::ParseMillis(row[0], "pnl_snapshots: time");
+        if (!time) {
+            return std::unexpected(time.error());
+        }
+        s.time = *time;
         s.row.symbol = *row[1];
         s.row.quantity = ParseDecimal(row[2]);
         s.row.average_price = ParseDecimal(row[3]);
@@ -198,17 +206,34 @@ Result<std::vector<TradeStore::StoredLatency>> TradeStore::LoadLatency() const {
     std::vector<StoredLatency> out;
     for (const auto& row : *rows) {
         StoredLatency s;
-        s.start = types::FromEpochMillis(std::stoll(*row[0]));
-        s.end = types::FromEpochMillis(std::stoll(*row[1]));
-        s.row.endpoint = *row[2];
-        s.row.count = std::stoull(*row[3]);
-        s.row.errors = std::stoull(*row[4]);
-        s.row.rate_limited = std::stoull(*row[5]);
-        s.row.min_ms = std::stod(*row[6]);
-        s.row.p50_ms = std::stod(*row[7]);
-        s.row.p95_ms = std::stod(*row[8]);
-        s.row.p99_ms = std::stod(*row[9]);
-        s.row.max_ms = std::stod(*row[10]);
+        auto start = sql::ParseMillis(row[0], "venue_latency: window_start");
+        auto end = sql::ParseMillis(row[1], "venue_latency: window_end");
+        if (!start || !end) {
+            return std::unexpected(!start ? start.error() : end.error());
+        }
+        s.start = *start;
+        s.end = *end;
+        s.row.endpoint = row[2].value_or("");
+        std::uint64_t* const counts[] = {&s.row.count, &s.row.errors,
+                                         &s.row.rate_limited};
+        for (std::size_t i = 0; i < 3; ++i) {
+            auto n = sql::ParseNumber<std::uint64_t>(row[3 + i],
+                                                     "venue_latency: counts");
+            if (!n) {
+                return std::unexpected(n.error());
+            }
+            *counts[i] = *n;
+        }
+        double* const times[] = {&s.row.min_ms, &s.row.p50_ms, &s.row.p95_ms,
+                                 &s.row.p99_ms, &s.row.max_ms};
+        for (std::size_t i = 0; i < 5; ++i) {
+            auto ms =
+                sql::ParseNumber<double>(row[6 + i], "venue_latency: times");
+            if (!ms) {
+                return std::unexpected(ms.error());
+            }
+            *times[i] = *ms;
+        }
         out.push_back(std::move(s));
     }
     return out;

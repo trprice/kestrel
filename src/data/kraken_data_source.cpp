@@ -19,10 +19,6 @@ namespace {
 
 constexpr std::size_t kMaxBarsPerRequest = 720;
 
-bool StartsWith(std::string_view s, std::string_view prefix) {
-    return s.starts_with(prefix);
-}
-
 }  // namespace
 
 Result<int> KrakenInterval(types::Timeframe tf) {
@@ -54,30 +50,30 @@ Result<int> KrakenInterval(types::Timeframe tf) {
 }
 
 ErrorCategory ClassifyKrakenError(std::string_view code) {
-    if (StartsWith(code, "EAPI:Rate limit") ||
-        StartsWith(code, "EGeneral:Too many requests") ||
-        StartsWith(code, "EOrder:Rate limit") ||
-        StartsWith(code, "EGeneral:Temporary lockout")) {
+    if (code.starts_with("EAPI:Rate limit") ||
+        code.starts_with("EGeneral:Too many requests") ||
+        code.starts_with("EOrder:Rate limit") ||
+        code.starts_with("EGeneral:Temporary lockout")) {
         return ErrorCategory::kRateLimit;
     }
-    if (StartsWith(code, "EService:") ||
-        StartsWith(code, "EGeneral:Internal error")) {
+    if (code.starts_with("EService:") ||
+        code.starts_with("EGeneral:Internal error")) {
         return ErrorCategory::kServer;
     }
-    if (StartsWith(code, "EAPI:Invalid key") ||
-        StartsWith(code, "EAPI:Invalid signature") ||
-        StartsWith(code, "EAPI:Invalid nonce") ||
-        StartsWith(code, "EGeneral:Permission denied")) {
+    if (code.starts_with("EAPI:Invalid key") ||
+        code.starts_with("EAPI:Invalid signature") ||
+        code.starts_with("EAPI:Invalid nonce") ||
+        code.starts_with("EGeneral:Permission denied")) {
         return ErrorCategory::kAuth;
     }
-    if (StartsWith(code, "EQuery:Unknown asset pair") ||
-        StartsWith(code, "EOrder:Unknown order")) {
+    if (code.starts_with("EQuery:Unknown asset pair") ||
+        code.starts_with("EOrder:Unknown order")) {
         return ErrorCategory::kNotFound;
     }
-    if (StartsWith(code, "EOrder:Insufficient funds")) {
+    if (code.starts_with("EOrder:Insufficient funds")) {
         return ErrorCategory::kInsufficientFunds;
     }
-    if (StartsWith(code, "EGeneral:Invalid arguments")) {
+    if (code.starts_with("EGeneral:Invalid arguments")) {
         return ErrorCategory::kInvalidArgument;
     }
     return ErrorCategory::kRejected;
@@ -330,8 +326,11 @@ Result<types::SymbolInfo> KrakenDataSource::GetSymbolInfo(
     if (!lot_decimals) {
         return std::unexpected(lot_decimals.error());
     }
-    const auto decimals = lot_decimals->Mantissa() / 1;
-    if (decimals < 0 || decimals > types::Decimal::kMaxScale) {
+    // A whole number of decimal places (8, or 8.0 written with a scale).
+    const types::Decimal places = lot_decimals->Normalized();
+    const auto decimals = places.Mantissa();
+    if (places.Scale() != 0 || decimals < 0 ||
+        decimals > types::Decimal::kMaxScale) {
         return MakeError(ErrorCategory::kParse,
                          "kraken AssetPairs: bad lot_decimals");
     }

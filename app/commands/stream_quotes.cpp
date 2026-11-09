@@ -39,6 +39,15 @@ class StreamQuotesCommand : public Command {
         }
         spdlog::info("provider={} data={}",
                      config::ToString(config.GetProvider()), (*source)->Name());
+        if (quote_writer) {
+            // The quotes carry the data source's name as their venue.
+            if (auto primed = quote_writer->Prime(
+                    std::string((*source)->Name()), config.GetSymbols());
+                !primed) {
+                spdlog::error("database: {}", primed.error().ToString());
+                return 1;
+            }
+        }
 
         // Quotes arrive on the stream thread, and several symbols can update
         // at once, so output is serialised.

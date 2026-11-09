@@ -64,8 +64,11 @@ Result<std::optional<types::Timestamp>> MarketTradeStore::Newest(
     if (rows->empty() || !(*rows)[0][0]) {
         return std::optional<types::Timestamp>{};
     }
-    return std::optional<types::Timestamp>(
-        types::FromEpochMillis(std::stoll(*(*rows)[0][0])));
+    auto newest = sql::ParseMillis((*rows)[0][0], "market_trades: newest");
+    if (!newest) {
+        return std::unexpected(newest.error());
+    }
+    return std::optional<types::Timestamp>(*newest);
 }
 
 Result<std::vector<types::MarketTrade>> MarketTradeStore::Load(
@@ -100,8 +103,13 @@ Result<std::vector<types::MarketTrade>> MarketTradeStore::Load(
             return MakeError(ErrorCategory::kParse,
                              "market_trades: bad taker_side '" + *row[4] + "'");
         }
-        t.trade_id = std::stoll(*row[0]);
-        t.time = types::FromEpochMillis(std::stoll(*row[1]));
+        auto id = sql::ParseInt(row[0], "market_trades: trade_id");
+        auto time = sql::ParseMillis(row[1], "market_trades: time");
+        if (!id || !time) {
+            return std::unexpected(!id ? id.error() : time.error());
+        }
+        t.trade_id = *id;
+        t.time = *time;
         t.price = *price;
         t.quantity = *quantity;
         t.taker_side = *row[4] == "buy" ? types::Side::kBuy : types::Side::kSell;

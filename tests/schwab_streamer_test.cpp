@@ -783,4 +783,13 @@ TEST_F(SchwabStreamerTest, OnlyFixedTimeframesAreBuilt) {
 }
 
 }  // namespace
+TEST(SchwabLevelOneMerger, ASymbolUnknownBeforeAReconnectIsTriedAgain) {
+    SchwabLevelOneMerger merger;
+    EXPECT_TRUE(
+        Merge(merger, R"([{"key":"SPY","32":"Unknown","1":0,"2":0}])").empty());
+    EXPECT_TRUE(Merge(merger, R"([{"key":"SPY","1":767.78}])").empty());
+    merger.Reset();  // a new connection
+    EXPECT_EQ(Merge(merger, R"([{"key":"SPY","1":767.78}])").size(), 1u);
+}
+
 }  // namespace kestrel::data

@@ -1069,4 +1069,31 @@ TEST(BinanceUSOrders, NewOrdersAreHeldToTheOrderRate) {
 }
 
 }  // namespace
+TEST(BinanceUSOrders, AnUnansweredCancelOfAnExpiredOrderSaysItIsClosed) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order", Placed(42, "x", "NEW"));
+    ASSERT_OK(venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700")));
+    f.http->PushError(
+        "/api/v3/order",
+        types::MakeError(types::ErrorCategory::kTimeout, "timed out").error());
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 42, "EXPIRED", "LIMIT",
+                                        "BUY", "700.00", "0.010", "0", "0"));
+    auto outcome = venue->CancelOrder("42");
+    ASSERT_OK(outcome);
+    EXPECT_EQ(*outcome, trading::CancelOutcome::kAlreadyClosed);
+}
+
+TEST(BinanceUSOrders, AnOcoWhoseLegsRoundTogetherIsRefused) {
+    Fixture f;
+    auto venue = f.Venue();
+    // A buy limit rounds down and a stop to the nearest: both 650.00.
+    auto pair = SellOco("0.01", "650.001", "650.002");
+    pair.side = types::Side::kBuy;
+    auto ack = venue->PlaceOco(pair);
+    ASSERT_FALSE(ack.has_value());
+    EXPECT_EQ(ack.error().category, types::ErrorCategory::kInvalidArgument);
+    EXPECT_TRUE(f.http->To("/api/v3/order/oco").empty());  // never sent
+}
+
 }  // namespace kestrel::trading

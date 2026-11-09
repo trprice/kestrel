@@ -315,9 +315,19 @@ class ConfigParser {
             p.taker_fee_rate = *taker;
             p.slippage = *slip;
             if (const auto v = paper->get("default_quote_asset")) {
+                if (!v->is_string()) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[paper] default_quote_asset must be a "
+                                     "string");
+                }
                 p.default_quote_asset = v->value_or(p.default_quote_asset);
             }
             if (const auto v = paper->get("cap_limit_fills_at_quote_size")) {
+                if (!v->is_boolean()) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[paper] cap_limit_fills_at_quote_size "
+                                     "must be true or false");
+                }
                 p.cap_limit_fills_at_quote_size = v->value_or(false);
             }
             if (const auto v = paper->get("allow_short")) {

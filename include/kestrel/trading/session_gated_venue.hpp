@@ -21,7 +21,9 @@ class SessionGatedVenue final : public TradingVenue {
                       std::shared_ptr<const types::MarketHours> hours,
                       std::function<types::Timestamp()> clock = types::Now)
         : mVenue(std::move(venue)),
-          mHours(std::move(hours)),
+          // No hours: always open, rather than a null to check on every
+          // order.
+          mHours(hours ? std::move(hours) : types::MarketHours::AlwaysOpen()),
           mClock(std::move(clock)) {}
 
     std::string_view Name() const override { return mVenue->Name(); }

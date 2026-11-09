@@ -867,6 +867,14 @@ types::Result<void> Runner::Warmup(const Requirements& requirements) {
                 return std::unexpected(bars.error());
             }
             window.assign(bars->begin(), bars->end());
+            if (window.size() < requirements.warmup_bars) {
+                // Not an error (a young market, a gap in stored bars), but the
+                // strategy starts on a shorter history than it asked for.
+                spdlog::warn(
+                    "runner: warmup for {} {} has {} of the {} bars asked for",
+                    symbol, types::ToString(timeframe), window.size(),
+                    requirements.warmup_bars);
+            }
             if (!window.empty()) {
                 if (mGate) {
                     mGate->NoteReferencePrice(symbol, window.back().close);

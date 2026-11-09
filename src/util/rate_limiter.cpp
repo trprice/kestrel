@@ -1,6 +1,7 @@
 #include "kestrel/util/rate_limiter.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 #include <thread>
 
 namespace kestrel::util {
@@ -9,7 +10,13 @@ RateLimiter::RateLimiter(double rate_per_second, double burst)
     : mRate(rate_per_second),
       mBurst(burst),
       mTokens(burst),
-      mLast(Clock::now()) {}
+      mLast(Clock::now()) {
+    // Either at zero would make Acquire wait forever.
+    if (!(rate_per_second > 0) || !(burst >= 1)) {
+        throw std::invalid_argument(
+            "a rate limiter needs a positive rate and a burst of at least 1");
+    }
+}
 
 void RateLimiter::Refill(Clock::time_point now) {
     const std::chrono::duration<double> elapsed = now - mLast;

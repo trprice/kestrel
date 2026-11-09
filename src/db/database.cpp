@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "migrations.hpp"
+#include "sql_rows.hpp"
 
 namespace kestrel::db {
 
@@ -248,7 +249,12 @@ Result<void> Database::Migrate() {
     if (!applied) {
         return fail(applied.error());
     }
-    const int current = std::stoi(*applied->front().front());
+    const auto version =
+        sql::ParseInt(applied->front().front(), "schema_migrations: version");
+    if (!version) {
+        return fail(version.error());
+    }
+    const auto current = *version;
 
     for (const auto& m : Migrations()) {
         if (m.version <= current) {

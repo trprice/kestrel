@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "sql_rows.hpp"
+
 namespace kestrel::db {
 
 using types::ErrorCategory;
@@ -111,10 +113,19 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
         types::Quote q;
         q.venue = venue;
         q.symbol = symbol;
-        q.seq = std::stoll(*row[0]);
-        q.received_time = types::FromEpochMillis(std::stoll(*row[1]));
+        auto seq = sql::ParseInt(row[0], "quotes: seq");
+        auto received = sql::ParseMillis(row[1], "quotes: received_time");
+        if (!seq || !received) {
+            return std::unexpected(!seq ? seq.error() : received.error());
+        }
+        q.seq = *seq;
+        q.received_time = *received;
         if (row[2]) {
-            q.exchange_time = types::FromEpochMillis(std::stoll(*row[2]));
+            auto exchange = sql::ParseMillis(row[2], "quotes: exchange_time");
+            if (!exchange) {
+                return std::unexpected(exchange.error());
+            }
+            q.exchange_time = *exchange;
         }
         q.bid = ParseOptional(row[3]);
         q.bid_size = ParseOptional(row[4]);
@@ -145,7 +156,7 @@ Result<std::int64_t> QuoteStore::LastSeq(const std::string& venue,
     if (!rows) {
         return std::unexpected(rows.error());
     }
-    return std::stoll(*(*rows)[0][0]);
+    return sql::ParseInt((*rows)[0][0], "quotes: last seq");
 }
 
 QuoteWriter::QuoteWriter(std::shared_ptr<Database> database,
@@ -162,6 +173,19 @@ QuoteWriter::~QuoteWriter() {
     mWake.notify_all();
     mThread.join();
     Flush();
+}
+
+Result<void> QuoteWriter::Prime(const std::string& venue,
+                                const std::vector<types::Symbol>& symbols) {
+    for (const types::Symbol& symbol : symbols) {
+        auto last = mStore.LastSeq(venue, symbol);
+        if (!last) {
+            return std::unexpected(last.error());
+        }
+        std::lock_guard seq_lock(mSeqMutex);
+        mLastSeq.emplace(std::make_pair(venue, symbol), *last);
+    }
+    return {};
 }
 
 void QuoteWriter::Push(const types::Quote& quote) {

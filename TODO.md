@@ -202,6 +202,22 @@ none of them an edge on ZEC/USDT: every setting lost to holding over the
 four recorded days. Check a change's markouts, not only "vs hold".
 
 ### Engineering
+- [ ] From the Nov 2026 project review, not yet done:
+  - Value BNB (and other third-asset) fees at their price, not 1:1 with
+    the quote asset.
+  - Paper venue: reserve a buy-stop for the spread as well as slippage; a
+    helper for the lock/ProcessPending/ExpireDayOrders prologue its public
+    methods repeat.
+  - Binance.US: share the unknown-outcome recovery of PlaceOrder and
+    PlaceOco; a shared WebSocket host for the bar and quote streams.
+  - Kraken's quote stream: a silence watchdog like Schwab's.
+  - `MakeTimedHttpClient` builds a connection pool per call.
+  - `Secrets()` reads the secrets file twice per load.
+  - `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
+    through.
+  - `RunBacktest`: build the timeline in a function of its own.
+  - Tests: `types/time.cpp` round trips, malformed database rows,
+    `RateLimiter::Penalize`, `Migrate()` failures.
 - [ ] Building components in the factory starts the paper venue's quote
       stream as a side effect, so `bars` and `run` open a WebSocket whether or
       not they need it (`stream`, `stream-bars` and `backtest` already avoid
@@ -278,7 +294,8 @@ the header of the code concerned.
   venue's and the gate's clocks roughly agreeing. A fill landing between the
   positions snapshot and the baseline time is missed.
 - A fee in an asset that is neither the quote nor the base (e.g. BNB) is
-  treated as if it were quote currency.
+  treated as if it were quote currency; `PnlTracker` logs each such asset
+  the first time it sees one.
 - Market orders are valued at the last reference price (bar close or quote
   mid). `max_price_age` is unset by default, so a price never goes stale.
 - Spot only, unless `RiskLimits::shorts` (set for a paper venue with

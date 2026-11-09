@@ -60,8 +60,14 @@ class QuoteWriter {
     QuoteWriter(const QuoteWriter&) = delete;
     QuoteWriter& operator=(const QuoteWriter&) = delete;
 
+    // Looks up where each symbol's seq continues from, before the stream
+    // starts, so the first Push of each does not wait on the database on the
+    // stream's thread. Optional: Push looks up one it has not seen.
+    types::Result<void> Prime(const std::string& venue,
+                              const std::vector<types::Symbol>& symbols);
     // Assigns the quote's seq (continuing from the database after a restart),
-    // overwriting whatever the caller set.
+    // overwriting whatever the caller set. If the seq cannot be looked up, the
+    // quote is dropped (logged) without using a seq.
     void Push(const types::Quote& quote);
     // Callback for DataSource::StreamQuotes.
     data::QuoteCallback MakeStreamSink();

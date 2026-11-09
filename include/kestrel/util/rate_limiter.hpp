@@ -9,6 +9,8 @@ namespace kestrel::util {
 class RateLimiter {
    public:
     // `rate_per_second` tokens are added per second, up to `burst` stored.
+    // Throws std::invalid_argument unless the rate is above 0 and the burst
+    // at least 1.
     RateLimiter(double rate_per_second, double burst);
 
     void Acquire();

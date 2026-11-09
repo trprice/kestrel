@@ -170,4 +170,9 @@ TEST(RateLimiter, BurstThenRefill) {
     EXPECT_FALSE(limiter.TryAcquire());
 }
 
+TEST(RateLimiter, RefusesARateThatWouldNeverRefill) {
+    EXPECT_THROW(util::RateLimiter(0.0, 1.0), std::invalid_argument);
+    EXPECT_THROW(util::RateLimiter(1.0, 0.5), std::invalid_argument);
+}
+
 }  // namespace

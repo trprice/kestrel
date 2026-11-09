@@ -57,6 +57,21 @@ TEST(Config, LimitFillModelDefaultsToCrossAndAcceptsConservative) {
                      .has_value());
 }
 
+TEST(Config, PaperKeysOfTheWrongTypeAreRefused) {
+    const std::string base = kKrakenToml;
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     base + "default_quote_asset = 100\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(
+        config::KrakenConfiguration::Parse(
+            base + "cap_limit_fills_at_quote_size = \"yes\"\n", NoEnv())
+            .has_value());
+    auto ok = config::KrakenConfiguration::Parse(
+        base + "cap_limit_fills_at_quote_size = true\n", NoEnv());
+    ASSERT_OK(ok);
+    EXPECT_TRUE(ok->GetPaperOptions().cap_limit_fills_at_quote_size);
+}
+
 TEST(Config, PaperShortingIsOffByDefaultAndTakesAMargin) {
     auto def = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
     ASSERT_OK(def);

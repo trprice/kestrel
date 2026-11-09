@@ -1,5 +1,7 @@
 #include "kestrel/trading/pnl_tracker.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 
 namespace kestrel::trading {
@@ -42,6 +44,17 @@ void PnlTracker::ResetRealized() {
 }
 
 void PnlTracker::Apply(const types::Fill& fill) {
+    if (const auto parts = types::SplitSymbol(fill.symbol);
+        parts && parts->quote && !fill.fee_asset.empty() &&
+        fill.fee_asset != parts->base && fill.fee_asset != *parts->quote &&
+        mOtherFeeAssets.insert(fill.fee_asset).second) {
+        // Valued 1:1 with the quote asset, which is wrong (a BNB fee on
+        // Binance.US): the P&L and the risk gate's loss count are off by it.
+        spdlog::warn(
+            "pnl: fees in {} (on {}) are counted as if in {}; P&L is off by "
+            "the difference",
+            fill.fee_asset, fill.symbol, *parts->quote);
+    }
     Holding& holding = mHoldings[fill.symbol];
     const Decimal fee = FeeInQuote(fill);
 

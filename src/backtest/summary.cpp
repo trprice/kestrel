@@ -287,6 +287,7 @@ types::Result<BacktestSummary> SummaryBuilder::Finish(
     BacktestSummary& s = mSummary;
     s.end_time = end;
     s.end_equity = mEquity;
+    // Known to value: mValued (checked above) is set only once it has.
     s.hold_equity = *Value(mStartBalances);
     s.return_fraction = Fraction(s.end_equity - s.start_equity, s.start_equity);
     for (std::size_t i = 0; i < s.symbols.size(); ++i) {

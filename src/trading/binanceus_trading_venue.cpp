@@ -24,7 +24,7 @@ namespace {
 constexpr int kAccountWeight = 10;
 constexpr int kOpenOrdersWeight = 3;  // with a symbol
 constexpr int kOrderWeight = 4;
-constexpr int kMyTradesWeight = 10;
+constexpr int kMyTradesWeight = 20;  // with a symbol, since Jul 30 2026
 constexpr int kNewOrderWeight = 1;  // also the test endpoint
 constexpr int kCancelWeight = 1;
 constexpr int kCancelAllWeight = 1;  // with a symbol
@@ -607,6 +607,15 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
         return MakeError(ErrorCategory::kInternal,
                          "binanceus: OCO legs missing a price or quantity");
     }
+    // Again on the tick: rounding can bring prices a tick apart together,
+    // which Binance would refuse less clearly.
+    if (const auto limit = types::Decimal::Parse(*price),
+        stop = types::Decimal::Parse(*stop_price);
+        !limit || !stop || (sell ? *limit <= *stop : *limit >= *stop)) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "an OCO's limit " + *price + " and stop " +
+                             *stop_price + " are not apart on the tick");
+    }
     const std::string list_id = NextClientOrderId();
     const BinanceUSApi::Params params = {{"symbol", native},
                                          {"side", sell ? "SELL" : "BUY"},
@@ -767,6 +776,9 @@ Result<CancelOutcome> BinanceUSTradingVenue::CancelOrder(
         }
         if (order && order->state == types::OrderState::kFilled) {
             return CancelOutcome::kAlreadyFilled;
+        }
+        if (order && !types::IsActive(order->state)) {
+            return CancelOutcome::kAlreadyClosed;  // rejected or expired
         }
     }
     return std::unexpected(body.error());

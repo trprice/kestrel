@@ -125,6 +125,13 @@ struct PaperOptions {
 // quote asset. A short shows as a negative balance of the base asset and a
 // negative position.
 //
+// The reserve is a placement-time estimate: a stop's is priced at its stop
+// plus slippage, and a wide spread or a gap can fill it higher. A buy that
+// costs more at its fill than the account has free (or a short sale whose
+// collateral is not free) is then cancelled with "insufficient funds (or
+// margin) at fill time", whole, where a live venue might fill part of it;
+// strategies see the cancel through StreamExecutions.
+//
 // Thread-safe. Quotes typically arrive on the data source's WebSocket thread
 // while strategies call the TradingVenue API from other threads; one mutex
 // guards all state, and no network I/O happens while it is held.

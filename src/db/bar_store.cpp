@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "sql_rows.hpp"
+
 namespace kestrel::db {
 
 using types::Result;
@@ -84,7 +86,11 @@ Result<std::vector<types::Bar>> BarStore::Load(const std::string& venue,
     bars.reserve(rows->size());
     for (const auto& row : *rows) {
         types::Bar bar;
-        bar.open_time = types::FromEpochMillis(std::stoll(*row[0]));
+        auto open_time = sql::ParseMillis(row[0], "bars: open_time");
+        if (!open_time) {
+            return std::unexpected(open_time.error());
+        }
+        bar.open_time = *open_time;
         types::Decimal* fields[] = {&bar.open, &bar.high, &bar.low, &bar.close,
                                     &bar.volume};
         for (std::size_t i = 0; i < 5; ++i) {

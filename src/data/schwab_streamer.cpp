@@ -235,7 +235,13 @@ std::vector<SchwabKeyedQuote> SchwabLevelOneMerger::Apply(
     return out;
 }
 
-void SchwabLevelOneMerger::Reset() { mState.clear(); }
+void SchwabLevelOneMerger::Reset() {
+    // A new connection may answer differently: a symbol unknown or delayed on
+    // the last one is tried (and logged) again.
+    mState.clear();
+    mUnknown.clear();
+    mDelayed.clear();
+}
 
 std::vector<SchwabKeyedBar> ParseSchwabChartBars(const json& content) {
     std::vector<SchwabKeyedBar> out;
@@ -333,7 +339,11 @@ void SchwabBarAggregator::Reset() {
     mPending.reset();
 }
 
-void SchwabLevelOneMerger::Forget(const std::string& key) { mState.erase(key); }
+void SchwabLevelOneMerger::Forget(const std::string& key) {
+    mState.erase(key);
+    mUnknown.erase(key);
+    mDelayed.erase(key);
+}
 
 std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket() {
     return std::make_unique<IxStreamerSocket>();
@@ -513,19 +523,30 @@ types::Result<std::unique_ptr<Subscription>> SchwabStreamer::SubscribeBars(
 
 types::Result<std::unique_ptr<Subscription>> SchwabStreamer::Add(
     std::shared_ptr<Consumer> consumer) {
-    std::lock_guard lock(mMutex);
-    if (mHalted) {
-        return MakeError(ErrorCategory::kRejected,
-                         "the Schwab streamer has stopped: " + *mHalted);
-    }
-    if (!mSocket) {
-        // The info is fetched for each new connection, while holding mMutex:
-        // there is no connection whose events could be waiting for it.
+    // A new connection needs the streamer info, fetched over HTTP (and
+    // perhaps a token renewal) without mMutex, so a Stop() of another
+    // subscription is not held up behind it. Another Add may connect in the
+    // meantime; the info fetched is then not needed.
+    std::optional<SchwabStreamerInfo> fetched;
+    std::unique_lock lock(mMutex);
+    while (true) {
+        if (mHalted) {
+            return MakeError(ErrorCategory::kRejected,
+                             "the Schwab streamer has stopped: " + *mHalted);
+        }
+        if (mSocket || fetched) {
+            break;
+        }
+        lock.unlock();
         auto info = FetchInfo();
         if (!info) {
             return std::unexpected(info.error());
         }
-        mInfo = std::move(*info);
+        fetched = std::move(*info);
+        lock.lock();
+    }
+    if (!mSocket) {
+        mInfo = std::move(*fetched);
     }
     const Service service = consumer->service;
     std::set<std::string> added;

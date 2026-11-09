@@ -42,8 +42,10 @@ struct Quote {
     std::optional<Side> last_taker_side;
 
     // Overlays every field `update` actually carries onto this quote, so
-    // partial updates accumulate into the latest known state. received_time and
-    // exchange_time always follow the update. An update that carries a trade
+    // partial updates accumulate into the latest known state. received_time
+    // always follows the update; exchange_time only when the update carries
+    // one, so after a book update without it (Binance.US bookTicker) it is
+    // still the last trade's time. An update that carries a trade
     // (last) also replaces last_taker_side, even with nothing, so one trade's
     // side never sticks to the next.
     void MergeFrom(const Quote& update);

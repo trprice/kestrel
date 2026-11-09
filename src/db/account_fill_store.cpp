@@ -54,8 +54,11 @@ Result<std::optional<types::Timestamp>> AccountFillStore::Newest(
     if (rows->empty() || !(*rows)[0][0]) {
         return std::optional<types::Timestamp>{};
     }
-    return std::optional<types::Timestamp>(
-        types::FromEpochMillis(std::stoll(*(*rows)[0][0])));
+    auto newest = sql::ParseMillis((*rows)[0][0], "account_fills: newest");
+    if (!newest) {
+        return std::unexpected(newest.error());
+    }
+    return std::optional<types::Timestamp>(*newest);
 }
 
 Result<std::vector<types::Fill>> AccountFillStore::Load(

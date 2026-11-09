@@ -1,6 +1,8 @@
 #pragma once
 
 #include <map>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "kestrel/types/decimal.hpp"
@@ -27,7 +29,8 @@ namespace kestrel::trading {
 // realizing (average - price) on the quantity covered, and a buy of more than
 // is short goes long with the rest.
 // Fees are valued in the quote asset: a fee in the symbol's base asset is
-// converted at the fill price, and any other fee asset is taken as quote.
+// converted at the fill price, and any other fee asset is taken as quote
+// (logged the first time it is seen).
 // Amounts are kept to 8 decimal places. Not thread-safe.
 class PnlTracker {
    public:
@@ -62,6 +65,7 @@ class PnlTracker {
     };
     std::map<types::Symbol, Holding> mHoldings;
     bool mShorts = false;
+    std::set<std::string> mOtherFeeAssets;  // logged once each
 };
 
 }  // namespace kestrel::trading

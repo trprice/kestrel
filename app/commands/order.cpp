@@ -186,7 +186,12 @@ class OrderCommand : public Command {
    private:
     types::Result<types::OrderRequest> Request() const {
         types::OrderRequest r;
-        r.symbol = mArgs.symbol;
+        // As the config's symbols are, so the risk gate's allowlist matches.
+        auto symbol = types::NormalizeSymbol(mArgs.symbol);
+        if (!symbol) {
+            return std::unexpected(symbol.error());
+        }
+        r.symbol = *symbol;
         r.client_order_id = mArgs.client_id;
         r.side = mArgs.side == "buy" ? types::Side::kBuy : types::Side::kSell;
         auto quantity = types::Decimal::Parse(mArgs.quantity);
