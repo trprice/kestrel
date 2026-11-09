@@ -209,9 +209,10 @@ before then (`authorize --status` shows when).
   Schwab's streamer also reconnects a connection that has sent nothing, not
   even a heartbeat, for 60 s.
 
-The strategies' parameters, the risk limits and the market maker's protection
-rules are described in [configuration.md](configuration.md). To write your own
-strategy, see [writing-strategies.md](writing-strategies.md).
+The strategies, with their parameters, are described in
+[strategies/](strategies/README.md), and the risk limits in
+[configuration.md](configuration.md#risk). To write your own strategy, see
+[writing-strategies.md](writing-strategies.md).
 
 ## Live trading on Binance.US
 

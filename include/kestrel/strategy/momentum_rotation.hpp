@@ -12,53 +12,29 @@
 
 namespace kestrel::strategy {
 
+// The parameters are described in docs/strategies/momentum-rotation.md.
 struct MomentumRotationParams {
-    // The universe; all must share one quote asset (the cash).
-    std::vector<types::Symbol> symbols;
+    std::vector<types::Symbol> symbols;  // sharing one quote asset, the cash
     types::Timeframe timeframe = types::Timeframe::kD1;
-    std::size_t lookback_bars = 28;  // momentum: the return over these bars
-    std::size_t rebalance_bars = 7;  // rebalance every this many bars
-    std::size_t top_n = 3;           // hold this many of the strongest
-    // Hold only symbols whose momentum is above zero (absolute momentum), so
-    // in a falling market the strategy sits in cash.
+    std::size_t lookback_bars = 28;
+    std::size_t rebalance_bars = 7;
+    std::size_t top_n = 3;
     bool positive_only = true;
-    // The share of equity (cash plus holdings at the last close) invested,
-    // split equally over top_n slots; the rest is room for fees and moves
-    // between the sizing and the fill.
     types::Decimal invest_fraction{95, 2};  // 0.95
 };
 
-// Cross-sectional momentum, long only: every rebalance_bars bars, rank the
-// symbols by their return over lookback_bars and hold the top_n (with
-// positive_only, only those that rose), an equal share of equity in each.
-// Momentum is the anomaly that holds up best in crypto research (Yang,
-// "Behavioral Anomalies in Cryptocurrency Markets"; Quantpedia's crypto
-// summaries).
+// Cross-sectional momentum, long only; see
+// docs/strategies/momentum-rotation.md.
 //
-// Bars of the symbols arrive one at a time: a period is ranked once every
-// symbol's bar for it has closed, or, if one is missing, when a bar of the
-// next period arrives. The lookback is measured in time: a symbol without a
-// bar for the ranked period, or for lookback_bars before it, sits that
-// ranking out, and one held then is kept (with its slot) rather than sold.
-// With fewer than half the symbols ranked there is no rebalance.
-// A rebalance sells what was ranked out of the top at market first, and buys
-// what entered it at market into the slots left, once those sells have
-// filled and their fills been seen (or the sells closed), sized from equity
-// then and capped by the cash available. Symbols still in the top are kept
-// as they are, not resized. Holdings are what the strategy bought itself
-// (from its fills, less fees in the base asset), not the account's other
-// balances, which OnStart warns about; dust under the minimum order counts
-// as nothing held. Orders still out at a rebalance are checked with the
-// venue; if one is still open, that rebalance is skipped. While the market
-// is closed (daily stock bars) a rebalance waits for the next session's
-// open.
+// A period is ranked only once every symbol's bar for it is in (or the next
+// period has begun), since the bars arrive one at a time and ranking on a
+// partial set would compare returns over different times. Entries wait for
+// the sells' fills, as those fills are what pays for them. Only what the
+// strategy bought itself counts as held: the account's other balances may
+// belong to someone else.
 class MomentumRotation : public Strategy {
    public:
-    // Throws std::invalid_argument for fewer than two symbols, one listed
-    // twice, symbols with
-    // different quote assets (or none), zero lookback_bars, rebalance_bars or
-    // top_n, a top_n above the number of symbols, a calendar timeframe, or
-    // an invest_fraction outside (0, 1].
+    // Throws std::invalid_argument for parameters out of range.
     explicit MomentumRotation(MomentumRotationParams params);
 
     std::string_view Name() const override { return "momentum_rotation"; }

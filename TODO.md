@@ -195,13 +195,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Pairs trading
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
-### Documentation
-- [ ] Add documents for each of the strategies describing how they work
-      conceptually and Kestrel specific items regarding the strategy.
-- [ ] Move any comments in the strategy header and source files that
-      pertain to the strategy and not the implementation into this
-      documentation.
-
 
 #### Market maker
 Every item here is done (Nov 2026; see Done). The Nov 2026 replays found
@@ -974,3 +967,9 @@ the header of the code concerned.
 ### Engineering
 - [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
       the whole suite passes under both
+
+### Documentation
+- [x] A document for each strategy in `docs/strategies/` (how it works,
+      what Kestrel does for it, its parameters, moved from
+      `configuration.md`), with the strategy headers' descriptions moved
+      into them; the code's comments keep to why it does what it does.

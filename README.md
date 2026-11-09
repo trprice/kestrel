@@ -27,7 +27,8 @@ Requires CMake 3.25+ and GCC 12+ or Clang 16+. Paper mode needs no credentials.
 | Document | Covers |
 |---|---|
 | [Building](docs/building.md) | requirements, dependencies, CMake options, sanitizer builds |
-| [Configuration](docs/configuration.md) | the config file table by table, credentials and the secrets file, risk limits, strategy parameters |
+| [Configuration](docs/configuration.md) | the config file table by table, credentials and the secrets file, risk limits |
+| [Strategies](docs/strategies/README.md) | each included strategy: how it works, what Kestrel does for it, and its parameters |
 | [Running](docs/running.md) | the packages a machine needs to run it, the `kestrel_app` subcommands, backtesting, running strategies, live trading commands on Binance.US |
 | [Database](docs/database.md) | PostgreSQL / TimescaleDB setup, storing market data, recording runs, the account's trade history, upgrading |
 | [Writing a strategy](docs/writing-strategies.md) | the strategy interface, its hooks, the rules to follow, registering and testing one |

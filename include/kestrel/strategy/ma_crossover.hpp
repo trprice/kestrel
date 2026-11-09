@@ -7,9 +7,8 @@
 
 namespace kestrel::strategy {
 
+// The parameters are described in docs/strategies/ma-crossover.md.
 struct MaCrossoverParams {
-    // kSma: simple averages (Sma); kEma: exponential ones (Ema), which react
-    // to a turn sooner.
     enum class Average { kSma, kEma };
     types::Symbol symbol;
     types::Timeframe timeframe = types::Timeframe::kH1;
@@ -19,20 +18,15 @@ struct MaCrossoverParams {
     types::Decimal quantity;  // base-asset units per order
 };
 
-// Long-only moving-average crossover on closed bars: market-buys when the
-// fast average crosses above the slow one and market-sells when it crosses
-// back below. The averages are simple, or with Average::kEma exponential,
-// computed over a window of four slow periods so they settle. Meant as a worked
-// example of the Strategy interface, not as a strategy to trade.
+// A moving-average crossover, the worked example of the Strategy interface;
+// see docs/strategies/ma-crossover.md.
 //
-// It goes long or flat when the order's fill arrives (OnFill), and places no
-// new order while one is outstanding. An order the venue accepted and later
-// cancelled, rejected or expired without filling (OnOrderUpdate) stops the
-// wait.
+// No order is placed while one is outstanding, so a cross back and forth
+// inside one fill's round trip cannot stack two orders; the position changes
+// on the fill (OnFill), not on the order.
 class MaCrossover : public Strategy {
    public:
-    // Throws std::invalid_argument unless 0 < fast_period < slow_period and
-    // quantity > 0.
+    // Throws std::invalid_argument for parameters out of range.
     explicit MaCrossover(MaCrossoverParams params);
 
     std::string_view Name() const override { return "ma_crossover"; }

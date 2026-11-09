@@ -162,8 +162,12 @@ class MyStrategy : public strategy::Strategy {
 3. Add `{"my_strategy", BuildMyStrategy}` to the `kStrategies` table. That one
    entry makes `kestrel_app run my_strategy` and `backtest my_strategy` work,
    and allows a `[risk.my_strategy]` section.
-4. Document the parameters in [configuration.md](configuration.md#strategy).
-   `config/kestrel.example.toml` shows `ma_crossover`'s only.
+4. Document it in a page of its own under [strategies/](strategies/README.md):
+   how it works, what Kestrel does for it, and its parameters; add it to the
+   index there and to the table in
+   [configuration.md](configuration.md#strategy). Keep the comments in the
+   code to why it does what it does. `config/kestrel.example.toml` shows
+   `ma_crossover`'s parameters only.
 
 ## 5. Test it
 

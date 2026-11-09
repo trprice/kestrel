@@ -49,7 +49,7 @@ limit_fill_model = "cross"
 # slow_request_ms = 2000       # warn about calls at least this slow
 
 [strategy]                     # parameters for the run / backtest subcommands
-# ma_crossover's are shown; docs/configuration.md lists every strategy's.
+# ma_crossover's are shown; docs/strategies/ describes every strategy's.
 # symbol      = "BTC/USD"      # must be in [general] symbols
 # quantity    = "0.001"        # base-asset units per order
 # timeframe   = "1h"
