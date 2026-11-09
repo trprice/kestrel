@@ -81,4 +81,7 @@ class Decimal {
 
 std::ostream& operator<<(std::ostream& os, const Decimal& d);
 
+// Basis points as a fraction (10 -> 0.001), to 8 decimal places.
+Decimal FromBps(const Decimal& bps);
+
 }  // namespace kestrel::types

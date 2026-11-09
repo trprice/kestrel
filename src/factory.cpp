@@ -653,8 +653,9 @@ constexpr StrategyEntry kStrategies[] = {
     {"momentum_rotation", BuildMomentumRotation},
 };
 
-// Whether the provider's TradingVenue is a real implementation. Update this
-// as each stub is completed.
+// Whether the provider's TradingVenue is a real implementation.
+// TODO: add Schwab and Kraken as their venues are completed (TODO.md,
+// Venues).
 bool HasLiveVenue(config::Provider provider) {
     return provider == config::Provider::kBinanceUS;
 }

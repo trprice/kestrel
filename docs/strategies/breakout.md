@@ -151,7 +151,9 @@ rather than timed:
 
 - A bar straddling the open is skipped, so `1h` bars on a 09:30 open make the
   range from 10:00.
-- A missing bar (a minute with no trades) delays the setup by a bar.
+- A missing bar (a minute with no trades) delays the setup by a bar. Bars
+  missing at the open itself start the range at the first bar that does
+  open: with `1m` bars and no trade until 09:35, the range runs from 09:35.
 - A run started after a session's range has formed waits for the next
   session.
 

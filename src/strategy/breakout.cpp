@@ -19,7 +19,7 @@ using types::Side;
 namespace {
 
 // Closed without filling completely (perhaps partly).
-bool ClosedShort(const types::OrderStatus& status) {
+bool ClosedUnfilled(const types::OrderStatus& status) {
     return status.state == OrderState::kCancelled ||
            status.state == OrderState::kRejected ||
            status.state == OrderState::kExpired;
@@ -75,7 +75,8 @@ Breakout::Breakout(BreakoutParams params)
         throw std::invalid_argument(
             "range_bars is too few to hold the pattern at this swing_bars");
     }
-    if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
+    const Decimal half(5, 1);  // 0.5
+    if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= half) {
         throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
     }
     if (mParams.stop_buffer_bps.IsNegative() ||
@@ -250,9 +251,7 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                                   (level + level.Abs() * raise)
                                       .RoundToIncrement(tick, Rounding::kUp));
     }
-    const Decimal buffer =
-        Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
-                        Rounding::kNearest);
+    const Decimal buffer = types::FromBps(mParams.stop_buffer_bps);
     const Decimal base = floor.value_or(range->low);
     levels.stop =
         (base - base.Abs() * buffer).RoundToIncrement(tick, Rounding::kDown);
@@ -279,118 +278,143 @@ void Breakout::OnBar(Context& context, const types::Symbol& symbol,
     if (symbol != mParams.symbol || timeframe != mParams.timeframe) {
         return;
     }
+    RetryStrays(context);
     const types::Bar bar = Mirror(raw);
+    // Each state's handler says whether this bar, having ended what that
+    // state was waiting for, may also arm a new setup.
+    bool look = false;
     switch (mState) {
+        case State::kFlat:
+            look = true;
+            break;
         case State::kArmed:
-            // Zero already: an earlier cancel failed, or the venue said the
-            // entry filled and its fill is still on the way. Try again.
-            if (mBarsLeft > 0) {
-                --mBarsLeft;
-                if (mBarsLeft > 0) {
-                    return;
-                }
-            }
-            Disarm(context);
-            if (mState != State::kFlat) {
-                return;  // it filled (perhaps partly), or could not be
-                         // cancelled
-            }
-            break;  // expired: this bar may be a new setup
+            look = ArmedBar(context);
+            break;
         case State::kWatching:
-            if (bar.close > mLevels->trigger &&
-                (mCloses > 0 || VolumeConfirms(context, bar))) {
-                if (++mCloses >= ClosesNeeded()) {
-                    const bool throwback =
-                        mParams.entry == BreakoutParams::Entry::kThrowback;
-                    if (!context.MarketOpen() && CarriesOver()) {
-                        Pend(throwback ? Due::kThrowback : Due::kMarket,
-                             throwback ? mParams.throwback_bars : 1);
-                        return;
-                    }
-                    if (throwback) {
-                        ArmThrowback(context);
-                    } else {
-                        EnterAtMarket(context);
-                    }
-                }
-                if (mState != State::kWatching || --mBarsLeft > 0) {
-                    return;
-                }
-            } else {
-                mCloses = 0;
-                if (--mBarsLeft > 0) {
-                    return;
-                }
-            }
-            mState = State::kFlat;
-            mLevels.reset();
+            look = WatchingBar(context, bar);
             break;
         case State::kPending:
-            // Normally placed at the open before another bar closes.
-            if (mBarsLeft > 0) {
-                --mBarsLeft;
-                if (mBarsLeft > 0) {
-                    return;
-                }
-            }
-            GoFlat();
+            look = PendingBar();
             break;
         case State::kLong:
-            // Whole bars only: not the one the entry filled inside.
-            if (bar.open_time >= mEntryTime) {
-                ++mBarsHeld;
-            }
-            {
-                const char* due = nullptr;
-                if (mTarget && mTargetId.empty() && bar.close >= *mTarget) {
-                    due = "target";  // not resting at the venue
-                } else if (mParams.max_hold_bars > 0 &&
-                           mBarsHeld >= mParams.max_hold_bars) {
-                    due = "held long enough";
-                }
-                if (!due) {
-                    RaiseStop(context, bar);
-                }
-                // Orders are refused while closed: the resting stop
-                // protects until the next bar in the session, or with daily
-                // bars until the open, where a due exit sells.
-                if (!context.MarketOpen()) {
-                    if (due && CarriesOver()) {
-                        mExitDue = due;
-                    }
-                    return;
-                }
-                if (mStopId.empty()) {
-                    // An earlier attempt failed. A (raised) stop the price
-                    // has already fallen through would be refused, or sell
-                    // at once: sell now.
-                    if (!due && bar.close <= mLevels->stop) {
-                        due = "closed through its stop";
-                    } else if (!due) {
-                        PlaceStop(context);
-                    }
-                } else if (mStopMoved && !due) {
-                    MoveStop(context);
-                }
-                if (due) {
-                    Exit(context, due);
-                }
-            }
-            return;
+            LongBar(context, bar);
+            break;
         case State::kEntering:
         case State::kExiting:
             // Waiting on a market order: its fill or final update moves on.
             // (An exit placed just before a close that has not filled by it
             // waits here unprotected, its stop cancelled, until then.)
-            return;
-        case State::kFlat:
             break;
     }
+    if (look) {
+        LookForSetup(context);
+    }
+}
 
-    // Flat: look for a setup. On intraday bars, not while the market is
-    // closed: an order then is refused, and an entry must not rest into the
-    // next open. Daily bars always close after it: the entry waits for the
-    // open.
+bool Breakout::CountDown() {
+    if (mBarsLeft > 0) {
+        --mBarsLeft;
+    }
+    return mBarsLeft == 0;
+}
+
+bool Breakout::ArmedBar(Context& context) {
+    // Zero already: an earlier cancel failed, or the venue said the entry
+    // filled and its fill is still on the way. Try again.
+    if (!CountDown()) {
+        return false;
+    }
+    Disarm(context);
+    // Still armed if it filled (perhaps partly) or could not be cancelled.
+    return mState == State::kFlat;
+}
+
+bool Breakout::WatchingBar(Context& context, const types::Bar& bar) {
+    if (bar.close > mLevels->trigger &&
+        (mCloses > 0 || VolumeConfirms(context, bar))) {
+        if (++mCloses >= ClosesNeeded()) {
+            const bool throwback =
+                mParams.entry == BreakoutParams::Entry::kThrowback;
+            if (!context.MarketOpen() && CarriesOver()) {
+                Pend(throwback ? Due::kThrowback : Due::kMarket,
+                     throwback ? mParams.throwback_bars : 1);
+                return false;
+            }
+            if (throwback) {
+                ArmThrowback(context);
+            } else {
+                EnterAtMarket(context);
+            }
+            if (mState != State::kWatching) {
+                // Entered, or the throwback was refused: not a new setup on
+                // the bar that confirmed this one.
+                return false;
+            }
+        }
+    } else {
+        mCloses = 0;
+    }
+    if (!CountDown()) {
+        return false;
+    }
+    mState = State::kFlat;
+    mLevels.reset();
+    return true;
+}
+
+bool Breakout::PendingBar() {
+    // Normally placed at the open before another bar closes.
+    if (!CountDown()) {
+        return false;
+    }
+    GoFlat();
+    return true;
+}
+
+void Breakout::LongBar(Context& context, const types::Bar& bar) {
+    // Whole bars only: not the one the entry filled inside.
+    if (bar.open_time >= mEntryTime) {
+        ++mBarsHeld;
+    }
+    const char* due = nullptr;
+    if (mTarget && mTargetId.empty() && bar.close >= *mTarget) {
+        due = "target";  // not resting at the venue
+    } else if (mParams.max_hold_bars > 0 &&
+               mBarsHeld >= mParams.max_hold_bars) {
+        due = "held long enough";
+    }
+    if (!due) {
+        RaiseStop(context, bar);
+    }
+    // Orders are refused while closed: the resting stop protects until the
+    // next bar in the session, or with daily bars until the open, where a due
+    // exit sells.
+    if (!context.MarketOpen()) {
+        if (due && CarriesOver()) {
+            mExitDue = due;
+        }
+        return;
+    }
+    if (mStopId.empty()) {
+        // An earlier attempt failed. A (raised) stop the price has already
+        // fallen through would be refused, or sell at once: sell now.
+        if (!due && bar.close <= mLevels->stop) {
+            due = "closed through its stop";
+        } else if (!due) {
+            PlaceStop(context);
+        }
+    } else if (mStopMoved && !due) {
+        MoveStop(context);
+    }
+    if (due) {
+        Exit(context, due);
+    }
+}
+
+void Breakout::LookForSetup(Context& context) {
+    // Not on intraday bars while the market is closed: an order then is
+    // refused, and an entry must not rest into the next open. Daily bars
+    // always close after it: the entry waits for the open.
     const bool open = context.MarketOpen();
     if (!open && !CarriesOver()) {
         return;
@@ -508,6 +532,7 @@ void Breakout::GoLong(Context& context) {
 }
 
 void Breakout::GoFlat() {
+    ++mTrade;
     mState = State::kFlat;
     mShort = mParams.direction == BreakoutParams::Direction::kShort;
     mReversal = false;
@@ -530,15 +555,54 @@ void Breakout::CancelOther(Context& context, std::string& id,
     }
     const auto cancelled = context.Venue().CancelOrder(id);
     if (!cancelled) {
-        spdlog::error("breakout: cannot cancel the {} {} for {}: {}", what, id,
-                      mParams.symbol, cancelled.error().ToString());
+        // Still live, perhaps: kept, so its cancel is retried and its fill
+        // recognised.
+        spdlog::error(
+            "breakout: cannot cancel the {} {} for {}: {}; trying again each "
+            "bar",
+            what, id, mParams.symbol, cancelled.error().ToString());
+        AddStray(id);
     } else if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
         spdlog::error(
             "breakout: the {} {} for {} filled too: sold more "
             "than was held",
             what, id, mParams.symbol);
+        AddStray(id);  // its fill is still on the way
     }
     id.clear();
+}
+
+void Breakout::AddStray(const std::string& id) {
+    if (!id.empty() &&
+        std::ranges::find(mStrays, id, &Stray::id) == mStrays.end()) {
+        mStrays.push_back({id, mTrade});
+    }
+}
+
+void Breakout::RetryStrays(Context& context) {
+    // A day of hourly bars: an error that lasts longer will not clear.
+    constexpr std::size_t kMaxTries = 24;
+    std::erase_if(mStrays, [&](Stray& stray) {
+        if (stray.answered) {
+            return true;  // a bar has passed for its fill to arrive
+        }
+        const auto cancelled = context.Venue().CancelOrder(stray.id);
+        if (cancelled ||
+            cancelled.error().category == types::ErrorCategory::kNotFound) {
+            stray.answered = true;
+            return false;
+        }
+        if (++stray.tries >= kMaxTries) {
+            spdlog::error(
+                "breakout: giving up cancelling {} for {} after {} tries: {}",
+                stray.id, mParams.symbol, stray.tries,
+                cancelled.error().ToString());
+            return true;
+        }
+        spdlog::warn("breakout: still cannot cancel {} for {}: {}", stray.id,
+                     mParams.symbol, cancelled.error().ToString());
+        return false;
+    });
 }
 
 void Breakout::PlaceStop(Context& context) {
@@ -672,9 +736,7 @@ void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
     if (mParams.trail_bars > 0) {
         if (const auto range = RangeOf(Bars(context), mParams.trail_bars)) {
             const Decimal& low = range->low;
-            const Decimal buffer =
-                Decimal::Divide(mParams.stop_buffer_bps,
-                                Decimal::FromInt(10000), 8, Rounding::kNearest);
+            const Decimal buffer = types::FromBps(mParams.stop_buffer_bps);
             const Decimal trail = (low - low.Abs() * buffer)
                                       .RoundToIncrement(tick, Rounding::kDown);
             if (trail > level) {
@@ -810,9 +872,10 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
     if (raw.symbol != mParams.symbol) {
         return;
     }
-    if (std::ranges::find(mFailedOrders, raw.order_id) != mFailedOrders.end()) {
+    if (const auto stray = std::ranges::find(mStrays, raw.order_id, &Stray::id);
+        stray != mStrays.end() && stray->trade != mTrade) {
         spdlog::error(
-            "breakout: late fill of {} {} ({}) from the trade reversed; not "
+            "breakout: late fill of {} {} ({}) from an earlier trade; not "
             "counted",
             raw.quantity.ToString(), mParams.symbol, raw.order_id);
         return;
@@ -836,11 +899,23 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
             PlaceStop(context);
             return;
         }
-        if (mState != State::kArmed && mState != State::kEntering) {
-            spdlog::error("breakout: unexpected buy of {} {} ({}) while {}",
-                          fill.quantity.ToString(), mParams.symbol,
-                          fill.order_id, StateName());
+        if (mState == State::kExiting) {
+            // A late part of the entry, bought by this trade: counted, though
+            // the exit already out was sized before it.
+            spdlog::error(
+                "breakout: late entry fill of {} {} ({}) while "
+                "exiting",
+                fill.quantity.ToString(), mParams.symbol, fill.order_id);
             mHeld += fill.quantity;
+            return;
+        }
+        if (mState != State::kArmed && mState != State::kEntering) {
+            // Not this strategy's trade: counting it would size the next
+            // trade's stop and exit for more than that trade bought.
+            spdlog::error(
+                "breakout: unexpected buy of {} {} ({}) while {}; not counted",
+                fill.quantity.ToString(), mParams.symbol, fill.order_id,
+                StateName());
             return;
         }
         if (mHeld.Sign() == 0) {
@@ -884,8 +959,12 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
                              mLevels->stop == mFirstStop;
         const std::optional<Levels> failed = mLevels;
         if (reverse) {
-            mFailedOrders = {mStopId, mTargetId, mExitId};
-            std::erase(mFailedOrders, std::string());
+            // A cancel acknowledged may still be crossing a fill.
+            for (const auto* id : {&mStopId, &mTargetId, &mExitId}) {
+                if (*id != fill.order_id) {
+                    AddStray(*id);
+                }
+            }
         }
         // Sold out, by the stop, the target or the exit: the others must not
         // sell too (the exit's cancel of the stop may not have landed yet).
@@ -912,9 +991,7 @@ void Breakout::Reverse(Context& context, const Levels& failed) {
                      mParams.symbol, info.error().ToString());
         return;
     }
-    const Decimal buffer =
-        Decimal::Divide(mParams.stop_buffer_bps, Decimal::FromInt(10000), 8,
-                        Rounding::kNearest);
+    const Decimal buffer = types::FromBps(mParams.stop_buffer_bps);
     // In the failed trade's terms: beyond the level it broke.
     const Decimal beyond =
         (failed.high + failed.high.Abs() * buffer)
@@ -962,7 +1039,7 @@ std::span<const types::Bar> Breakout::Bars(Context& context) const {
 
 void Breakout::OnOrderUpdate(Context& context,
                              const types::OrderStatus& status) {
-    if (!ClosedShort(status)) {
+    if (!ClosedUnfilled(status)) {
         return;
     }
     // Orders cancelled on purpose have had their IDs cleared already. The

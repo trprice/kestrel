@@ -316,4 +316,8 @@ std::ostream& operator<<(std::ostream& os, const Decimal& d) {
     return os << d.ToString();
 }
 
+Decimal FromBps(const Decimal& bps) {
+    return Decimal::Divide(bps, Decimal::FromInt(10000), 8, Rounding::kNearest);
+}
+
 }  // namespace kestrel::types

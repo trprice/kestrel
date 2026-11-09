@@ -145,9 +145,21 @@ class Breakout : public Strategy {
     void Disarm(Context& context);
     // On the entry's (whole or partial) fill: long mHeld, the stop placed.
     void GoLong(Context& context);
+    // A bar in each state; whether the bar may also arm a new setup.
+    bool ArmedBar(Context& context);
+    bool WatchingBar(Context& context, const types::Bar& bar);
+    bool PendingBar();
+    void LongBar(Context& context, const types::Bar& bar);
+    void LookForSetup(Context& context);
+    // Counts a bar off mBarsLeft; whether none are left (zero already
+    // counts: the last bar's work is being retried).
+    bool CountDown();
     void GoFlat();
-    // Best effort: cancels the order `id` and clears it.
+    // Cancels the order `id` and clears it; one not known to be closed is
+    // kept as a stray.
     void CancelOther(Context& context, std::string& id, const char* what);
+    void AddStray(const std::string& id);
+    void RetryStrays(Context& context);
     const char* StateName() const;
     // Places an order; the ID if the venue took it and it is still active.
     // `request` is in the trade's terms: mirrored for a short.
@@ -176,9 +188,20 @@ class Breakout : public Strategy {
     bool mShort = false;
     bool mReversal = false;     // this trade reverses a failed one
     types::Decimal mFirstStop;  // kLong: the stop as first placed
-    // The failed trade's orders: a late fill of one must not be read in the
-    // reversed trade's direction.
-    std::vector<std::string> mFailedOrders;
+    // Orders given up on whose cancel is not known to have landed: a failed
+    // cancel, one that crossed a fill, or the orders of a trade just
+    // reversed. Their cancels are retried each bar until the venue answers,
+    // and kept a bar longer for a fill still on its way. A stray of an
+    // earlier trade is not this trade's: its fill is logged and not counted
+    // (one of this trade's still sells what this trade holds).
+    struct Stray {
+        std::string id;
+        std::size_t trade = 0;  // mTrade when it was given up
+        std::size_t tries = 0;
+        bool answered = false;
+    };
+    std::vector<Stray> mStrays;
+    std::size_t mTrade = 0;  // counts trades: GoFlat starts the next
     // Bars(): a short's mirrored bars.
     mutable std::vector<types::Bar> mMirrored;
     std::optional<Levels> mLevels;  // the setup being traded

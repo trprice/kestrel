@@ -64,7 +64,8 @@ std::optional<Rectangle> RectangleOf(std::span<const types::Bar> bars,
     const Decimal band = range->Height() * zone;
     const Decimal top = range->high - band;
     const Decimal bottom = range->low + band;
-    const Decimal middle = range->low + range->Height() * Decimal(5, 1);
+    const Decimal half(5, 1);  // 0.5
+    const Decimal middle = range->low + range->Height() * half;
     Rectangle rect{*range};
     bool at_top = false;
     bool at_bottom = false;
@@ -85,6 +86,8 @@ std::optional<Rectangle> RectangleOf(std::span<const types::Bar> bars,
         at_top = top_now;
         at_bottom = bottom_now;
     }
+    // The shortfall turned before the bottom: a fall that reached it would be
+    // a bottom touch after the last top touch, which this excludes.
     if (last_top && (!last_bottom || *last_bottom < *last_top)) {
         const auto after = window.subspan(*last_top + 1);
         rect.shortfall_up = std::ranges::any_of(
@@ -323,6 +326,8 @@ std::optional<InverseHeadShoulders> InverseHeadShouldersOf(
             return std::nullopt;  // already broken out, or failed
         }
     }
+    // The range is the neckline above the head down to the head, the height
+    // the target is measured with, not the window's high and low.
     return InverseHeadShoulders{
         {head.price + height, head.price},
         std::max(line(window.size()), window.back().high)};

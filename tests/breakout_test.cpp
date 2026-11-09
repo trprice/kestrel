@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <vector>
@@ -548,6 +549,38 @@ TEST(Breakout, TheStopSellingOutCancelsAnExitStillOut) {
     Feed(strategy, context, {"12", "15", "10", "12"});
     Feed(strategy, context, {"12", "13", "11", "12"});
     EXPECT_EQ(context.venue.orders.size(), 4u);
+}
+
+TEST(Breakout, AFailedCancelIsRetriedEachBarUntilItLands) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, {"13", "15.5", "13", "15.2"});  // exit order-3
+    // The stop sells out first, and the exit's cancel fails.
+    context.venue.cancel_error = types::ErrorCategory::kNetwork;
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "1", "10.98"));
+    ASSERT_EQ(context.venue.cancels.back(), "order-3");
+    Feed(strategy, context, kQuietBar);  // still failing
+    EXPECT_EQ(std::ranges::count(context.venue.cancels, "order-3"), 2);
+    context.venue.cancel_error.reset();
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    Feed(strategy, context, kQuietBar);  // lands
+    Feed(strategy, context, kQuietBar);  // and is not tried again
+    EXPECT_EQ(std::ranges::count(context.venue.cancels, "order-3"), 3);
+    // Its late fill belongs to the trade before: not counted.
+    strategy.OnFill(context, FillOf("order-3", Side::kSell, "1", "15"));
+}
+
+TEST(Breakout, ABuyWhileFlatIsNotCountedInTheNextTrade) {
+    Breakout strategy(Params());
+    FakeContext context;
+    strategy.OnFill(context, FillOf("elsewhere", Side::kBuy, "0.5", "12"));
+    Feed(strategy, context);  // arms the entry, order-1
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("1"));  // the stop
 }
 
 TEST(Breakout, ARestingTargetSellsWhereThePriceReachesIt) {

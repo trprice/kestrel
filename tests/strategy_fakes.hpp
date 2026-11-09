@@ -80,6 +80,9 @@ class RecordingVenue : public trading::TradingVenue {
     types::Result<trading::CancelOutcome> CancelOrder(
         const std::string& order_id) override {
         cancels.push_back(order_id);
+        if (cancel_error) {
+            return types::MakeError(*cancel_error, "cancel failed");
+        }
         if (cancel_result) {
             return *cancel_result;
         }
@@ -159,6 +162,8 @@ class RecordingVenue : public trading::TradingVenue {
     // What CancelOrder answers; without it, kNotFound.
     std::optional<types::Result<trading::CancelOutcome>> cancel_result;
     std::vector<std::string> cancels;  // CancelOrder's IDs, in order
+    // CancelOrder fails with this, if set.
+    std::optional<types::ErrorCategory> cancel_error;
     std::vector<types::Position> positions;
     std::vector<types::Balance> balances;
     std::vector<types::OrderStatus> open_orders;
