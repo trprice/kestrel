@@ -206,6 +206,14 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Pairs trading
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
+### Documentation
+- [ ] Add documents for each of the strategies describing how they work
+      conceptually and Kestrel specific items regarding the strategy.
+- [ ] Move any comments in the strategy header and source files that
+      pertain to the strategy and not the implementation into this
+      documentation.
+
+
 #### Market maker
 Every item here is done (Nov 2026; see Done). The Nov 2026 replays found
 none of them an edge on ZEC/USDT: every setting lost to holding over the
