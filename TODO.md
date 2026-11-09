@@ -207,21 +207,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 
 #### Market maker
-Roughly in order of expected value. The backtest markouts show where the P&L comes
-from: on the Oct 30 ZEC/USDT day, 2 bps quotes captured +1.37 bps at the
-fill and were at -1.02 bps a second later (picked off), and 6 bps quotes
-made +0.77 USDT in the five minutes after their fills but +9.99 by the end
-(inventory riding the price). Check a change's markouts, not only "vs hold".
-- [ ] Reconcile `MarketMaker`'s unconfirmed fills. When one is older than a
-      timeout (a few backstop polls), ask the venue: `GetOrder` for its real
-      filled quantity (correcting a size assumed from the acknowledgement),
-      and if the missing fill is older than the runner's duplicate check it
-      will never be delivered, so resync the inventory from `GetBalances` and
-      clear the entry. Reading `GetFills` from the strategy alone is not
-      enough: it cannot tell a fill that is still on its way to `OnFill` from
-      one that was lost, and counting it would count it twice when it lands.
-      The cleaner long-term fix may be in the runner (report fills it drops,
-      or let a strategy ask whether a fill ID was delivered).
+Every item here is done (Nov 2026; see Done). The Nov 2026 replays found
+none of them an edge on ZEC/USDT: every setting lost to holding over the
+four recorded days. Check a change's markouts, not only "vs hold".
 
 ### Engineering
 - [ ] Building components in the factory starts the paper venue's quote
@@ -454,14 +442,17 @@ the header of the code concerned.
   built. The live runner conflates quotes that queue up, so a burst of
   trades counts as its last one there; replays see every trade.
 - Fills the venue has reported but `OnFill` has not delivered
-  (`mUnconfirmed`) are cleared only by that `OnFill`. If it never comes, the
-  room on that side stays held for the rest of the run (logged once after
-  30 s): safe, but the side can stop quoting for good. Ways it can never come:
-  the runner drops a pushed fill older than `kSeenFillHorizon`; a fill stamped
-  before the run started (clock skew) is never polled; and an order
-  acknowledged as filled is assumed filled at the size asked for, so if a live
-  venue fills a different (rounded) quantity the fills never add up to it.
-  There is no reconciliation yet (see the project item under Strategies).
+  (`mUnconfirmed`) hold their side's room until they arrive. After a minute
+  the order is checked with the venue (`GetOrder`, at most once a minute):
+  a smaller fill than the acknowledgement assumed is corrected, and one all
+  of which has arrived is dropped. After about 11 minutes, past the
+  runner's `kSeenFillHorizon`, the missing part is booked at the order's
+  average price (else its own), without a fee, and a copy arriving later
+  (within 20 minutes) is skipped. One order is checked per quote, so a slow
+  venue holds up quoting for one call at a time. A venue that cannot answer
+  `GetOrder` books nothing (logged once), and the side keeps the room held.
+  Only the market maker does this; the cleaner fix may still be in the
+  runner (report the fills it drops).
 - Backtest ordering: a quote is matched against resting orders first, and
   without `[paper] report_latency_ms` the paper venue pushes the fill and the
   order's state at once, so the strategy hears of the fill before it sees the
@@ -750,6 +741,12 @@ the header of the code concerned.
       cooldown ends carry over, so the loss and drawdown caps count every
       run until `reset_state`. A state it cannot read stops it quoting; a
       live run without a [database] is refused.
+- [x] Market maker reconciles unconfirmed fills: `GetOrder` after a
+      minute corrects an assumed size, and a fill still missing after
+      about 11 minutes (past the runner's duplicate check) is booked, with
+      a late copy skipped. It does not resync the inventory to the venue's
+      balance: that also holds fills still on their way, which would then
+      count twice.
 - [x] Risk gate holdings: the larger of the venue's position and what the
       gate has seen fill since its count started, so on Binance.US (no
       positions) a halt or loss limit still lets the exit of what the run

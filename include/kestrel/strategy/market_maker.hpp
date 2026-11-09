@@ -206,8 +206,11 @@ struct MarketMakerParams {
 //
 // When a cancel loses a race with a fill, that side waits for the venue to
 // report the order's final state before quoting again, so inventory is never
-// counted twice. Fills move the inventory (OnFill); order state comes from
-// OnOrderUpdate, so a rejected or expired quote is requoted.
+// counted twice. A fill the venue reported that OnFill has not delivered is
+// checked with the venue after a minute and, still missing after about 11,
+// booked here without a fee (a copy arriving later is skipped). Fills move the
+// inventory (OnFill); order state comes from OnOrderUpdate, so a rejected or
+// expired quote is requoted.
 //
 // Protection rules (MarketMakerProtection) are opt-in. A rule that pauses a
 // side cancels its resting quote; the exits are market orders for the whole
@@ -330,10 +333,27 @@ class MarketMaker : public Strategy {
         types::Decimal seen;      // in OnFill so far
         types::Timestamp since;
         bool warned = false;
+        types::Decimal price;  // the order's, for a fill booked unseen
+        std::optional<types::Timestamp> checked;  // last asked of the venue
+        bool lookup_warned = false;
     };
     void ExpectFills(const std::string& order_id, types::Side side,
                      const types::Decimal& filled, const types::Decimal& seen,
-                     types::Timestamp now);
+                     types::Timestamp now, const types::Decimal& price);
+    // Asks the venue about fills unconfirmed for a while: corrects what an
+    // order filled to what the venue says, and books one that has not
+    // arrived long after the runner would have delivered it (see
+    // ReconcileUnconfirmed in the .cpp).
+    void ReconcileUnconfirmed(Context& context);
+    // The bookkeeping of a fill, for OnFill and for one booked unseen.
+    void ApplyFill(Context& context, const types::Fill& fill);
+    // Fills booked unseen, by order ID, and how much of them: a copy that
+    // arrives later after all is not counted again.
+    struct BookedUnseen {
+        types::Decimal quantity;
+        types::Timestamp at;
+    };
+    std::map<std::string, BookedUnseen> mBookedUnseen;
     // Base units on `side` still to be confirmed by OnFill.
     types::Decimal UnconfirmedFills(types::Side side, types::Timestamp now);
 

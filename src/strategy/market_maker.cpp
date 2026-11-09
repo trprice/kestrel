@@ -27,6 +27,16 @@ constexpr std::chrono::seconds kStateSaveInterval{60};
 constexpr std::chrono::seconds kStateRetryInterval{10};
 // How long a reported fill may go without its OnFill before it is logged.
 constexpr std::chrono::seconds kUnconfirmedWarning{30};
+// An unconfirmed fill is checked with the venue after this long, and again
+// at most this often.
+constexpr std::chrono::seconds kReconcileAfter{60};
+// And booked unseen after this long: past the runner's duplicate check
+// (Runner::kSeenFillHorizon, 10 minutes), a fill not delivered by then is
+// unlikely to come (it still can, if no newer fill moved the runner's
+// cursor on: the copy is skipped, see mBookedUnseen).
+constexpr std::chrono::minutes kBookUnseenAfter{11};
+// A booked fill's late copy is watched for this long, then forgotten.
+constexpr std::chrono::minutes kBookedUnseenKept{20};
 const Decimal kBpsDivisor = Decimal::FromInt(10000);
 // The mid is sampled for the volatility at most this often, so the flicker
 // of the book between trades does not count as volatility.
@@ -339,6 +349,9 @@ Decimal MarketMaker::Size(const Decimal& room) const {
 void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     if (!mReady || quote.symbol != mParams.symbol) {
         return;
+    }
+    if (!mUnconfirmed.empty()) {
+        ReconcileUnconfirmed(context);
     }
     mLastArrival = context.Now();
     mQuietPulled = false;
@@ -845,7 +858,8 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                      types::ToString(side), size.ToString(), price->ToString(),
                      ack->order_id, replaced, types::ToString(ack->state));
         if (ack->state == types::OrderState::kFilled) {
-            ExpectFills(ack->order_id, side, size, Decimal(), context.Now());
+            ExpectFills(ack->order_id, side, size, Decimal(), context.Now(),
+                        *price);
             if (top) {
                 (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
             }
@@ -903,6 +917,32 @@ void MarketMaker::OnFill(Context& context, const types::Fill& fill) {
     if (fill.symbol != mParams.symbol) {
         return;
     }
+    // A fill already booked unseen (ReconcileUnconfirmed) that arrives after
+    // all: only what goes beyond it counts.
+    if (auto it = mBookedUnseen.find(fill.order_id);
+        it != mBookedUnseen.end()) {
+        const Decimal skip = std::min(fill.quantity, it->second.quantity);
+        it->second.quantity -= skip;
+        if (it->second.quantity.Sign() <= 0) {
+            mBookedUnseen.erase(it);
+        }
+        spdlog::info(
+            "market_maker: fill {} of order {} ({}) was booked already; {} "
+            "of it skipped",
+            fill.fill_id, fill.order_id, fill.quantity.ToString(),
+            skip.ToString());
+        if (skip >= fill.quantity) {
+            return;
+        }
+        types::Fill rest = fill;
+        rest.quantity -= skip;
+        ApplyFill(context, rest);
+        return;
+    }
+    ApplyFill(context, fill);
+}
+
+void MarketMaker::ApplyFill(Context& context, const types::Fill& fill) {
     const Decimal before = Position();
     mInventory += fill.side == Side::kBuy ? fill.quantity : -fill.quantity;
     // A fee in the base asset (Binance.US charges a taker buy's fee in what
@@ -971,8 +1011,8 @@ void MarketMaker::OnOrderUpdate(Context& context,
                 // Closed with fills OnFill has not delivered: keep counting
                 // them.
                 ExpectFills(status.order_id, status.side,
-                            status.filled_quantity, quote.filled,
-                            context.Now());
+                            status.filled_quantity, quote.filled, context.Now(),
+                            status.average_fill_price.value_or(quote.price));
                 quote = Resting();
             }
         }
@@ -981,9 +1021,91 @@ void MarketMaker::OnOrderUpdate(Context& context,
 
 void MarketMaker::ExpectFills(const std::string& order_id, Side side,
                               const Decimal& filled, const Decimal& seen,
-                              types::Timestamp now) {
+                              types::Timestamp now, const Decimal& price) {
     if (filled > seen) {
-        mUnconfirmed[order_id] = Unconfirmed{side, filled, seen, now, false};
+        mUnconfirmed[order_id] =
+            Unconfirmed{side, filled, seen, now, false, price, std::nullopt};
+    }
+}
+
+void MarketMaker::ReconcileUnconfirmed(Context& context) {
+    const auto now = context.Now();
+    for (auto it = mBookedUnseen.begin(); it != mBookedUnseen.end();) {
+        it = now - it->second.at >= kBookedUnseenKept ? mBookedUnseen.erase(it)
+                                                      : std::next(it);
+    }
+    // At most one venue call per quote, so a slow venue cannot hold up
+    // quoting for long.
+    bool asked = false;
+    for (auto it = mUnconfirmed.begin(); it != mUnconfirmed.end() && !asked;) {
+        auto& [order_id, pending] = *it;
+        if (now - pending.since < kReconcileAfter ||
+            (pending.checked && now - *pending.checked < kReconcileAfter)) {
+            ++it;
+            continue;
+        }
+        pending.checked = now;
+        asked = true;
+        auto status = context.Venue().GetOrder(order_id);
+        if (!status) {
+            // Without the venue's word nothing is booked: the side keeps the
+            // room for it, as before.
+            if (!pending.lookup_warned) {
+                pending.lookup_warned = true;
+                spdlog::warn(
+                    "market_maker: cannot check order {} with the venue ({}); "
+                    "its side keeps the room for it",
+                    order_id, status.error().ToString());
+            }
+            ++it;
+            continue;
+        }
+        if (status->filled_quantity < pending.expected) {
+            // The acknowledgement assumed the size asked for; the venue
+            // filled less (rounded, or a partial fill).
+            spdlog::warn("market_maker: order {} filled {}, not the {} assumed",
+                         order_id, status->filled_quantity.ToString(),
+                         pending.expected.ToString());
+            pending.expected = status->filled_quantity;
+        }
+        if (status->average_fill_price) {
+            pending.price = *status->average_fill_price;
+        }
+        if (pending.expected <= pending.seen) {
+            it = mUnconfirmed.erase(it);  // all of it has arrived
+            continue;
+        }
+        if (now - pending.since < kBookUnseenAfter) {
+            ++it;
+            continue;
+        }
+        // Long past when the runner would deliver it: book it here, and
+        // skip a copy that arrives after all.
+        const Decimal missing = pending.expected - pending.seen;
+        spdlog::warn(
+            "market_maker: order {} filled {} but only {} arrived in {} s; "
+            "booking the {} missing at {}",
+            order_id, pending.expected.ToString(), pending.seen.ToString(),
+            std::chrono::duration_cast<std::chrono::seconds>(now -
+                                                             pending.since)
+                .count(),
+            missing.ToString(), pending.price.ToString());
+        // Booked without a fee, which the venue's record of it would carry
+        // (a fee in the coin then shows as a little more held than the
+        // venue has).
+        types::Fill fill;
+        fill.fill_id = "unseen-" + order_id;
+        fill.order_id = order_id;
+        fill.symbol = mParams.symbol;
+        fill.side = pending.side;
+        fill.quantity = missing;
+        fill.price = pending.price;
+        fill.time = now;
+        auto& booked = mBookedUnseen[order_id];
+        booked.quantity += missing;
+        booked.at = now;
+        it = mUnconfirmed.erase(it);
+        ApplyFill(context, fill);
     }
 }
 
@@ -994,8 +1116,9 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
             continue;
         }
         total += pending.expected - pending.seen;
-        // Kept until the fill arrives, however long: a fill that never
-        // arrives leaves that side short of room rather than over the limit.
+        // Kept until the fill arrives, or the venue says it will not
+        // (ReconcileUnconfirmed): until then that side is short of room
+        // rather than over the limit.
         if (!pending.warned && now - pending.since >= kUnconfirmedWarning) {
             pending.warned = true;
             spdlog::warn(

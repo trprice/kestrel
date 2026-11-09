@@ -913,6 +913,98 @@ TEST(MarketMakerTest, QuotesThatFillOnArrivalCountAgainstTheRoom) {
     EXPECT_EQ(CountSide(m.Orders(), Side::kSell), 3);
 }
 
+// A bid acknowledged as filled at once whose fill never reaches OnFill.
+// Holding nothing, it quotes no ask.
+struct LostFill : Maker {
+    LostFill() : Maker("0") {
+        context.venue.ack_state = OrderState::kFilled;
+        Quote("99.99", "100.01");  // order-1, the bid, filled at once
+        context.venue.ack_state = OrderState::kNew;
+    }
+    void VenueSays(const char* filled, const char* price = "99.90") {
+        types::OrderStatus status = StatusOf("order-1", OrderState::kFilled);
+        status.side = Side::kBuy;
+        status.filled_quantity = D(filled);
+        status.average_fill_price = D(price);
+        context.venue.order_states["order-1"] = status;
+    }
+    void After(std::chrono::seconds wait) {
+        context.now += wait;
+        Quote("99.99", "100.01");
+    }
+};
+
+TEST(MarketMakerTest, AnUnconfirmedFillIsCheckedWithTheVenueAfterAMinute) {
+    LostFill m;
+    m.VenueSays("0.3");  // not the 0.5 assumed
+    m.After(std::chrono::seconds(30));
+    EXPECT_EQ(m.context.venue.get_order_calls, 0);
+    m.After(std::chrono::seconds(31));
+    EXPECT_EQ(m.context.venue.get_order_calls, 1);
+    m.After(std::chrono::seconds(30));  // at most once a minute
+    EXPECT_EQ(m.context.venue.get_order_calls, 1);
+}
+
+TEST(MarketMakerTest, AFillLongMissingIsBookedAndALateCopySkipped) {
+    LostFill m;
+    m.VenueSays("0.3", "99.90");
+    // Past the runner's duplicate check: the 0.3 the venue confirms is
+    // booked, and with nothing else outstanding the inventory follows the
+    // venue's balance.
+    m.context.venue.balances = {{"ZEC", D("0.3"), D("0.3"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    m.After(std::chrono::minutes(12));
+    // 0.3 bought: room to buy 2 - 0.3 = 1.7, so full-size bids again.
+    auto copy = FillOf(Side::kBuy, "0.3", "order-1");
+    copy.price = D("99.90");
+    m.strategy.OnFill(m.context, copy);  // the lost fill, arriving after all
+    // Bought 1.4 more: 1.7 held, room 0.3, so the bid is resized to 0.3.
+    // Had the copy counted again, 2.0 would be held and no bid placed.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.4"));
+    const auto placed = m.Orders().size();
+    m.After(std::chrono::seconds(1));
+    ASSERT_GT(m.Orders().size(), placed);
+    EXPECT_EQ(m.Orders().back().side, Side::kBuy);
+    EXPECT_EQ(m.Orders().back().quantity, D("0.3"));
+}
+
+TEST(MarketMakerTest, NothingIsBookedWithoutTheVenuesWord) {
+    LostFill m;  // the venue does not know the order
+    m.After(std::chrono::minutes(20));
+    EXPECT_GE(m.context.venue.get_order_calls, 1);
+    // Still waiting: the bid's room stays held for the 0.5, so with 1.5
+    // bought there is none left.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5"));
+    const auto placed = m.Orders().size();
+    m.After(std::chrono::seconds(1));
+    for (std::size_t i = placed; i < m.Orders().size(); ++i) {
+        EXPECT_NE(m.Orders()[i].side, Side::kBuy);  // 1.5 + 0.5 held: full
+    }
+}
+
+TEST(MarketMakerTest, OneOrderIsCheckedPerQuote) {
+    Maker m("1");  // both sides quoted, both filled at once
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.Quote("99.99", "100.01");
+    m.context.venue.ack_state = OrderState::kNew;
+    m.context.now += std::chrono::seconds(61);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.get_order_calls, 1);
+    m.Quote("99.99", "100.01");  // the other, on the next quote
+    EXPECT_EQ(m.context.venue.get_order_calls, 2);
+    m.Quote("99.99", "100.01");  // both checked this minute
+    EXPECT_EQ(m.context.venue.get_order_calls, 2);
+}
+
+TEST(MarketMakerTest, AnOrderTheVenueSaysArrivedInFullIsDropped) {
+    LostFill m;
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.3", "order-1"));
+    m.VenueSays("0.3");  // all 0.3 it filled has arrived
+    m.After(std::chrono::seconds(61));
+    m.After(std::chrono::minutes(15));
+    EXPECT_EQ(m.context.venue.get_order_calls, 1);  // dropped after one look
+}
+
 TEST(MarketMakerTest, AQuoteClosedWithFillsStillToComeKeepsItsRoom) {
     Maker m;
     m.Quote("99.99", "100.01");
