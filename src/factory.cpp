@@ -522,21 +522,27 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Word("setup", setup,
                 {"nr", "inside", "range", "rectangle", "pipe",
                  "failed_breakdown", "double_bottom", "triple_bottom",
-                 "opening_range", "inverse_head_shoulders"}),
+                 "opening_range", "inverse_head_shoulders",
+                 "ascending_triangle", "symmetrical_triangle"}),
          setup, error);
-    params.setup = setup == "inside"      ? Params::Setup::kInsideBar
-                   : setup == "range"     ? Params::Setup::kRange
-                   : setup == "rectangle" ? Params::Setup::kRectangle
-                   : setup == "pipe"      ? Params::Setup::kPipeBottom
-                   : setup == "failed_breakdown"
-                       ? Params::Setup::kFailedBreakdown
-                   : setup == "double_bottom" || setup == "triple_bottom"
-                       ? Params::Setup::kMultipleBottom
-                   : setup == "opening_range" ? Params::Setup::kOpeningRange
-                   : setup == "inverse_head_shoulders"
-                       ? Params::Setup::kInverseHeadShoulders
-                       : Params::Setup::kNarrowRange;
+    params.setup =
+        setup == "inside"             ? Params::Setup::kInsideBar
+        : setup == "range"            ? Params::Setup::kRange
+        : setup == "rectangle"        ? Params::Setup::kRectangle
+        : setup == "pipe"             ? Params::Setup::kPipeBottom
+        : setup == "failed_breakdown" ? Params::Setup::kFailedBreakdown
+        : setup == "double_bottom" || setup == "triple_bottom"
+            ? Params::Setup::kMultipleBottom
+        : setup == "opening_range" ? Params::Setup::kOpeningRange
+        : setup == "inverse_head_shoulders"
+            ? Params::Setup::kInverseHeadShoulders
+        : setup == "ascending_triangle" || setup == "symmetrical_triangle"
+            ? Params::Setup::kTriangle
+            : Params::Setup::kNarrowRange;
     params.bottoms = setup == "triple_bottom" ? 3 : 2;
+    params.triangle = setup == "symmetrical_triangle"
+                          ? strategy::TriangleKind::kSymmetrical
+                          : strategy::TriangleKind::kAscending;
     Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
     Take(p.Count("range_bars", params.range_bars), params.range_bars, error);
     Take(p.Number("touch_zone", params.touch_zone), params.touch_zone, error);

@@ -195,10 +195,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       at market on a close past it; short entries and stop-and-reverse once
       the paper venue can short.
 - [ ] `breakout` setups for the deck's remaining patterns, on
-      `SwingPoints`: triangles, the ascending first (flat highs, rising
-      swing lows), then symmetrical ones (a fitted line through the highs);
-      and cup-and-handle (a rounded decline and recovery to the old high, a
-      small pullback, then the break; mainly daily bars, and rare).
+      `SwingPoints`: cup-and-handle (a rounded decline and recovery to the
+      old high, a small pullback, then the break; mainly daily bars, and
+      rare).
 - [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Pairs trading
@@ -847,6 +846,11 @@ the header of the code concerned.
 - [x] `setup = "inverse_head_shoulders"`: three swing lows, the middle
       lowest, bought above a neckline through the highest highs between
       them, which may slope; `InverseHeadShouldersOf` in `patterns.hpp`.
+- [x] `setup = "ascending_triangle"` / `"symmetrical_triangle"`: flat or
+      falling swing highs (a least-squares line through the falling ones)
+      over rising swing lows, `min_touches` of each, bought above the
+      resistance and stopped below the newest low; `TriangleOf` in
+      `patterns.hpp`.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.

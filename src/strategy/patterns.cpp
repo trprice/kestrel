@@ -328,6 +328,120 @@ std::optional<InverseHeadShoulders> InverseHeadShouldersOf(
         std::max(line(window.size()), window.back().high)};
 }
 
+namespace {
+
+// The least-squares line through swing points (at least two, at different
+// bars), as its mean and slope.
+class FittedLine {
+   public:
+    explicit FittedLine(std::span<const Swing> points)
+        : mCount(static_cast<std::int64_t>(points.size())) {
+        std::int64_t sxx = 0;
+        Decimal sy;
+        Decimal sxy;
+        for (const Swing& p : points) {
+            const auto x = static_cast<std::int64_t>(p.index);
+            mSumX += x;
+            sxx += x * x;
+            sy += p.price;
+            sxy += p.price * Decimal::FromInt(x);
+        }
+        const std::int64_t spread = (mCount * sxx) - (mSumX * mSumX);
+        mSlope = Decimal::Divide(
+            (sxy * Decimal::FromInt(mCount)) - (sy * Decimal::FromInt(mSumX)),
+            Decimal::FromInt(spread), 10, types::Rounding::kNearest);
+        mMean = Decimal::Divide(sy, Decimal::FromInt(mCount), 10,
+                                types::Rounding::kNearest);
+    }
+    // The line at bar `at`, to 8 places.
+    Decimal At(std::size_t at) const {
+        const Decimal offset = Decimal::Divide(
+            Decimal::FromInt((mCount * static_cast<std::int64_t>(at)) - mSumX),
+            Decimal::FromInt(mCount), 10, types::Rounding::kNearest);
+        return (mMean + (mSlope * offset))
+            .Rescale(8, types::Rounding::kNearest);
+    }
+
+   private:
+    std::int64_t mCount;
+    std::int64_t mSumX = 0;
+    Decimal mMean;
+    Decimal mSlope;
+};
+
+}  // namespace
+
+std::size_t TriangleBars(std::size_t touches, std::size_t strength) {
+    return MultipleBottomBars(touches, strength) + 1;
+}
+
+std::optional<Triangle> TriangleOf(std::span<const types::Bar> bars,
+                                   std::size_t n, TriangleKind kind,
+                                   std::size_t touches, std::size_t strength,
+                                   const Decimal& zone) {
+    if (touches < 2 || n == 0 || bars.size() < n) {
+        return std::nullopt;
+    }
+    const auto window = bars.last(n);
+    std::vector<Swing> highs;
+    std::vector<Swing> lows;
+    for (const Swing& swing : SwingPoints(window, strength)) {
+        (swing.high ? highs : lows).push_back(swing);
+    }
+    if (highs.size() < touches || lows.size() < touches) {
+        return std::nullopt;
+    }
+    const auto top = std::span(highs).last(touches);
+    const auto bottom = std::span(lows).last(touches);
+    if (bottom.front().index >= top.back().index ||
+        top.front().index >= bottom.back().index) {
+        return std::nullopt;  // the highs and the lows do not overlap
+    }
+    Decimal highest = top.front().price;
+    Decimal lowest_high = top.front().price;
+    for (std::size_t k = 0; k < touches; ++k) {
+        highest = std::max(highest, top[k].price);
+        lowest_high = std::min(lowest_high, top[k].price);
+        if (k > 0 && (bottom[k].price <= bottom[k - 1].price ||
+                      (kind == TriangleKind::kSymmetrical &&
+                       top[k].price >= top[k - 1].price))) {
+            return std::nullopt;  // lows not rising, or highs not falling
+        }
+    }
+    const Decimal height = highest - bottom.front().price;
+    if (height.Sign() <= 0) {
+        return std::nullopt;
+    }
+    const Decimal margin = height * zone;
+    if (kind == TriangleKind::kAscending && highest - lowest_high > margin) {
+        return std::nullopt;  // the highs are not flat
+    }
+    const FittedLine upper(top);
+    const auto resistance = [&](std::size_t at) {
+        return kind == TriangleKind::kAscending ? highest : upper.At(at);
+    };
+    const std::size_t next = window.size();
+    if (FittedLine(bottom).At(next) >= resistance(next)) {
+        return std::nullopt;  // the lines have met: past the apex
+    }
+    const Decimal floor = bottom.back().price - margin;
+    // The `strength` bars after the last high are no higher than it, though a
+    // falling line may already be under them.
+    for (std::size_t i = top.back().index + strength + 1; i < next; ++i) {
+        if (window[i].high > resistance(i)) {
+            return std::nullopt;  // already broken out
+        }
+    }
+    for (std::size_t i = bottom.back().index + 1; i < next; ++i) {
+        if (window[i].low < floor) {
+            return std::nullopt;  // failed
+        }
+    }
+    return Triangle{{highest, bottom.front().price},
+                    std::max(resistance(next), window.back().high),
+                    bottom.back().price};
+}
+
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            std::size_t back) {
     if (period == 0 || !Holds(bars, period, back)) {

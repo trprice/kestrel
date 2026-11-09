@@ -446,6 +446,153 @@ TEST(Patterns, InverseHeadShouldersNeedsEachPart) {
     EXPECT_FALSE(InverseHeadShouldersOf(HeadShoulders(), 0, 1, D("0.1")));
 }
 
+// Swing highs of 15, 14.9 and 15, and rising swing lows of 10, 11.5 and
+// 12.5 between them.
+std::vector<types::Bar> Ascending() {
+    return {B("13", "11"),   B("15", "13"),     B("13", "10"),
+            B("14.9", "12"), B("13.5", "11.5"), B("15", "13"),
+            B("14", "12.5"), B("14.5", "13"),   B("14.6", "13.5", "14.2")};
+}
+
+TEST(Patterns, AscendingTriangle) {
+    // The newest two of each: highs 14.9 and 15, lows 11.5 and 12.5; a height
+    // of 3.5, so the highs may be 0.35 apart.
+    const auto two =
+        TriangleOf(Ascending(), 9, TriangleKind::kAscending, 2, 1, D("0.1"));
+    ASSERT_TRUE(two.has_value());
+    EXPECT_EQ(two->range.high, D("15"));
+    EXPECT_EQ(two->range.low, D("11.5"));
+    EXPECT_EQ(two->breakout, D("15"));
+    EXPECT_EQ(two->last_low, D("12.5"));
+    const auto three =
+        TriangleOf(Ascending(), 9, TriangleKind::kAscending, 3, 1, D("0.1"));
+    ASSERT_TRUE(three.has_value());
+    EXPECT_EQ(three->range.low, D("10"));
+    // The highs are flat, not falling: no symmetrical triangle.
+    EXPECT_FALSE(
+        TriangleOf(Ascending(), 9, TriangleKind::kSymmetrical, 2, 1, D("0.1")));
+}
+
+TEST(Patterns, AscendingTriangleNeedsEachPart) {
+    const auto of = [](const std::vector<types::Bar>& bars) {
+        return TriangleOf(bars, 9, TriangleKind::kAscending, 2, 1, D("0.1"))
+            .has_value();
+    };
+    auto bars = Ascending();
+    bars[3] = B("14.5", "12");  // highs 0.5 apart: not flat
+    EXPECT_FALSE(of(bars));
+    bars[3] = B("14.7", "12");  // 0.3 apart
+    EXPECT_TRUE(of(bars));
+    bars = Ascending();
+    bars[6] = B("14", "11.4");  // the lows fall
+    EXPECT_FALSE(of(bars));
+    bars = Ascending();
+    bars[8] = B("15.2", "13.5");  // already above the resistance
+    EXPECT_FALSE(of(bars));
+    bars = Ascending();
+    bars[8] = B("14.6", "12.1");  // under the last low by more than 0.35
+    EXPECT_FALSE(of(bars));
+    bars[8] = B("14.6", "12.2");
+    EXPECT_TRUE(of(bars));
+    EXPECT_FALSE(
+        TriangleOf(Ascending(), 9, TriangleKind::kAscending, 1, 1, D("0.1")));
+    EXPECT_FALSE(
+        TriangleOf(Ascending(), 9, TriangleKind::kAscending, 4, 1, D("0.1")));
+    EXPECT_FALSE(
+        TriangleOf(Ascending(), 10, TriangleKind::kAscending, 2, 1, D("0.1")));
+    // Only the newest four bars: one low.
+    EXPECT_FALSE(
+        TriangleOf(Ascending(), 4, TriangleKind::kAscending, 2, 1, D("0.1")));
+}
+
+// Swing highs falling 0.1 a bar (16, 15.8, 15.6) and swing lows rising 0.25
+// a bar (10, 10.5, 11).
+std::vector<types::Bar> Symmetrical() {
+    return {B("14", "12"),   B("16", "13"),   B("13", "10"),
+            B("15.8", "12"), B("13", "10.5"), B("15.6", "12.5"),
+            B("14", "11"),   B("14.5", "12"), B("14.8", "12.5", "14.5")};
+}
+
+TEST(Patterns, SymmetricalTriangle) {
+    const auto two = TriangleOf(Symmetrical(), 9, TriangleKind::kSymmetrical, 2,
+                                1, D("0.1"));
+    ASSERT_TRUE(two.has_value());
+    EXPECT_EQ(two->range.high, D("15.8"));
+    EXPECT_EQ(two->range.low, D("10.5"));
+    EXPECT_EQ(two->breakout, D("15.2"));  // the line at the next bar
+    EXPECT_EQ(two->last_low, D("11"));
+    const auto three = TriangleOf(Symmetrical(), 9, TriangleKind::kSymmetrical,
+                                  3, 1, D("0.1"));
+    ASSERT_TRUE(three.has_value());
+    EXPECT_EQ(three->range.high, D("16"));
+    EXPECT_EQ(three->range.low, D("10"));
+    EXPECT_EQ(three->breakout, D("15.2"));
+}
+
+TEST(Patterns, SymmetricalTriangleFitsALineThroughTheHighs) {
+    // Highs of 16, 15.9 and 15.6 at bars 1, 3 and 5: the least-squares line
+    // falls 0.1 a bar from a mean of 15.8333..., 15.23333333 at bar 9.
+    auto bars = Symmetrical();
+    bars[3] = B("15.9", "12");
+    const auto fitted =
+        TriangleOf(bars, 9, TriangleKind::kSymmetrical, 3, 1, D("0.1"));
+    ASSERT_TRUE(fitted.has_value());
+    EXPECT_EQ(fitted->breakout, D("15.23333333"));
+    // A newest bar's high between the line there (15.33333333) and at the
+    // next bar is the level instead.
+    bars[8] = B("15.3", "12.5");
+    EXPECT_EQ(TriangleOf(bars, 9, TriangleKind::kSymmetrical, 3, 1, D("0.1"))
+                  ->breakout,
+              D("15.3"));
+    bars[8] = B("15.4", "12.5");  // above it: broken out
+    EXPECT_FALSE(
+        TriangleOf(bars, 9, TriangleKind::kSymmetrical, 3, 1, D("0.1")));
+}
+
+TEST(Patterns, SymmetricalTriangleNeedsEachPart) {
+    const auto of = [](const std::vector<types::Bar>& bars) {
+        return TriangleOf(bars, 9, TriangleKind::kSymmetrical, 2, 1, D("0.1"))
+            .has_value();
+    };
+    auto bars = Symmetrical();
+    bars[5] = B("15.8", "12.5");  // the highs flat, not falling
+    EXPECT_FALSE(of(bars));
+    bars = Symmetrical();
+    // Lows rising 0.95 a bar from 10.5: 15.25 at the next bar, past the
+    // highs' 15.2 there. The lines have met.
+    bars[6] = B("14", "12.4");
+    bars[7] = B("14.5", "12.6");
+    bars[8] = B("14.8", "12.8");
+    EXPECT_FALSE(of(bars));
+    bars[6] = B("14", "12.2");  // 14.75 there
+    EXPECT_TRUE(of(bars));
+    bars = Symmetrical();
+    bars[8] = B("15.4", "12.5");  // above the line (15.3) at the newest bar
+    EXPECT_FALSE(of(bars));
+    // The bar after the last high (15.6) is under it but above the line
+    // (15.5): part of the swing, not a break.
+    bars = Symmetrical();
+    bars[6] = B("15.55", "11");
+    EXPECT_TRUE(of(bars));
+    bars[7] = B("15.45", "12");  // the line is 15.4 here
+    EXPECT_FALSE(of(bars));
+}
+
+TEST(Patterns, ATrianglesHighsAndLowsOverlap) {
+    // Flat highs at bars 1 and 3, then rising lows at 5 and 7: a top and a
+    // decline, not a triangle.
+    const std::vector<types::Bar> bars = {
+        B("13", "12"),      B("15", "12.5"),   B("14", "12.6"),
+        B("14.95", "12.7"), B("14", "12"),     B("13.5", "11"),
+        B("13.4", "11.5"),  B("13.3", "11.3"), B("13.2", "11.6")};
+    EXPECT_FALSE(TriangleOf(bars, 9, TriangleKind::kAscending, 2, 1, D("0.1")));
+}
+
+TEST(Patterns, TriangleBars) {
+    EXPECT_EQ(TriangleBars(2, 1), 6u);
+    EXPECT_EQ(TriangleBars(2, 2), 9u);
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

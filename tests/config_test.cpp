@@ -658,6 +658,11 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     ASSERT_OK(hs);
     EXPECT_EQ((*hs)->Needs().warmup_bars, 40u);
     EXPECT_FALSE(make("setup='inverse_head_shoulders'\nrange_bars=10\n"));
+    auto tri = make("setup='symmetrical_triangle'\nrange_bars=30\n");
+    ASSERT_OK(tri);
+    EXPECT_EQ((*tri)->Needs().warmup_bars, 30u);
+    EXPECT_TRUE(make("setup='ascending_triangle'\n").has_value());
+    EXPECT_FALSE(make("setup='ascending_triangle'\nmin_touches=1\n"));
     EXPECT_FALSE(make("swing_bars=0\n").has_value());
     auto opening =
         make("timeframe='5m'\nsetup='opening_range'\nopening_bars=3\n");

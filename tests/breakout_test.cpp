@@ -1133,6 +1133,35 @@ TEST(Breakout, AnInverseHeadAndShouldersRoundsItsNecklineUpToTheTick) {
     EXPECT_EQ(context.venue.orders[0].stop_price, D("16.29"));  // 16.28 + tick
 }
 
+TEST(Breakout, AnAscendingTriangleBuysAboveItsResistance) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kTriangle;
+    params.range_bars = 9;
+    params.swing_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    // Highs of 14.9 and 15, then lows rising from 11.5 to 12.5.
+    for (const auto& b :
+         std::vector<std::array<const char*, 4>>{{"12", "13", "11", "12"},
+                                                 {"13", "15", "13", "14"},
+                                                 {"13", "13", "10", "11"},
+                                                 {"12", "14.9", "12", "14"},
+                                                 {"13", "13.5", "11.5", "12"},
+                                                 {"13", "15", "13", "14"},
+                                                 {"14", "14", "12.5", "13"},
+                                                 {"13", "14.5", "13", "14"}}) {
+        context.Add(b);
+    }
+    Feed(strategy, context, {"14", "14.6", "13.5", "14.2"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("15.01"));
+    // Filled: the stop is under the newest swing low, 12.5 less 10 bps.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "15.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("12.48"));
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -1171,6 +1200,13 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);  // needs 11
     bad.range_bars = 11;
     EXPECT_NO_THROW(Breakout{bad});
+    bad.setup = BreakoutParams::Setup::kTriangle;
+    bad.range_bars = 8;  // TriangleBars(2, 2) is 9
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.range_bars = 9;
+    EXPECT_NO_THROW(Breakout{bad});
+    bad.min_touches = 1;
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
     bad = Params();
     bad.reclaim_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);

@@ -141,6 +141,35 @@ std::optional<InverseHeadShoulders> InverseHeadShouldersOf(
     std::span<const types::Bar> bars, std::size_t n, std::size_t strength,
     const types::Decimal& zone);
 
+// A triangle in the newest `n` bars, from its newest `touches` swing highs and
+// newest `touches` swing lows (SwingPoints, `strength`; touches >= 2), which
+// must overlap in time (the first low before the last high, and the first high
+// before the last low). The lows rise, each above the one before. Ascending:
+// the highs are flat, within `zone` of the height of the highest, which is the
+// resistance. Symmetrical: the highs fall, each below the one before, and the
+// resistance is the least-squares line through them, which may be fitted
+// rather than through each. The height is the highest of those highs less the
+// lowest of the lows. The lines must not have met by the next bar (the lows'
+// line, fitted the same way, still under the resistance there). It has not
+// broken out yet (no bar above the resistance since the `strength` bars after
+// the last high, which are no higher than it) nor failed
+// (none since the last low below it by more than the zone). Nullopt when it is
+// not one.
+enum class TriangleKind { kAscending, kSymmetrical };
+struct Triangle {
+    PriceRange range;  // the highest high and the lowest low used
+    // The level to buy above: the resistance at the bar after the newest, or
+    // the newest bar's high if that is higher.
+    types::Decimal breakout;
+    types::Decimal last_low;  // the newest swing low
+};
+// A lower bound on the bars that can hold a triangle of `touches`.
+std::size_t TriangleBars(std::size_t touches, std::size_t strength);
+std::optional<Triangle> TriangleOf(std::span<const types::Bar> bars,
+                                   std::size_t n, TriangleKind kind,
+                                   std::size_t touches, std::size_t strength,
+                                   const types::Decimal& zone);
+
 // The opening range: the high and low of a session's first `n` bars, answered
 // on the newest bar when it is the n-th to open at or after `start` (the
 // session's open), so once a session. The bar before them is needed to tell:

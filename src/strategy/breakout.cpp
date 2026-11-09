@@ -52,6 +52,11 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
         throw std::invalid_argument(
             "the opening_range setup needs intraday bars");
     }
+    if (mParams.setup == BreakoutParams::Setup::kTriangle &&
+        mParams.min_touches < 2) {
+        throw std::invalid_argument(
+            "a triangle needs min_touches of 2 or more");
+    }
     if (mParams.bottoms != 2 && mParams.bottoms != 3) {
         throw std::invalid_argument("bottoms must be 2 or 3");
     }
@@ -59,9 +64,12 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
          mParams.range_bars <
              MultipleBottomBars(mParams.bottoms, mParams.swing_bars)) ||
         (mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders &&
-         mParams.range_bars < MultipleBottomBars(3, mParams.swing_bars))) {
+         mParams.range_bars < MultipleBottomBars(3, mParams.swing_bars)) ||
+        (mParams.setup == BreakoutParams::Setup::kTriangle &&
+         mParams.range_bars <
+             TriangleBars(mParams.min_touches, mParams.swing_bars))) {
         throw std::invalid_argument(
-            "range_bars is too few to hold the bottoms at this swing_bars");
+            "range_bars is too few to hold the pattern at this swing_bars");
     }
     if (mParams.touch_zone.Sign() <= 0 || mParams.touch_zone >= Decimal(5, 1)) {
         throw std::invalid_argument("touch_zone must be above 0 and below 0.5");
@@ -98,7 +106,8 @@ Requirements Breakout::Needs() const {
     } else if (mParams.setup == BreakoutParams::Setup::kRange ||
                mParams.setup == BreakoutParams::Setup::kRectangle ||
                mParams.setup == BreakoutParams::Setup::kMultipleBottom ||
-               mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders) {
+               mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders ||
+               mParams.setup == BreakoutParams::Setup::kTriangle) {
         setup_bars = mParams.range_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
         setup_bars = mParams.decline_bars + 2;
@@ -173,6 +182,16 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                                                        mParams.touch_zone)) {
                 range = hs->range;
                 breakout = hs->breakout;
+            }
+            break;
+        case BreakoutParams::Setup::kTriangle:
+            if (const auto triangle =
+                    TriangleOf(bars, mParams.range_bars, mParams.triangle,
+                               mParams.min_touches, mParams.swing_bars,
+                               mParams.touch_zone)) {
+                range = triangle->range;
+                breakout = triangle->breakout;
+                floor = triangle->last_low;
             }
             break;
         case BreakoutParams::Setup::kOpeningRange: {
