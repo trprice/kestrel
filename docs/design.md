@@ -52,7 +52,8 @@ In words:
    quotes and symbol info, with no provider types leaking out.
 2. The **runner** subscribes to what the strategy's `Needs()` asks for, loads
    warmup bars, and queues the callbacks from the WebSocket thread. A single
-   thread takes events off the queue and calls the strategy's hooks.
+   thread takes events off the queue and calls the strategy's hooks, and
+   `OnTimer` every `timer_interval` when the strategy asks for one.
 3. The **strategy** places orders through `Context::Venue()`. The call passes
    through the order tracker and the optional risk gate to the real venue.
 4. The runner hands fills and order changes back to the strategy as `OnFill`
@@ -83,8 +84,8 @@ order, on one thread and a simulated clock.
 | `RiskGatedVenue` | A `TradingVenue` that wraps another one and refuses orders that break a limit (size, open orders, order rate, daily loss, drawdown, symbol allowlist). It has a kill switch, `Halt()`. |
 | `ApplySymbolRules` | Rounds an order to the symbol's tick and lot and refuses one under its minimum size or value; used by every venue. |
 | `PnlTracker` | The single average-cost P&L calculation, built from fills alone. Used by the paper venue, the risk gate and the recorder. |
-| `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnSessionOpen`, `OnSessionClosing`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info, its bar history and the market's hours. Four are included: `MaCrossover`, `MarketMaker`, `Breakout` (bar-pattern setups, from `patterns.hpp`) and `MomentumRotation` (several symbols at once). |
-| `Runner` | Owns one strategy, run on one thread, with venue polling on a second. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders), and with `cancel_entries_on_stop` (`run`) cancels the entries left open when it stops, keeping the orders that close a position. Queues events (conflating quotes per symbol; at most `max_queued_bars` bars, past which a bar is dropped and later backfilled), runs the strategy on one thread, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
+| `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnSessionOpen`, `OnSessionClosing`, `OnTimer`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info, its bar history, the market's hours and, if asked for, its state store. Four are included: `MaCrossover` (SMA or EMA crossover), `MarketMaker` (quotes both sides from the quote stream), `Breakout` (bar-pattern setups from `patterns.hpp`, with an optional trend filter and ATR stop) and `MomentumRotation` (several symbols at once). |
+| `Runner` | Owns one strategy, run on one thread, with venue polling on a second. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders), and with `cancel_entries_on_stop` (`run`) cancels the entries left open when it stops, keeping the orders that close a position. Queues events (conflating quotes per symbol; at most `max_queued_bars` bars, past which a bar is dropped and later backfilled), runs the strategy on one thread, calls its timer, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
 | `StateStore` / `StrategyStateStore` | A key-value store a strategy keeps state in across restarts (`Context::State`, when `Requirements::state` asks); `StrategyStateStore` implements it on the `strategy_state` table, scoped by provider and mode. |
@@ -169,8 +170,8 @@ include/kestrel/   public headers, one directory per area:
   net/               HTTP client and its timing wrapper
   config/            configuration, credentials, Schwab token store
   data/              DataSource and the provider data sources, streams
-  db/                database; bar, quote, trade, account-fill and
-                     market-trade stores
+  db/                database; bar, quote, trade, account-fill,
+                     market-trade and strategy-state stores
   trading/           TradingVenue, paper and live venues, Binance.US API,
                      order rules, PnlTracker, RiskGatedVenue
   strategy/          Strategy, Runner, RunRecorder, the strategies
