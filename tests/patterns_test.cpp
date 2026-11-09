@@ -593,6 +593,104 @@ TEST(Patterns, TriangleBars) {
     EXPECT_EQ(TriangleBars(2, 2), 9u);
 }
 
+// Rims of 15 and 15.1 around a rounded cup down to 10 (a depth of 5.1, so
+// the zone of 0.1 is 0.51), then a two-bar handle down to 13.6.
+std::vector<types::Bar> CupHandle() {
+    return {B("12", "10"),     B("15", "13"),     B("14", "12"),
+            B("13", "11"),     B("12", "10.2"),   B("11.8", "10"),
+            B("12", "10.1"),   B("13", "11"),     B("14", "12"),
+            B("15.1", "13.5"), B("14.5", "13.6"), B("14.8", "14", "14.5")};
+}
+
+TEST(Patterns, CupHandle) {
+    const auto cup = CupHandleOf(CupHandle(), 12, 1, D("0.1"));
+    ASSERT_TRUE(cup.has_value());
+    EXPECT_EQ(cup->range.high, D("15.1"));
+    EXPECT_EQ(cup->range.low, D("10"));
+    EXPECT_EQ(cup->handle_low, D("13.6"));
+}
+
+TEST(Patterns, CupHandleNeedsEachPart) {
+    const auto of = [](const std::vector<types::Bar>& bars) {
+        return CupHandleOf(bars, bars.size(), 1, D("0.1")).has_value();
+    };
+    auto bars = CupHandle();
+    // A V: only the bottom bar's low is in the bottom third (under 11.7).
+    bars[2] = B("14", "13.5");
+    bars[3] = B("13", "12.5");
+    bars[4] = B("12", "12");
+    bars[6] = B("12", "12");
+    bars[7] = B("13", "12.5");
+    bars[8] = B("14", "13.5");
+    EXPECT_FALSE(of(bars));
+    bars = CupHandle();
+    bars[10] = B("14.5", "12.4");  // the handle below the half (12.55)
+    EXPECT_FALSE(of(bars));
+    bars[10] = B("14.5", "12.6");
+    EXPECT_TRUE(of(bars));
+    bars = CupHandle();
+    bars[10] = B("14.9", "14.7");  // a pullback of 0.4: under the zone
+    bars[11] = B("15", "14.8");
+    EXPECT_FALSE(of(bars));
+    bars[10] = B("14.9", "14.5");  // of 0.6
+    EXPECT_TRUE(of(bars));
+    bars = CupHandle();
+    bars[11] = B("15.2", "14");  // already above the right rim
+    EXPECT_FALSE(of(bars));
+    bars = CupHandle();
+    bars[9] = B("15.7", "13.5");  // rims 0.7 apart, over the zone of 0.57
+    EXPECT_FALSE(of(bars));
+    bars = CupHandle();
+    bars[5] = B("15.05", "10");  // a high inside the cup above the rim
+    EXPECT_FALSE(of(bars));
+    bars = CupHandle();
+    bars.push_back(B("14.6", "13.8"));
+    EXPECT_TRUE(of(bars));  // a handle of 3 bars against a cup of 7
+    bars.push_back(B("14.7", "13.9"));
+    EXPECT_FALSE(of(bars));  // 4: over half
+    // The left rim outside the window.
+    EXPECT_FALSE(CupHandleOf(CupHandle(), 10, 1, D("0.1")).has_value());
+    EXPECT_FALSE(CupHandleOf(CupHandle(), 13, 1, D("0.1")).has_value());
+}
+
+TEST(Patterns, CupHandleTakesTheDeepestCup) {
+    // CupHandle with a cup of 8 bars and a handle of 4 whose bounce to 15.05
+    // is a swing high near the rim: rims of 15.1 and 15.05 around the
+    // handle's first bars also make a (shallow) cup-and-handle.
+    auto bars = CupHandle();
+    bars.insert(bars.begin() + 6, B("11.9", "10.05"));
+    bars.resize(11);
+    for (const types::Bar& bar : {B("14.5", "13.6"), B("14.4", "13.7"),
+                                  B("15.05", "14"), B("14.6", "14.4")}) {
+        bars.push_back(bar);
+    }
+    const auto shallow = CupHandleOf(std::span(bars).last(6), 6, 1, D("0.1"));
+    ASSERT_TRUE(shallow.has_value());
+    EXPECT_EQ(shallow->range.low, D("13.6"));
+    const auto cup = CupHandleOf(bars, bars.size(), 1, D("0.1"));
+    ASSERT_TRUE(cup.has_value());
+    EXPECT_EQ(cup->range.high, D("15.1"));
+    EXPECT_EQ(cup->range.low, D("10"));
+    EXPECT_EQ(cup->handle_low, D("13.6"));
+}
+
+TEST(Patterns, CupHandleWithWiderSwings) {
+    std::vector<types::Bar> bars;
+    for (const types::Bar& bar : CupHandle()) {
+        bars.push_back(bar);
+        bars.push_back(bar);
+    }
+    const auto cup = CupHandleOf(bars, bars.size(), 2, D("0.1"));
+    ASSERT_TRUE(cup.has_value());
+    EXPECT_EQ(cup->range.high, D("15.1"));
+    EXPECT_EQ(cup->range.low, D("10"));
+}
+
+TEST(Patterns, CupHandleBars) {
+    EXPECT_EQ(CupHandleBars(1), 6u);
+    EXPECT_EQ(CupHandleBars(2), 10u);
+}
+
 TEST(Patterns, SimpleMovingAverage) {
     const std::vector<types::Bar> bars = {B("10", "0", "1"), B("10", "0", "2"),
                                           B("10", "0", "3"), B("10", "0", "4")};

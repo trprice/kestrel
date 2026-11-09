@@ -27,6 +27,7 @@ Unless a test says otherwise:
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
 | `breakout` inverse head-and-shoulders | 33 stocks daily; crypto 1h | +1.35% a trade on daily stocks, positive in both periods, but rare (62 trades in ten years); too rare on crypto 1h |
 | `breakout` ascending and symmetrical triangles | 33 stocks daily; crypto 1h | +1.67% and +1.36% a trade on daily stocks (390 and 559 trades), positive in both periods, though most trades lose; mixed on crypto 1h |
+| `breakout` cup-and-handle | 33 stocks daily; crypto 1h | +2.35% a trade on daily stocks with a year's window (150 trades), positive in both periods, but only 32% won; lost on crypto 1h |
 | `breakout` failed breakdown | 33 stocks, daily | +0.9% a trade, but gone since 2022 except on broad ETFs |
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
@@ -113,6 +114,8 @@ The seven pairs on 1h bars, about $1,000 a trade.
 - **Triangles, 1h** (`range_bars = 40`): the symmetrical triangle made
   +1,187 on 236 trades, but +871 of it was ZEC; the ascending triangle
   lost 34 (116 trades). With `min_touches = 3` both traded 14 times.
+- **Cup-and-handle, 1h** (`range_bars = 120`): −519 on 108 trades, 31%
+  won.
 - **ATR stop** (`atr_stop`, 14-bar ATR under the broken level, instead of
   the setup's low): 1.5 ATRs +4,571, 2 ATRs +4,935, 3 ATRs +5,053, against
   +4,677 for the setup-low stop. 2 and 3 ATRs cut the worst drawdown from
@@ -204,6 +207,12 @@ Does the early part of the day predict its last half-hour?
   +1.48% in 2016–2021 and +1.91% since 2022. Symmetrical +1.36% (559
   trades, 38% won): +2.00% and +0.57%. A few large wins carry many small
   losses.
+- **Cup-and-handle, same 33 symbols, daily:** with `range_bars = 250`
+  and `swing_bars = 3`, +2.35% a trade (150 trades, 32% won, median
+  −2.44%): +1.49% in 2016–2021 and +3.28% since 2022. With `range_bars =
+  120` and the default swings, +1.06% (289 trades, 27% won). The stop
+  under the handle is close, so most trades are stopped out and a few
+  large ones carry the result.
 - **Double bottom on 1m, 5m and 15m (Sep 22 – Nov 6):** negative at every
   bar size: −0.05% to −0.21% a trade with each stock's estimated spread.
   The patterns are tiny, and the stop sits about twice as far as the

@@ -1162,6 +1162,38 @@ TEST(Breakout, AnAscendingTriangleBuysAboveItsResistance) {
     EXPECT_EQ(context.venue.orders[1].stop_price, D("12.48"));
 }
 
+TEST(Breakout, ACupAndHandleBuysAboveItsRightRim) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kCupHandle;
+    params.range_bars = 12;
+    params.swing_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    // Rims of 15 and 15.1, a rounded cup to 10, a handle down to 13.6.
+    for (const auto& b : std::vector<std::array<const char*, 4>>{
+             {"11", "12", "10", "11"},
+             {"14", "15", "13", "14"},
+             {"13", "14", "12", "13"},
+             {"12", "13", "11", "12"},
+             {"11", "12", "10.2", "11"},
+             {"11", "11.8", "10", "11"},
+             {"11", "12", "10.1", "11"},
+             {"12", "13", "11", "12"},
+             {"13", "14", "12", "13"},
+             {"14", "15.1", "13.5", "14"},
+             {"14", "14.5", "13.6", "14"}}) {
+        context.Add(b);
+    }
+    Feed(strategy, context, {"14", "14.8", "14", "14.5"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("15.11"));
+    // Filled: the stop is under the handle, 13.6 less 10 bps.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "15.11"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("13.58"));
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -1207,6 +1239,12 @@ TEST(Breakout, RefusesBadParameters) {
     EXPECT_NO_THROW(Breakout{bad});
     bad.min_touches = 1;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.setup = BreakoutParams::Setup::kCupHandle;
+    bad.range_bars = 9;  // CupHandleBars(2) is 10
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.range_bars = 10;
+    EXPECT_NO_THROW(Breakout{bad});
     bad = Params();
     bad.reclaim_bars = 0;
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);

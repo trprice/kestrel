@@ -170,6 +170,27 @@ std::optional<Triangle> TriangleOf(std::span<const types::Bar> bars,
                                    std::size_t touches, std::size_t strength,
                                    const types::Decimal& zone);
 
+// A cup-and-handle in the newest `n` bars: two swing highs (SwingPoints,
+// `strength`), the rims, with the cup between them: its highs no higher than
+// the lower rim, the rims within `zone` of the depth (the right rim less the
+// cup's lowest low) of each other, and rounded rather than a V, as at least
+// two-fifths of the cup's bars have lows in the bottom third of its depth.
+// The handle is every bar since the right rim: no more than half as many as
+// the cup's, a pullback from the rim by more than the zone, but staying in
+// the upper half of the depth, and not yet broken out (no bar above the right
+// rim). Of the rims that make one, the deepest cup is used (the newest, on a
+// tie), so a bounce in the handle back near the rim does not stand in for the
+// cup before it. No prior advance is required. Nullopt when it is not one.
+struct CupHandle {
+    PriceRange range;           // the right rim and the cup's lowest low
+    types::Decimal handle_low;  // the handle's lowest low
+};
+// The fewest bars that can hold a cup-and-handle of `strength`.
+std::size_t CupHandleBars(std::size_t strength);
+std::optional<CupHandle> CupHandleOf(std::span<const types::Bar> bars,
+                                     std::size_t n, std::size_t strength,
+                                     const types::Decimal& zone);
+
 // The opening range: the high and low of a session's first `n` bars, answered
 // on the newest bar when it is the n-th to open at or after `start` (the
 // session's open), so once a session. The bar before them is needed to tell:

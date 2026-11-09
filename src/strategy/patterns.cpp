@@ -442,6 +442,82 @@ std::optional<Triangle> TriangleOf(std::span<const types::Bar> bars,
                     bottom.back().price};
 }
 
+std::optional<CupHandle> CupHandleOf(std::span<const types::Bar> bars,
+                                     std::size_t n, std::size_t strength,
+                                     const Decimal& zone) {
+    if (n == 0 || bars.size() < n) {
+        return std::nullopt;
+    }
+    const auto window = bars.last(n);
+    std::vector<Swing> highs;
+    for (const Swing& swing : SwingPoints(window, strength)) {
+        if (swing.high) {
+            highs.push_back(swing);
+        }
+    }
+    const auto third = [](const Decimal& d) {
+        return Decimal::Divide(d, Decimal::FromInt(3), 8,
+                               types::Rounding::kNearest);
+    };
+    std::optional<CupHandle> deepest;
+    for (std::size_t r = highs.size(); r-- > 1;) {
+        const Swing& right = highs[r];
+        const auto handle = window.subspan(right.index + 1);
+        Decimal handle_low = handle.front().low;
+        bool broken = false;
+        for (const types::Bar& bar : handle) {
+            handle_low = std::min(handle_low, bar.low);
+            broken = broken || bar.high > right.price;
+        }
+        if (broken) {
+            continue;
+        }
+        for (std::size_t l = r; l-- > 0;) {
+            const Swing& left = highs[l];
+            const auto cup =
+                window.subspan(left.index + 1, right.index - left.index - 1);
+            const Decimal lower_rim = std::min(left.price, right.price);
+            Decimal bottom = cup.front().low;
+            bool contained = true;
+            for (const types::Bar& bar : cup) {
+                bottom = std::min(bottom, bar.low);
+                contained = contained && bar.high <= lower_rim;
+            }
+            const Decimal depth = right.price - bottom;
+            if (!contained || depth.Sign() <= 0) {
+                continue;
+            }
+            const Decimal margin = depth * zone;
+            const Decimal rims = left.price - right.price;
+            if (rims.Abs() > margin || 2 * handle.size() > cup.size()) {
+                continue;
+            }
+            const Decimal low_third = bottom + third(depth);
+            const auto rounded = static_cast<std::size_t>(std::ranges::count_if(
+                cup,
+                [&](const types::Bar& bar) { return bar.low <= low_third; }));
+            const Decimal half = Decimal::Divide(depth, Decimal::FromInt(2), 8,
+                                                 types::Rounding::kNearest);
+            if (5 * rounded < 2 * cup.size() ||
+                right.price - handle_low <= margin ||
+                handle_low < bottom + half) {
+                continue;
+            }
+            if (!deepest || depth > deepest->range.Height()) {
+                deepest = CupHandle{{right.price, bottom}, handle_low};
+            }
+        }
+    }
+    return deepest;
+}
+
+std::size_t CupHandleBars(std::size_t strength) {
+    // `strength` bars before the left rim, a cup of at least 2·strength (the
+    // rims are more than `strength` apart, and the cup twice the handle),
+    // and a handle of `strength`.
+    return (4 * strength) + 2;
+}
+
 std::optional<Decimal> Sma(std::span<const types::Bar> bars, std::size_t period,
                            std::size_t back) {
     if (period == 0 || !Holds(bars, period, back)) {

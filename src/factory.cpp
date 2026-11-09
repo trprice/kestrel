@@ -523,7 +523,7 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
                 {"nr", "inside", "range", "rectangle", "pipe",
                  "failed_breakdown", "double_bottom", "triple_bottom",
                  "opening_range", "inverse_head_shoulders",
-                 "ascending_triangle", "symmetrical_triangle"}),
+                 "ascending_triangle", "symmetrical_triangle", "cup_handle"}),
          setup, error);
     params.setup =
         setup == "inside"             ? Params::Setup::kInsideBar
@@ -538,7 +538,8 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
             ? Params::Setup::kInverseHeadShoulders
         : setup == "ascending_triangle" || setup == "symmetrical_triangle"
             ? Params::Setup::kTriangle
-            : Params::Setup::kNarrowRange;
+        : setup == "cup_handle" ? Params::Setup::kCupHandle
+                                : Params::Setup::kNarrowRange;
     params.bottoms = setup == "triple_bottom" ? 3 : 2;
     params.triangle = setup == "symmetrical_triangle"
                           ? strategy::TriangleKind::kSymmetrical

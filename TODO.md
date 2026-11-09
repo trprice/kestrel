@@ -194,10 +194,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       once the venue can link them (one-cancels-other), instead of selling
       at market on a close past it; short entries and stop-and-reverse once
       the paper venue can short.
-- [ ] `breakout` setups for the deck's remaining patterns, on
-      `SwingPoints`: cup-and-handle (a rounded decline and recovery to the
-      old high, a small pullback, then the break; mainly daily bars, and
-      rare).
 - [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Pairs trading
@@ -851,6 +847,10 @@ the header of the code concerned.
       over rising swing lows, `min_touches` of each, bought above the
       resistance and stopped below the newest low; `TriangleOf` in
       `patterns.hpp`.
+- [x] `setup = "cup_handle"`: two swing-high rims around a rounded cup
+      and a short handle in its upper half, bought above the right rim and
+      stopped below the handle; `CupHandleOf` in `patterns.hpp`. The last
+      of the deck's patterns.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.

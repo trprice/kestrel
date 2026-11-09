@@ -23,8 +23,9 @@ struct BreakoutParams {
         kOpeningRange,          // the session's first opening_bars bars
         kInverseHeadShoulders,  // an inverse head-and-shoulders in
                                 // range_bars bars
-        kTriangle,  // an ascending or symmetrical triangle (triangle) in
-                    // range_bars bars
+        kTriangle,   // an ascending or symmetrical triangle (triangle) in
+                     // range_bars bars
+        kCupHandle,  // a cup-and-handle in range_bars bars
     };
     enum class Confirm {
         kNone,     // a buy-stop just above the setup's high
@@ -42,7 +43,7 @@ struct BreakoutParams {
     Setup setup = Setup::kNarrowRange;
     std::size_t nr_bars = 4;      // kNarrowRange: 4 is NR4
     // The window of kRange, kRectangle, kFailedBreakdown, kMultipleBottom,
-    // kInverseHeadShoulders and kTriangle.
+    // kInverseHeadShoulders, kTriangle and kCupHandle.
     std::size_t range_bars = 20;
     // A fraction of the pattern's height. kRectangle: a bar touches a bound
     // within it of the bound; runs of touching bars count once.
@@ -50,7 +51,9 @@ struct BreakoutParams {
     // price may go. kInverseHeadShoulders: how far the head must be below
     // each shoulder, and below the right shoulder the price may go.
     // kTriangle: how flat an ascending triangle's highs must be, and below
-    // the last low the price may go.
+    // the last low the price may go. kCupHandle: how far apart the rims may
+    // be, and the least the handle must pull back, as a fraction of the
+    // depth.
     types::Decimal touch_zone{1, 1};  // 0.1
     // Touches of each bound: kRectangle's, and kTriangle's swing highs and
     // swing lows.
@@ -66,7 +69,8 @@ struct BreakoutParams {
     std::size_t reclaim_bars = 3;
     // kMultipleBottom: 2 (double) or 3 (triple) swing lows within touch_zone
     // of the height of each other; swing_bars is how many bars on each side
-    // a swing point must beat (kInverseHeadShoulders and kTriangle too).
+    // a swing point must beat (kInverseHeadShoulders, kTriangle and
+    // kCupHandle too).
     std::size_t bottoms = 2;
     std::size_t swing_bars = 2;
     TriangleKind triangle = TriangleKind::kAscending;
@@ -127,7 +131,8 @@ struct BreakoutParams {
 // PipeBottomOf, a failed breakdown, see FailedBreakdownOf, a double or
 // triple bottom, see MultipleBottomOf, an inverse head-and-shoulders, see
 // InverseHeadShouldersOf, an ascending or symmetrical triangle, see
-// TriangleOf, or the opening range: the session's first
+// TriangleOf, a cup-and-handle, see CupHandleOf, or the opening range: the
+// session's first
 // opening_bars bars, see OpeningRangeOf), enter on a break
 // above its high, protect with a stop below its low, and take profit at the
 // setup's height above the entry.
@@ -195,6 +200,8 @@ struct BreakoutParams {
 // height from the head to the neckline above it. A triangle triggers the same
 // way above its resistance (flat for an ascending one), with the stop below
 // its newest swing low and its height from its lowest low to its highest high.
+// A cup-and-handle triggers above its right rim, with the stop below the
+// handle's low and its height the cup's depth.
 //
 // The opening range is a setup once a session, on the close of its last bar.
 // The session is the one Context::CurrentOrNextSession reports (so with
@@ -223,7 +230,8 @@ class Breakout : public Strategy {
     // touch_zone outside (0, 0.5), with kMultipleBottom or
     // kInverseHeadShoulders a range_bars too few to hold the pattern
     // (MultipleBottomBars, of 3 lows for the latter), with kTriangle a
-    // min_touches under 2 or a range_bars under TriangleBars, or kOpeningRange
+    // min_touches under 2 or a range_bars under TriangleBars, with
+    // kCupHandle a range_bars under CupHandleBars, or kOpeningRange
     // on bars of a day or longer.
     explicit Breakout(BreakoutParams params);
 

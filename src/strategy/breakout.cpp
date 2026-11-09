@@ -65,6 +65,8 @@ Breakout::Breakout(BreakoutParams params) : mParams(std::move(params)) {
              MultipleBottomBars(mParams.bottoms, mParams.swing_bars)) ||
         (mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders &&
          mParams.range_bars < MultipleBottomBars(3, mParams.swing_bars)) ||
+        (mParams.setup == BreakoutParams::Setup::kCupHandle &&
+         mParams.range_bars < CupHandleBars(mParams.swing_bars)) ||
         (mParams.setup == BreakoutParams::Setup::kTriangle &&
          mParams.range_bars <
              TriangleBars(mParams.min_touches, mParams.swing_bars))) {
@@ -107,7 +109,8 @@ Requirements Breakout::Needs() const {
                mParams.setup == BreakoutParams::Setup::kRectangle ||
                mParams.setup == BreakoutParams::Setup::kMultipleBottom ||
                mParams.setup == BreakoutParams::Setup::kInverseHeadShoulders ||
-               mParams.setup == BreakoutParams::Setup::kTriangle) {
+               mParams.setup == BreakoutParams::Setup::kTriangle ||
+               mParams.setup == BreakoutParams::Setup::kCupHandle) {
         setup_bars = mParams.range_bars;
     } else if (mParams.setup == BreakoutParams::Setup::kPipeBottom) {
         setup_bars = mParams.decline_bars + 2;
@@ -192,6 +195,14 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                 range = triangle->range;
                 breakout = triangle->breakout;
                 floor = triangle->last_low;
+            }
+            break;
+        case BreakoutParams::Setup::kCupHandle:
+            if (const auto cup =
+                    CupHandleOf(bars, mParams.range_bars, mParams.swing_bars,
+                                mParams.touch_zone)) {
+                range = cup->range;
+                floor = cup->handle_low;
             }
             break;
         case BreakoutParams::Setup::kOpeningRange: {

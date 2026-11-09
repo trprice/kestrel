@@ -662,6 +662,10 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     ASSERT_OK(tri);
     EXPECT_EQ((*tri)->Needs().warmup_bars, 30u);
     EXPECT_TRUE(make("setup='ascending_triangle'\n").has_value());
+    auto cup = make("setup='cup_handle'\nrange_bars=120\n");
+    ASSERT_OK(cup);
+    EXPECT_EQ((*cup)->Needs().warmup_bars, 120u);
+    EXPECT_FALSE(make("setup='cup_handle'\nrange_bars=9\n").has_value());
     EXPECT_FALSE(make("setup='ascending_triangle'\nmin_touches=1\n"));
     EXPECT_FALSE(make("swing_bars=0\n").has_value());
     auto opening =
