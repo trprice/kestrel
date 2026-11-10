@@ -19,7 +19,7 @@ Unless a test says otherwise:
 
 | Strategy | Market | Verdict |
 |---|---|---|
-| `market_maker` | ZEC/USDT quotes | Doesn't beat holding once latency is modelled |
+| `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.17% a trade: thin but positive in every year; paper-trading now |
 | `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.79% a trade, 7/7 pairs up: the strongest single-symbol result |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
@@ -80,6 +80,22 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
   an edge.
 - **Out of sample (Nov 1–3, ZEC falling):** the best setting lost 19.7
   against holding, with a 1 s markout of −6.2 bps.
+- **Seven pairs, Nov 7–9 2026** (the best setting: post-only, latency,
+  asymmetric requoting; about $60 a quote, $600 of inventory room and
+  $2,400 of the coin to start on each): every pair lost to holding at 4
+  and 6 bps of half-spread, together −200 and −137. Totals at 6 bps:
+  ZEC −37.5, ETH −29.5, XRP −27.7, HYPE −16.5, ADA −10.1, SOL −9.3,
+  BTC −6.5.
+  - The 1 s markout was negative on every pair and day. On Nov 8 at 6
+    bps it was −8 to −18 bps on SOL, ETH, XRP, ADA and HYPE, more than
+    the half-spread earned (ZEC −5.8, BTC −2.6).
+  - ZEC fell 4–5% on each of the three days and lost on each. The other
+    pairs lost most of theirs on Nov 8, when they fell 1–5%; on the
+    flatter days they were near even on few fills, and BTC, SOL, XRP and
+    ADA made a few dollars on Nov 9 at 6 bps.
+  - The other pairs fill far less than ZEC: BTC 114 fills at 6 bps over
+    the three days against ZEC's 906. They lose less mainly because they
+    trade less.
 
 ## Breakout on crypto, May–Oct 2026
 
