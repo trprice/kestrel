@@ -20,7 +20,7 @@ Unless a test says otherwise:
 | Strategy | Market | Verdict |
 |---|---|---|
 | `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
-| `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.17% a trade: thin but positive in every year; paper-trading now |
+| `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.11% a trade, +0.10% without ZEC, and 2025 lost without ZEC: thin; falls of 50–90% of a trade's size are normal; paper-trading now |
 | `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade, 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
@@ -165,9 +165,16 @@ return per trade, net of costs.
   May–Oct 2026 was its best stretch, and also the window that was tuned on.
 - **Trend filter (`trend_sma`, entries only above the 1000-hour
   average):**
-  - Range 1h rose to +0.17% a trade (2,712 trades), with no year
-    meaningfully negative and +0.17% without ZEC. Results improved steadily
-    from a 200- to a 1000-bar filter.
+  - Range 1h rose to +0.11% a trade (2,709 trades), and +0.10% without
+    ZEC. Results improved steadily from a 200- to a 1000-bar filter.
+  - By year: 2022 −0.04%, 2023 +0.12%, 2024 +0.02%, 2025 0.00% and 2026
+    +0.32%. Without ZEC, 2025 averaged −0.30% a trade.
+  - This was first reported as +0.17% a trade. That figure counted an ADA
+    trade held for 19 months, July 2023 to February 2025, across the gap
+    in Binance.US's USD data. The hold limit could not fire with no bars
+    arriving, and the trade made +163%. Without it, ADA is −0.14% a trade,
+    not +0.44%. The other long-history 1h results have not been rechecked
+    for the same gap.
   - The double bottom rose to +0.20%, but still lost in 2022 and 2024.
 - **Daily 10-day-high breakout, sold after one day:** +0.80% a trade (697
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
@@ -194,6 +201,33 @@ return per trade, net of costs.
   - Trailing-stop versions averaged more per trade but depend on ZEC.
   - Trend filters of 20–200 days didn't reliably improve it. The 200-day
     filter skips 2022 entirely, at a third of the total.
+- **Losing streaks and worst periods** (per pair, as a single-pair run
+  trades; in % of one trade's size):
+
+  | | Range 1h, `trend_sma = 1000` | 10-day high, hold 1 day |
+  |---|---|---|
+  | Longest losing streak | 5–9 trades (ZEC 13) | 4–7 trades |
+  | Most losses in one UTC day | 2 (ZEC 3, once) | 1 |
+  | Worst trade | −7.6% (BTC) to −25% (ADA) | −12% to −25% |
+  | Worst day | −8% to −25% | −12% to −25% |
+  | Worst week | −9% to −31% | −12% to −25% |
+  | Worst fall from peak | −50% to −87% (ZEC −345%) | −18% to −46% (HYPE −69%, ZEC −170%) |
+
+  - Daily limits hardly bind on one pair. A daily loss limit of 5%, 10%
+    or 20% of a trade refused 1–28 of 2,709 range trades and none of the
+    daily strategy's, and moved the results by noise.
+    `max_consecutive_losses = 2` changed nothing.
+  - A drawdown limit, which does not reset, would have ended almost
+    every range run early. At 25% or 50% of a trade it stopped all seven
+    pairs, SOL in April 2022 before its later trades made +176%. At 100% it stopped only ZEC, in April 2023, before +143%.
+  - The range strategy's stop is a median 2–6% below the entry, up to
+    12–68% on a wide range. A `max_loss_per_position` inside that closes
+    trades before their own stop.
+  - With the gate on (BTC and SOL, 2025–26), it refused entries after the
+    daily loss limit and after a position-loss close, and closed positions
+    at market. The before-and-after P&L there means little: the limits
+    were in dollars and the quantities fixed, so a SOL trade was about
+    $3,200 at 2025 prices, not $1,000.
 - **Time of day (hold BTC 21:00–23:00 UTC):** at best about 4 bps a day,
   against 14 bps of costs. Rejected.
 
@@ -287,6 +321,15 @@ Does the early part of the day predict its last half-hour?
   is the one with stored quotes; see the live check above.
 - **DKI, `breakout` range 5m (Schwab, one session):** no trades.
 - **ZEC/USDT and SOL/USDT, `breakout` range 1h with `trend_sma = 1000`
-  (runs 17 and 16, from Nov 7 2026):** both are running.
-  - SOL has been below its average throughout, so it has made no entries.
-  - ZEC entered 0.07 ZEC at 1289.23 on Nov 8, its first trade.
+  (runs 17 and 16, Nov 7–11 2026):**
+  - SOL was below its average throughout, so it made no entries.
+  - ZEC entered 0.07 ZEC at 1289.23 on Nov 8, its only trade, and lost
+    3.82 USDT on it. It was below its average from then on.
+- **Restarted with risk limits (runs 19 ZEC, 20 SOL and 21 BTC, from Nov
+  11 2026):** the same settings, plus `max_loss_per_position` 15, 15 and
+  10 USDT, `max_daily_loss` 15 and `max_consecutive_losses` 3, from the
+  losing-streak test above. Each trade is 70–76 USDT of a 100 USDT
+  account.
+  - BTC/USDT has no trend filter. It is there to exercise live orders,
+    fills, stops and exits now, while the market is below its averages.
+    Expect a small loss: unfiltered, range 1h lost 0.05% a trade.
