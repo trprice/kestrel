@@ -908,7 +908,9 @@ Result<types::OrderStatus> BinanceUSTradingVenue::GetOrder(
 
 Result<std::vector<types::Fill>> BinanceUSTradingVenue::GetFills(
     types::Timestamp since) {
-    const auto now = mClock();
+    const auto now =
+        mClock() + std::chrono::milliseconds(
+                       std::max<std::int64_t>(0, mApi.ClockOffsetMs()));
     std::vector<types::Fill> out;
 
     for (const auto& symbol : mSymbols) {
@@ -952,10 +954,13 @@ Result<std::vector<types::Fill>> BinanceUSTradingVenue::GetFills(
                 }
             }
 
-            if (body->size() >= kTradePage && last_time > start) {
+            if (body->size() >= kTradePage) {
                 // A full page: the window has more. Continue from the last
-                // trade's time (ties are dropped by `seen`).
-                start = last_time;
+                // trade's time (ties are dropped by `seen`); if all trades on
+                // the page shared `start`, step forward 1 ms.
+                start = last_time > start
+                            ? last_time
+                            : start + std::chrono::milliseconds(1);
             } else {
                 start = end + std::chrono::milliseconds(1);
             }

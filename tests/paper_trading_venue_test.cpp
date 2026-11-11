@@ -1641,4 +1641,41 @@ TEST(PaperShort, APlainSaleThatDeepensAShortNeedsMarginToo) {
     EXPECT_EQ(Bal(*venue, "BTC").total, D("-0.03"));
 }
 
+TEST(PaperVenue, CapLimitFillsAtQuoteSizeIsSharedAcrossOrdersOnOneQuote) {
+    Fixture f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    f.options.limit_fill_model = trading::LimitFillModel::kCross;
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    auto a = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0"));
+    auto b = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.1", "49000.0"));
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+
+    types::Quote q = Q("48990.0", "49000.0");
+    q.ask_size = D("0.1");  // only 0.1 available in total at the ask
+    venue->OnQuote(q);
+    EXPECT_EQ(venue->GetOrder(a->order_id)->filled_quantity, D("0.1"));
+    EXPECT_EQ(venue->GetOrder(b->order_id)->filled_quantity, D("0"));
+}
+
+TEST(PaperVenue, ThrowingExecutionCallbackDoesNotStopOtherListeners) {
+    Fixture f;
+    auto venue = f.Make();
+    int seen = 0;
+    auto sub1 = venue->StreamExecutions([](const trading::ExecutionUpdate&) {
+        throw std::runtime_error("boom");
+    });
+    auto sub2 = venue->StreamExecutions(
+        [&](const trading::ExecutionUpdate&) { ++seen; });
+    ASSERT_TRUE(sub1.has_value());
+    ASSERT_TRUE(sub2.has_value());
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    ASSERT_TRUE(
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.01")));
+    EXPECT_EQ(seen, 1);
+}
+
 }  // namespace

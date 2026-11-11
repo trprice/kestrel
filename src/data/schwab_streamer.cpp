@@ -74,6 +74,17 @@ std::string Join(const std::set<std::string>& keys) {
     return out;
 }
 
+std::string JsonString(const json& obj, const char* key) {
+    const auto it = obj.find(key);
+    return it != obj.end() && it->is_string() ? it->get<std::string>()
+                                              : std::string();
+}
+
+bool JsonBool(const json& obj, const char* key, bool fallback = false) {
+    const auto it = obj.find(key);
+    return it != obj.end() && it->is_boolean() ? it->get<bool>() : fallback;
+}
+
 // The code and message of a response or notify item's content.
 std::pair<int, std::string> Outcome(const json& item) {
     const auto content = item.find("content");
@@ -84,7 +95,7 @@ std::pair<int, std::string> Outcome(const json& item) {
     return {code != content->end() && code->is_number_integer()
                 ? code->get<int>()
                 : -1,
-            content->value("msg", "")};
+            JsonString(*content, "msg")};
 }
 
 class IxStreamerSocket final : public SchwabStreamerSocket {
@@ -200,7 +211,7 @@ std::vector<SchwabKeyedQuote> SchwabLevelOneMerger::Apply(
         if (mUnknown.contains(key)) {
             continue;
         }
-        if (item.value("delayed", false) && mDelayed.insert(key).second) {
+        if (JsonBool(item, "delayed", false) && mDelayed.insert(key).second) {
             spdlog::warn(
                 "schwab streamer: quotes for {} are delayed or from a subset "
                 "of exchanges (not the SIP)",
@@ -702,18 +713,15 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
     {
         // Minutes may have been missed since the last connection.
         std::lock_guard dispatch(mDispatch);
-        mMerger.Reset();
         std::lock_guard lock(mMutex);
+        if (!Current(generation) || mHalted) {
+            return;
+        }
+        mMerger.Reset();
         for (const auto& consumer : ConsumersOf(Service::kChart)) {
             for (auto& [key, aggregator] : consumer->aggregators) {
                 aggregator.Reset();
             }
-        }
-    }
-    {
-        std::lock_guard lock(mMutex);
-        if (!Current(generation) || mHalted) {
-            return;
         }
         mLoggedIn = false;
         if (mResumeAt) {
@@ -747,8 +755,8 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
 }
 
 void SchwabStreamer::OnResponse(std::uint64_t generation, const json& item) {
-    const std::string service = item.value("service", "");
-    const std::string command = item.value("command", "");
+    const std::string service = JsonString(item, "service");
+    const std::string command = JsonString(item, "command");
     const auto [code, message] = Outcome(item);
     std::string denied_token;
     {
@@ -839,7 +847,7 @@ void SchwabStreamer::OnData(std::uint64_t generation, const json& item) {
     if (content == item.end()) {
         return;
     }
-    const std::string service = item.value("service", "");
+    const std::string service = JsonString(item, "service");
     if (service == ServiceName(Service::kLevelOne)) {
         OnQuotes(generation, *content);
     } else if (service == ServiceName(Service::kChart)) {

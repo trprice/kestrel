@@ -20,6 +20,9 @@ MaCrossover::MaCrossover(MaCrossoverParams params)
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
+    if (const auto parts = types::SplitSymbol(mParams.symbol)) {
+        mBaseAsset = parts->base;
+    }
 }
 
 Requirements MaCrossover::Needs() const {
@@ -70,7 +73,26 @@ void MaCrossover::OnFill(Context&, const types::Fill& fill) {
         return;
     }
     mPending = false;
-    mLong = fill.side == Side::kBuy;
+    if (fill.side == Side::kBuy) {
+        mLong = true;
+        if (fill.quantity.Sign() > 0) {
+            Decimal received = fill.quantity;
+            if (fill.fee.Sign() > 0 && !mBaseAsset.empty() &&
+                fill.fee_asset == mBaseAsset) {
+                received = std::max(received - fill.fee, Decimal());
+            }
+            mHeld += received;
+        } else {
+            mHeld = mParams.quantity;
+        }
+    } else {
+        if (fill.quantity.Sign() > 0) {
+            mHeld = std::max(mHeld - fill.quantity, Decimal());
+        } else {
+            mHeld = Decimal();
+        }
+        mLong = false;
+    }
 }
 
 void MaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
@@ -90,11 +112,23 @@ void MaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
 }
 
 void MaCrossover::Trade(Context& context, Side side) {
+    Decimal quantity =
+        side == Side::kSell && mHeld.Sign() > 0 ? mHeld : mParams.quantity;
+    if (side == Side::kSell && quantity != mParams.quantity) {
+        if (auto info = context.SymbolInfo(mParams.symbol);
+            info && info->lot_size.Sign() > 0) {
+            const Decimal rounded = quantity.RoundToIncrement(
+                info->lot_size, types::Rounding::kDown);
+            if (rounded.Sign() > 0) {
+                quantity = rounded;
+            }
+        }
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = side;
     request.type = types::OrderType::kMarket;
-    request.quantity = mParams.quantity;
+    request.quantity = quantity;
 
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
@@ -115,7 +149,7 @@ void MaCrossover::Trade(Context& context, Side side) {
     mPending = true;
     mOrderId = ack->order_id;
     spdlog::info("ma_crossover: {} {} {} (order {})", types::ToString(side),
-                 mParams.quantity.ToString(), mParams.symbol, ack->order_id);
+                 quantity.ToString(), mParams.symbol, ack->order_id);
 }
 
 }  // namespace kestrel::strategy

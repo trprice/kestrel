@@ -566,12 +566,18 @@ class ConfigParser {
             return std::unexpected(ok.error());
         }
         db::ConnectionOptions d;
-        d.host = Str(&section, "host", d.host);
-        d.dbname = Str(&section, "dbname", d.dbname);
-        d.user = Str(&section, "user", d.user);
-        d.sslmode = Str(&section, "sslmode", d.sslmode);
+        for (const auto& [key, target] :
+             {std::pair{"host", &d.host}, std::pair{"dbname", &d.dbname},
+              std::pair{"user", &d.user}, std::pair{"sslmode", &d.sslmode}}) {
+            auto s = Str(&section, "database", key, *target);
+            if (!s) {
+                return std::unexpected(s.error());
+            }
+            *target = std::move(*s);
+        }
         if (const auto* node = section.get("port")) {
-            const auto port = node->value<std::int64_t>();
+            const auto port =
+                node->is_integer() ? node->value<std::int64_t>() : std::nullopt;
             if (!port || *port < 1 || *port > 65535) {
                 return MakeError(ErrorCategory::kInvalidArgument,
                                  "[database] port must be 1-65535");
@@ -681,6 +687,16 @@ class ConfigParser {
                                                       const LoadOptions& o) {
         std::filesystem::path path;
         bool explicit_path = false;
+        if (const auto* general = root["general"].as_table()) {
+            if (const auto* node = general->get("secrets_file")) {
+                const auto s = node->value<std::string>();
+                if (!node->is_string() || !s || s->empty()) {
+                    return MakeError(
+                        ErrorCategory::kInvalidArgument,
+                        "[general] secrets_file must be a non-empty string");
+                }
+            }
+        }
         if (const auto env = o.getenv("KESTREL_SECRETS_FILE")) {
             path = *env;
             explicit_path = true;
@@ -770,10 +786,15 @@ class ConfigParser {
         return s;
     }
 
-    static std::string Str(const toml::table* t, const char* key,
-                           std::string fallback) {
+    static Result<std::string> Str(const toml::table* t, const char* section,
+                                   const char* key, std::string fallback) {
         if (t) {
-            if (const auto v = t->get(key)) {
+            if (const auto* v = t->get(key)) {
+                if (!v->is_string()) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     std::string("[") + section + "] " + key +
+                                         " must be a string");
+                }
                 return v->value_or(fallback);
             }
         }
@@ -852,11 +873,18 @@ Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
     if (!creds) {
         return std::unexpected(creds.error());
     }
-    return KrakenConfiguration(
-        std::move(*common),
-        ConfigParser::Str(section, "rest_url", "https://api.kraken.com"),
-        ConfigParser::Str(section, "ws_url", "wss://ws.kraken.com/v2"),
-        std::move(*creds));
+    auto rest_url = ConfigParser::Str(section, "kraken", "rest_url",
+                                      "https://api.kraken.com");
+    if (!rest_url) {
+        return std::unexpected(rest_url.error());
+    }
+    auto ws_url = ConfigParser::Str(section, "kraken", "ws_url",
+                                    "wss://ws.kraken.com/v2");
+    if (!ws_url) {
+        return std::unexpected(ws_url.error());
+    }
+    return KrakenConfiguration(std::move(*common), std::move(*rest_url),
+                               std::move(*ws_url), std::move(*creds));
 }
 
 Result<KrakenConfiguration> KrakenConfiguration::Load(
@@ -896,11 +924,18 @@ Result<BinanceUSConfiguration> BinanceUSConfiguration::Parse(
     if (!creds) {
         return std::unexpected(creds.error());
     }
-    return BinanceUSConfiguration(
-        std::move(*common),
-        ConfigParser::Str(section, "rest_url", "https://api.binance.us"),
-        ConfigParser::Str(section, "ws_url", "wss://stream.binance.us:9443"),
-        std::move(*creds));
+    auto rest_url = ConfigParser::Str(section, "binanceus", "rest_url",
+                                      "https://api.binance.us");
+    if (!rest_url) {
+        return std::unexpected(rest_url.error());
+    }
+    auto ws_url = ConfigParser::Str(section, "binanceus", "ws_url",
+                                    "wss://stream.binance.us:9443");
+    if (!ws_url) {
+        return std::unexpected(ws_url.error());
+    }
+    return BinanceUSConfiguration(std::move(*common), std::move(*rest_url),
+                                  std::move(*ws_url), std::move(*creds));
 }
 
 Result<BinanceUSConfiguration> BinanceUSConfiguration::Load(
@@ -942,8 +977,12 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (!creds) {
         return std::unexpected(creds.error());
     }
-    std::filesystem::path token_file =
-        ConfigParser::Str(section, "token_file", "schwab_tokens.json");
+    auto token_file_str = ConfigParser::Str(section, "schwab", "token_file",
+                                            "schwab_tokens.json");
+    if (!token_file_str) {
+        return std::unexpected(token_file_str.error());
+    }
+    std::filesystem::path token_file = *token_file_str;
     if (token_file.is_relative()) {
         token_file = options.base_dir / token_file;
     }
@@ -967,11 +1006,14 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
         }
         takeover_reconnect = std::chrono::milliseconds(*v);
     }
-    return SchwabConfiguration(
-        std::move(*common),
-        ConfigParser::Str(section, "redirect_uri", "https://127.0.0.1:8182"),
-        std::move(token_file), std::move(*creds), extended_hours,
-        takeover_reconnect);
+    auto redirect_uri = ConfigParser::Str(section, "schwab", "redirect_uri",
+                                          "https://127.0.0.1:8182");
+    if (!redirect_uri) {
+        return std::unexpected(redirect_uri.error());
+    }
+    return SchwabConfiguration(std::move(*common), std::move(*redirect_uri),
+                               std::move(token_file), std::move(*creds),
+                               extended_hours, takeover_reconnect);
 }
 
 Result<SchwabConfiguration> SchwabConfiguration::Load(

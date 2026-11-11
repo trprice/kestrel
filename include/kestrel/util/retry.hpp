@@ -42,7 +42,10 @@ auto Retry(const RetryPolicy& policy, Fn&& fn,
         }
         auto delay = BackoffDelay(policy, attempt);
         if (result.error().retry_after) {
-            delay = std::max(delay, *result.error().retry_after);
+            constexpr std::chrono::milliseconds kMaxRetryAfter =
+                std::chrono::hours(1);
+            delay = std::max(
+                delay, std::min(*result.error().retry_after, kMaxRetryAfter));
         }
         sleep(delay);
     }

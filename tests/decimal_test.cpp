@@ -160,4 +160,27 @@ TEST(DecimalStream, PrintsValue) {
     EXPECT_EQ(os.str(), "3.140");
 }
 
+TEST(DecimalParse, RoundsLongFractionAndTinyExponents) {
+    // More than 19 total digits with excess fractional precision rounds to
+    // the maximum scale that fits in int64_t instead of failing.
+    auto d = Decimal::Parse("123.45678901234567890123456789");
+    ASSERT_OK(d);
+    EXPECT_EQ(d->Scale(), 16);
+    auto frac = Decimal::Parse("0.12345678901234567890123456789");
+    ASSERT_OK(frac);
+    EXPECT_EQ(frac->Scale(), 18);
+    // Tiny scientific notation underflows cleanly to zero.
+    auto tiny = Decimal::Parse("1e-39");
+    ASSERT_OK(tiny);
+    EXPECT_TRUE(tiny->IsZero());
+}
+
+TEST(DecimalDivide, HighScaleDivisorDoesNotFalselyOverflow) {
+    // 10^9 / 1.000000000000000000: the divisor's scale of 18 is not taken as
+    // a factor of 10^18 on the dividend.
+    const Decimal a = D("1000000000");
+    const Decimal one_scale_18 = Decimal(1, 0).Rescale(18, Rounding::kNearest);
+    EXPECT_EQ(Decimal::Divide(a, one_scale_18, 8, Rounding::kNearest), a);
+}
+
 }  // namespace

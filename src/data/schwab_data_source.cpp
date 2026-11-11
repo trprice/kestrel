@@ -556,7 +556,10 @@ types::Result<types::SymbolInfo> SchwabDataSource::GetSymbolInfo(
         return MakeError(ErrorCategory::kNotFound,
                          "Schwab does not know the symbol " + *normalized);
     }
-    const std::string type = entry->value("assetMainType", "");
+    const auto type_it = entry->find("assetMainType");
+    const std::string type = type_it != entry->end() && type_it->is_string()
+                                 ? type_it->get<std::string>()
+                                 : std::string();
     if (type != "EQUITY") {
         return MakeError(
             ErrorCategory::kUnsupported,

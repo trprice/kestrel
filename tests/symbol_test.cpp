@@ -48,6 +48,11 @@ TEST(KrakenSymbols, FromEveryNativeForm) {
     EXPECT_EQ(*data::FromKrakenSymbol("SOLUSD"), "SOL/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("ETH/XBT"), "ETH/BTC");
     EXPECT_EQ(*data::FromKrakenSymbol("ADAUSDT"), "ADA/USDT");
+    EXPECT_EQ(*data::FromKrakenSymbol("XTZUSD"), "XTZ/USD");
+    EXPECT_EQ(*data::FromKrakenSymbol("CHZUSD"), "CHZ/USD");
+    EXPECT_EQ(*data::FromKrakenSymbol("ZRXUSD"), "ZRX/USD");
+    EXPECT_EQ(*data::FromKrakenSymbol("XTZEUR"), "XTZ/EUR");
+    EXPECT_EQ(*data::FromKrakenSymbol("USDTZUSD"), "USDT/USD");
     EXPECT_FALSE(data::FromKrakenSymbol("???").has_value());
 }
 
@@ -58,6 +63,9 @@ TEST(BinanceUSSymbols, RoundTrip) {
     EXPECT_EQ(*data::FromBinanceUSSymbol("ETHUSDT"),
               "ETH/USDT");  // USDT wins over USD
     EXPECT_EQ(*data::FromBinanceUSSymbol("ETHBTC"), "ETH/BTC");
+    EXPECT_EQ(*data::FromBinanceUSSymbol("XTZUSD"), "XTZ/USD");
+    EXPECT_EQ(*data::FromBinanceUSSymbol("CHZUSD"), "CHZ/USD");
+    EXPECT_EQ(*data::FromBinanceUSSymbol("ZRXUSD"), "ZRX/USD");
     EXPECT_FALSE(data::ToBinanceUSSymbol("AAPL").has_value());
 }
 

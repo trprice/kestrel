@@ -94,6 +94,9 @@ Result<types::Timestamp> SyncStart(const AccountFillStore& store,
                                    const std::string& venue,
                                    const std::vector<types::Symbol>& symbols,
                                    types::Timestamp first_since) {
+    if (symbols.empty()) {
+        return first_since;
+    }
     types::Timestamp start = types::Now();
     for (const types::Symbol& symbol : symbols) {
         auto newest = store.Newest(venue, symbol);

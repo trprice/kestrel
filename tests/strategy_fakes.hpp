@@ -96,7 +96,7 @@ class RecordingVenue : public trading::TradingVenue {
         return std::exchange(cancel_all_result, {});
     }
     types::Result<std::vector<types::OrderStatus>> GetOpenOrders() override {
-        if (fail_reads) {
+        if (fail_reads || fail_open_orders) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         }
         return open_orders;
@@ -158,6 +158,7 @@ class RecordingVenue : public trading::TradingVenue {
     std::optional<types::OrderType> reject_type;  // refuse orders of this type
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
+    bool fail_open_orders = false;
     bool fail_fills = false;
     bool fail_balances = false;
     bool fail_cancel_all = false;

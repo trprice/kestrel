@@ -141,7 +141,7 @@ void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
                              std::optional<Decimal> mark,
                              const std::vector<types::Balance>& balances) {
     if (mValued && mInterval.count() > 0) {
-        while (mNextSample <= time) {
+        while (mNextSample < time) {
             mSummary.curve.push_back(Point(mNextSample));
             mNextSample += mInterval;
         }
@@ -199,6 +199,15 @@ void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
         mSummary.max_drawdown_fraction = Fraction(fall, mPeak);
         mSummary.drawdown_peak_time = mPeakTime;
         mSummary.drawdown_trough_time = time;
+    }
+    if (mInterval.count() > 0) {
+        if (mNextSample == time) {
+            mSummary.curve.push_back(Point(mNextSample));
+            mNextSample += mInterval;
+        } else if (!mSummary.curve.empty() &&
+                   mSummary.curve.back().time == time) {
+            mSummary.curve.back() = Point(time);
+        }
     }
 }
 

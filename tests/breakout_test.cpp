@@ -493,6 +493,34 @@ TEST(Breakout, AMissingStopAfterACloseThroughItSellsAtMarket) {
     EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kMarket);
 }
 
+// Binance.US takes a buy's fee in the coin: the entry is complete at the
+// quantity filled, but the stop and the exit are for what is left, rounded
+// down to the lot.
+TEST(Breakout, AFeeInTheCoinIsTakenOffTheStopAndTheExit) {
+    auto params = Params();
+    params.target_multiple = D("0");
+    params.max_hold_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    Feed(strategy, context);  // armed: order-1
+    auto part = FillOf("order-1", Side::kBuy, "0.5", "13.01");
+    part.fee = D("0.0005");
+    part.fee_asset = "BTC";
+    strategy.OnFill(context, part);
+    ASSERT_EQ(context.venue.orders.size(), 1u);  // not all bought yet
+    part.fee = D("0.00055");
+    strategy.OnFill(context, part);
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("0.9989"));  // 0.99895
+
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, kQuietBar);  // held long enough
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[2].quantity, D("0.9989"));
+}
+
 TEST(Breakout, BarsWithoutVolumeNeverConfirm) {
     auto params = Params();
     params.confirm = BreakoutParams::Confirm::kCloses;

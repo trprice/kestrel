@@ -157,6 +157,9 @@ Result<std::vector<Database::Row>> Database::Query(
     for (const auto& p : params) {
         values.push_back(p ? p->c_str() : nullptr);
     }
+    // Not sent again after a failure: the server may have run it before the
+    // connection dropped (an INSERT would be made twice). EnsureConnected
+    // above reconnects for the next call.
     ResultPtr res(PQexecParams(mConn, sql.c_str(),
                                static_cast<int>(params.size()), nullptr,
                                values.data(), nullptr, nullptr, 0));
@@ -248,6 +251,11 @@ Result<void> Database::Migrate() {
         Query("SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
     if (!applied) {
         return fail(applied.error());
+    }
+    if (applied->empty() || applied->front().empty()) {
+        return fail(types::Error{ErrorCategory::kParse,
+                                 "schema_migrations: empty version query",
+                                 std::nullopt, std::nullopt, std::nullopt});
     }
     const auto version =
         sql::ParseInt(applied->front().front(), "schema_migrations: version");

@@ -40,17 +40,31 @@ inline std::optional<std::string> Text(const std::optional<types::Decimal>& d) {
     return d ? std::optional<std::string>(d->ToString()) : std::nullopt;
 }
 
-inline std::optional<types::Decimal> ParseOptional(
-    const std::optional<std::string>& text) {
+inline types::Result<std::optional<types::Decimal>> ParseOptional(
+    const std::optional<std::string>& text, std::string_view what = "decimal") {
     if (!text) {
-        return std::nullopt;
+        return std::optional<types::Decimal>{};
     }
     auto d = types::Decimal::Parse(*text);
-    return d ? std::optional<types::Decimal>(*d) : std::nullopt;
+    if (!d) {
+        return types::MakeError(types::ErrorCategory::kParse,
+                                std::string(what) + ": " + d.error().message);
+    }
+    return std::optional<types::Decimal>(*d);
 }
 
-inline types::Decimal ParseDecimal(const std::optional<std::string>& text) {
-    return ParseOptional(text).value_or(types::Decimal());
+inline types::Result<types::Decimal> ParseDecimal(
+    const std::optional<std::string>& text, std::string_view what = "decimal") {
+    if (!text) {
+        return types::MakeError(types::ErrorCategory::kParse,
+                                std::string(what) + ": NULL decimal");
+    }
+    auto d = types::Decimal::Parse(*text);
+    if (!d) {
+        return types::MakeError(types::ErrorCategory::kParse,
+                                std::string(what) + ": " + d.error().message);
+    }
+    return *d;
 }
 
 // A whole-number or floating-point column. NULL or anything that is not
@@ -154,9 +168,15 @@ inline types::Result<types::Fill> ParseFill(const Database::Row& row,
     } else {
         return bad("unknown side '" + at(4) + "' for " + f.fill_id);
     }
-    f.quantity = ParseDecimal(row[first + 5]);
-    f.price = ParseDecimal(row[first + 6]);
-    f.fee = ParseDecimal(row[first + 7]);
+    auto qty = ParseDecimal(row[first + 5], "fill row: quantity");
+    auto price = ParseDecimal(row[first + 6], "fill row: price");
+    auto fee = ParseDecimal(row[first + 7], "fill row: fee");
+    if (!qty) return std::unexpected(qty.error());
+    if (!price) return std::unexpected(price.error());
+    if (!fee) return std::unexpected(fee.error());
+    f.quantity = *qty;
+    f.price = *price;
+    f.fee = *fee;
     f.fee_asset = at(8);
     if (at(9) == "maker") {
         f.liquidity = types::Liquidity::kMaker;

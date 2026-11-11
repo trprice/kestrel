@@ -31,6 +31,9 @@ Breakout::Breakout(BreakoutParams params)
     : mParams(std::move(params)),
       mShort(mParams.direction == BreakoutParams::Direction::kShort),
       mEntryQuantity(mParams.quantity) {
+    if (const auto parts = types::SplitSymbol(mParams.symbol)) {
+        mBaseAsset = parts->base;
+    }
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -606,6 +609,8 @@ void Breakout::GoFlat() {
     mExitDue = nullptr;
     mLevels.reset();
     mTarget.reset();
+    mEntryFilled = Decimal();
+    mBaseFeePaid = false;
     mEntryId.clear();
     mStopId.clear();
     mExitId.clear();
@@ -673,6 +678,16 @@ void Breakout::RetryStrays(Context& context) {
 
 void Breakout::PlaceStop(Context& context) {
     mStopMoved = false;  // placed at mLevels->stop, or retried next bar
+    if (mBaseFeePaid) {
+        if (auto info = context.SymbolInfo(mParams.symbol);
+            info && info->lot_size.Sign() > 0) {
+            const Decimal rounded =
+                mHeld.RoundToIncrement(info->lot_size, Rounding::kDown);
+            if (rounded.Sign() > 0) {
+                mHeld = rounded;
+            }
+        }
+    }
     if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused) {
         types::OcoRequest pair;
         pair.symbol = mParams.symbol;
@@ -871,6 +886,16 @@ void Breakout::Exit(Context& context, const char* why) {
         mStopId.clear();
         mTargetId.clear();  // cancelled with its stop
     }
+    if (mBaseFeePaid) {
+        if (auto info = context.SymbolInfo(mParams.symbol);
+            info && info->lot_size.Sign() > 0) {
+            const Decimal rounded =
+                mHeld.RoundToIncrement(info->lot_size, Rounding::kDown);
+            if (rounded.Sign() > 0) {
+                mHeld = rounded;
+            }
+        }
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kSell;
@@ -952,6 +977,12 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         fill.price = -fill.price;
     }
     if (fill.side == Side::kBuy) {
+        Decimal received = fill.quantity;
+        if (!mShort && raw.fee.Sign() > 0 && !mBaseAsset.empty() &&
+            raw.fee_asset == mBaseAsset) {
+            received = std::max(received - raw.fee, Decimal());
+            mBaseFeePaid = true;
+        }
         if (mState == State::kLong) {
             // A late part of a partly filled entry (its cancel crossed this
             // fill): the stop must cover it too.
@@ -959,7 +990,8 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
                 "breakout: late entry fill of {} {}; resizing the "
                 "stop",
                 fill.quantity.ToString(), mParams.symbol);
-            mHeld += fill.quantity;
+            mHeld += received;
+            mEntryFilled += fill.quantity;
             CancelOther(context, mStopId, "protective stop");
             mTargetId.clear();  // cancelled with its stop
             PlaceStop(context);
@@ -972,7 +1004,8 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
                 "breakout: late entry fill of {} {} ({}) while "
                 "exiting",
                 fill.quantity.ToString(), mParams.symbol, fill.order_id);
-            mHeld += fill.quantity;
+            mHeld += received;
+            mEntryFilled += fill.quantity;
             return;
         }
         if (mState != State::kArmed && mState != State::kEntering) {
@@ -984,12 +1017,13 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
                 StateName());
             return;
         }
-        if (mHeld.Sign() == 0) {
+        if (mHeld.Sign() == 0 && mEntryFilled.Sign() == 0) {
             mEntryPrice = fill.price;  // the target is measured from here
             mEntryTime = fill.time;
         }
-        mHeld += fill.quantity;
-        if (mHeld >= mEntryQuantity) {
+        mHeld += received;
+        mEntryFilled += fill.quantity;
+        if (mEntryFilled >= mEntryQuantity) {
             GoLong(context);
         }
         return;

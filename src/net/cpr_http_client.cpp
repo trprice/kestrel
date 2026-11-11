@@ -29,7 +29,9 @@ types::Error ErrorFromHttpStatus(const HttpResponse& response) {
                 long secs = 0;
                 std::from_chars(v.data(), v.data() + v.size(), secs);
                 if (secs > 0) {
-                    err.retry_after = std::chrono::seconds(secs);
+                    constexpr long kMaxRetryAfterSeconds = 86'400;
+                    err.retry_after = std::chrono::seconds(
+                        std::min(secs, kMaxRetryAfterSeconds));
                 }
             }
         }

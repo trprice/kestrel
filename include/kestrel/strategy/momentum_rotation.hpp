@@ -86,8 +86,16 @@ class MomentumRotation : public Strategy {
     types::Timestamp mRanked;
     bool mDue = false;  // a rebalance waits for the market to open
     std::map<types::Symbol, types::Decimal> mHeld;  // bought, not yet sold
-    // Active orders by ID, and whether each is a sell.
-    std::map<std::string, bool> mOrders;
+    struct OrderInfo {
+        bool sell = false;
+        types::Symbol symbol;
+        types::Decimal filled;
+    };
+    // Active orders by ID.
+    std::map<std::string, OrderInfo> mOrders;
+    // Of orders found closed by Reconcile, what was counted from their status
+    // and not yet seen as fills: those fills are not counted again.
+    std::map<std::string, types::Decimal> mCounted;
     std::vector<types::Symbol> mEntries;  // to buy once the sells are done
     // Symbols being sold, and what is left held once the sell has filled.
     std::map<types::Symbol, types::Decimal> mSelling;

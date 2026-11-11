@@ -41,6 +41,8 @@ class MaCrossover : public Strategy {
     void Trade(Context& context, types::Side side);
 
     MaCrossoverParams mParams;
+    std::string mBaseAsset;
+    types::Decimal mHeld;
     bool mLong = false;
     bool mPending = false;  // an order was accepted and has not filled
     std::string mOrderId;   // the pending order

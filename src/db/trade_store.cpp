@@ -33,6 +33,10 @@ Result<std::unique_ptr<TradeStore>> TradeStore::StartRun(
     if (!rows) {
         return std::unexpected(rows.error());
     }
+    if (rows->empty() || (*rows)[0].empty()) {
+        return types::MakeError(types::ErrorCategory::kParse,
+                                "runs: INSERT RETURNING produced no run_id");
+    }
     auto run_id = sql::ParseInt((*rows)[0][0], "runs: run_id");
     if (!run_id) {
         return std::unexpected(run_id.error());
@@ -174,6 +178,10 @@ Result<std::vector<TradeStore::StoredPnl>> TradeStore::LoadPnl() const {
     }
     std::vector<StoredPnl> out;
     for (const auto& row : *rows) {
+        if (row.size() < 7 || !row[1]) {
+            return types::MakeError(types::ErrorCategory::kParse,
+                                    "pnl_snapshots: malformed row");
+        }
         StoredPnl s;
         auto time = sql::ParseMillis(row[0], "pnl_snapshots: time");
         if (!time) {
@@ -181,11 +189,21 @@ Result<std::vector<TradeStore::StoredPnl>> TradeStore::LoadPnl() const {
         }
         s.time = *time;
         s.row.symbol = *row[1];
-        s.row.quantity = ParseDecimal(row[2]);
-        s.row.average_price = ParseDecimal(row[3]);
-        s.row.mark_price = ParseOptional(row[4]);
-        s.row.realized = ParseDecimal(row[5]);
-        s.row.unrealized = ParseOptional(row[6]);
+        auto qty = ParseDecimal(row[2], "pnl_snapshots: quantity");
+        auto avg = ParseDecimal(row[3], "pnl_snapshots: average_price");
+        auto mark = ParseOptional(row[4], "pnl_snapshots: mark_price");
+        auto realized = ParseDecimal(row[5], "pnl_snapshots: realized");
+        auto unrealized = ParseOptional(row[6], "pnl_snapshots: unrealized");
+        if (!qty) return std::unexpected(qty.error());
+        if (!avg) return std::unexpected(avg.error());
+        if (!mark) return std::unexpected(mark.error());
+        if (!realized) return std::unexpected(realized.error());
+        if (!unrealized) return std::unexpected(unrealized.error());
+        s.row.quantity = *qty;
+        s.row.average_price = *avg;
+        s.row.mark_price = *mark;
+        s.row.realized = *realized;
+        s.row.unrealized = *unrealized;
         out.push_back(std::move(s));
     }
     return out;
@@ -205,6 +223,10 @@ Result<std::vector<TradeStore::StoredLatency>> TradeStore::LoadLatency() const {
     }
     std::vector<StoredLatency> out;
     for (const auto& row : *rows) {
+        if (row.size() < 11) {
+            return types::MakeError(types::ErrorCategory::kParse,
+                                    "venue_latency: malformed row");
+        }
         StoredLatency s;
         auto start = sql::ParseMillis(row[0], "venue_latency: window_start");
         auto end = sql::ParseMillis(row[1], "venue_latency: window_end");

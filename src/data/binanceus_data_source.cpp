@@ -356,7 +356,12 @@ Result<types::SymbolInfo> BinanceUSDataSource::GetSymbolInfo(
     auto filter_value = [&](const char* type,
                             const char* field) -> Result<types::Decimal> {
         for (const auto& f : *filters) {
-            if (f.is_object() && f.value("filterType", "") == type) {
+            if (!f.is_object()) {
+                continue;
+            }
+            const auto ft = f.find("filterType");
+            if (ft != f.end() && ft->is_string() &&
+                ft->get_ref<const std::string&>() == type) {
                 const auto it = f.find(field);
                 if (it == f.end()) {
                     break;

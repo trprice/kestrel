@@ -52,6 +52,8 @@ bool Covers(const std::vector<types::Bar>& bars, types::Timestamp first,
             to = last_end;
         }
     }
+    // Only the ends: a gap inside is the venue's (an outage leaves no bars),
+    // and fetching again would find the same gap.
     return bars.front().open_time <= first + length &&
            bars.back().open_time >= to - length * 2;
 }
@@ -462,6 +464,8 @@ types::Result<BacktestResult> RunBacktest(
     // symbol: a strategy bar none of them opened inside is walked itself.
     std::vector<std::optional<types::Timestamp>> last_fill(
         needs.symbols.size());
+    std::vector<std::optional<types::Timestamp>> last_fill_end(
+        needs.symbols.size());
     std::size_t walked_without = 0;
     for (const Replayed& item : timeline) {
         const auto index =
@@ -469,6 +473,7 @@ types::Result<BacktestResult> RunBacktest(
         if (item.fill_only) {
             walk(*item.symbol, item.bar, item.time);
             last_fill[index] = item.bar.open_time;
+            last_fill_end[index] = item.time;
         } else if (!item.is_quote && !needs.quotes &&
                    item.timeframe == driving[index]) {
             if (!fill_bars) {
@@ -477,6 +482,9 @@ types::Result<BacktestResult> RunBacktest(
                        *last_fill[index] < item.bar.open_time) {
                 walk(*item.symbol, item.bar, item.time);
                 ++walked_without;
+            } else if (!last_fill_end[index] ||
+                       *last_fill_end[index] < item.time) {
+                quote_at(*item.symbol, item.bar.close, item.time);
             }
         }
         run_sessions(item.time);

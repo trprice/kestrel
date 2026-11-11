@@ -356,6 +356,30 @@ TEST(MomentumRotation, AsksTheVenueAboutAnOrderThatNeverClosed) {
     EXPECT_EQ(live.context.venue.orders[1].side, Side::kBuy);
 }
 
+// The venue's status of an order closed unnoticed counts what it filled;
+// that order's fills, arriving later, are not counted again.
+TEST(MomentumRotation, AFillOfAnOrderFoundClosedIsNotCountedTwice) {
+    Live live;
+    live.BuyA();
+    auto status = Filled("order-1", "A/USD");
+    status.filled_quantity = D("10");
+    live.context.venue.order_states["order-1"] = status;
+    live.context.Close(live.strategy, 4);  // B first: A, counted, is sold
+    ASSERT_EQ(live.context.venue.orders.size(), 2u);
+    EXPECT_EQ(live.context.venue.orders[1].symbol, "A/USD");
+    EXPECT_EQ(live.context.venue.orders[1].side, Side::kSell);
+    EXPECT_EQ(live.context.venue.orders[1].quantity, D("10"));
+
+    live.strategy.OnFill(live.context,
+                         FillOf("order-1", "A/USD", Side::kBuy, "10", "12"));
+    live.strategy.OnOrderUpdate(live.context, Filled("order-2", "A/USD"));
+    live.strategy.OnFill(live.context,
+                         FillOf("order-2", "A/USD", Side::kSell, "10", "14"));
+    // Flat in A, so B is bought.
+    ASSERT_EQ(live.context.venue.orders.size(), 3u);
+    EXPECT_EQ(live.context.venue.orders[2].symbol, "B/USD");
+}
+
 TEST(MomentumRotation, RefusesBadParameters) {
     auto bad = Params();
     bad.symbols = {"A/USD"};

@@ -154,8 +154,20 @@ bool MomentumRotation::Reconcile(Context& context) {
         if (gone) {
             spdlog::warn("momentum_rotation: order {} had closed unnoticed",
                          it->first);
-            if (it->second && status) {
-                mSelling.erase(status->symbol);
+            const types::Symbol sym = status && !status->symbol.empty()
+                                          ? status->symbol
+                                          : it->second.symbol;
+            if (status && status->filled_quantity > it->second.filled &&
+                !sym.empty()) {
+                const Decimal delta =
+                    status->filled_quantity - it->second.filled;
+                Decimal& held = mHeld[sym];
+                held = it->second.sell ? std::max(held - delta, Decimal())
+                                       : held + delta;
+                mCounted[it->first] += delta;
+            }
+            if (it->second.sell && !sym.empty()) {
+                mSelling.erase(sym);
             }
             it = mOrders.erase(it);
         } else {
@@ -293,8 +305,8 @@ void MomentumRotation::TryEnter(Context& context) {
     if (mEntries.empty()) {
         return;
     }
-    if (std::ranges::any_of(mOrders,
-                            [](const auto& order) { return order.second; })) {
+    if (std::ranges::any_of(
+            mOrders, [](const auto& order) { return order.second.sell; })) {
         return;  // a sell is still out
     }
     for (const auto& [symbol, after] : mSelling) {
@@ -407,7 +419,7 @@ std::optional<std::string> MomentumRotation::Place(Context& context,
         return std::nullopt;  // closed without a fill
     }
     if (!Closed(ack->state)) {
-        mOrders[ack->order_id] = side == Side::kSell;
+        mOrders[ack->order_id] = OrderInfo{side == Side::kSell, symbol, {}};
     }
     return ack->order_id;
 }
@@ -417,11 +429,25 @@ void MomentumRotation::OnFill(Context& context, const types::Fill& fill) {
     if (base == mBase.end()) {
         return;
     }
+    if (const auto ord = mOrders.find(fill.order_id); ord != mOrders.end()) {
+        ord->second.filled += fill.quantity;
+    }
+    // A fill of an order Reconcile counted from its status: not again.
+    Decimal quantity = fill.quantity;
+    if (const auto counted = mCounted.find(fill.order_id);
+        counted != mCounted.end()) {
+        const Decimal skip = std::min(quantity, counted->second);
+        quantity -= skip;
+        counted->second -= skip;
+        if (counted->second.Sign() <= 0) {
+            mCounted.erase(counted);
+        }
+    }
     Decimal& held = mHeld[fill.symbol];
     if (fill.side == Side::kBuy) {
-        held += fill.quantity;
+        held += quantity;
     } else {
-        held -= fill.quantity;
+        held -= quantity;
     }
     // A fee in the base asset (Binance.US takes a buy's fee in what was
     // bought) leaves less held than was filled; selling the full amount would
@@ -444,14 +470,15 @@ void MomentumRotation::OnOrderUpdate(Context& context,
     if (it == mOrders.end()) {
         return;
     }
-    const bool sell = it->second;
+    const bool sell = it->second.sell;
+    const types::Symbol sym =
+        !status.symbol.empty() ? status.symbol : it->second.symbol;
     mOrders.erase(it);
     if (status.state != OrderState::kFilled) {
         spdlog::warn("momentum_rotation: order {} for {} closed: {}",
-                     status.order_id, status.symbol,
-                     types::ToString(status.state));
+                     status.order_id, sym, types::ToString(status.state));
         if (sell) {
-            mSelling.erase(status.symbol);  // no more of it will sell
+            mSelling.erase(sym);  // no more of it will sell
         }
     }
     if (sell) {

@@ -246,4 +246,25 @@ TEST(MaCrossoverTest, IgnoresUpdatesThatAreNotAFailureOfItsOrder) {
     EXPECT_EQ(context.venue.orders.size(), 1u);  // still waiting for the fill
 }
 
+TEST(MaCrossoverTest, DeductsBaseAssetFeeFromSellQuantity) {
+    MaCrossover strategy(Params());
+    FakeContext context;
+    for (const char* close : {"10", "10", "10", "10", "20"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    types::Fill buy = FillOf(Side::kBuy);
+    buy.quantity = D("0.5");
+    buy.fee = D("0.005");
+    buy.fee_asset = "BTC";
+    strategy.OnFill(context, buy);
+
+    for (const char* close : {"20", "20", "20", "10"}) {
+        Feed(strategy, context, close);
+    }
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].side, Side::kSell);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("0.495"));
+}
+
 }  // namespace

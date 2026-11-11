@@ -80,6 +80,15 @@ types::Result<types::Decimal> JsonDecimal(const nlohmann::json& value) {
     if (value.is_string()) {
         return types::Decimal::Parse(value.get_ref<const std::string&>());
     }
+    if (value.is_number_unsigned()) {
+        const auto u = value.get<std::uint64_t>();
+        if (u > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max())) {
+            return types::MakeError(types::ErrorCategory::kParse,
+                                    "integer out of Decimal range");
+        }
+        return types::Decimal(static_cast<std::int64_t>(u), 0);
+    }
     if (value.is_number_integer()) {
         return types::Decimal(value.get<std::int64_t>(), 0);
     }

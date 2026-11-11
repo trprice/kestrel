@@ -83,9 +83,38 @@ Result<void> BinanceUSApi::CheckBan() {
 }
 
 Result<std::int64_t> BinanceUSApi::SyncClock() {
+    if (auto ok = CheckBan(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    Acquire(1);
+    net::HttpRequest request;
+    request.method = net::HttpMethod::kGet;
+    request.url = mOptions.rest_base_url + std::string(kTimeWeightPath);
+
     const auto before = mOptions.clock();
-    auto body = SendOnce(net::HttpMethod::kGet, kTimeWeightPath, {}, 1, false);
+    auto response = mHttp->Send(request);
     const auto after = mOptions.clock();
+    if (!response) {
+        auto error = data::RefineBinanceUSError(response.error());
+        if (error.http_status == 418) {
+            const auto ban = error.retry_after.value_or(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    mOptions.default_ban));
+            {
+                std::lock_guard lock(mBanMutex);
+                mBanned = true;
+                mBannedUntil = mOptions.steady() + ban;
+            }
+            spdlog::error(
+                "binanceus: IP banned (HTTP 418) for {} s; no requests until "
+                "then",
+                std::chrono::duration_cast<std::chrono::seconds>(ban).count());
+        } else if (error.category == ErrorCategory::kRateLimit) {
+            mLimiter.Penalize();
+        }
+        return std::unexpected(std::move(error));
+    }
+    auto body = util::ParseJson(response->body);
     if (!body) {
         return std::unexpected(body.error());
     }
@@ -173,7 +202,12 @@ Result<json> BinanceUSApi::Send(net::HttpMethod method, const std::string& path,
             spdlog::warn(
                 "binanceus: the server refused the timestamp; resyncing the "
                 "clock and sending the request again");
-            if (auto synced = SyncClock(); synced) {
+            Result<std::int64_t> synced = 0;
+            {
+                std::lock_guard lock(mSyncMutex);
+                synced = SyncClock();
+            }
+            if (synced) {
                 result = SendOnce(method, path, params, weight, sign);
             }
         }

@@ -41,9 +41,9 @@ std::string KrakenAssetToNormalized(std::string asset) {
 
 // Quote assets recognised when splitting concatenated pairs, longest first so
 // "USDT" wins over "USD".
-constexpr std::array<std::string_view, 17> kQuotes{
-    "ZUSD", "ZEUR", "ZGBP", "ZCAD", "ZJPY", "USDT", "USDC", "BUSD", "USD",
-    "EUR",  "GBP",  "CAD",  "JPY",  "AUD",  "CHF",  "BTC",  "ETH"};
+constexpr std::array<std::string_view, 12> kQuotes{
+    "USDT", "USDC", "BUSD", "USD", "EUR", "GBP",
+    "CAD",  "JPY",  "AUD",  "CHF", "BTC", "ETH"};
 
 Result<Symbol> SplitConcatenated(std::string_view native, bool kraken) {
     for (const auto quote : kQuotes) {
@@ -97,14 +97,16 @@ Result<Symbol> FromKrakenSymbol(std::string_view native) {
         return types::JoinSymbol(KrakenAssetToNormalized(parts->base),
                                  KrakenAssetToNormalized(*parts->quote));
     }
-    // Legacy "XXBTZUSD": two four-letter codes.
+    // Legacy "XXBTZUSD" or "USDTZUSD": two four-letter codes ending in a
+    // legacy fiat/crypto code.
     if (native.size() == 8) {
         const std::string base(native.substr(0, 4)), quote(native.substr(4));
         const auto legacy = [](const std::string& s) {
             return std::ranges::find(kKrakenLegacy, std::string_view(s)) !=
                    kKrakenLegacy.end();
         };
-        if (legacy(base) && legacy(quote)) {
+        if (legacy(quote) &&
+            (legacy(base) || base == "USDT" || base == "USDC")) {
             return types::JoinSymbol(KrakenAssetToNormalized(base),
                                      KrakenAssetToNormalized(quote));
         }

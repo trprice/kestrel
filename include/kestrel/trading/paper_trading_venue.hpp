@@ -282,13 +282,13 @@ class PaperTradingVenue : public TradingVenue {
     // For a resting limit order under LimitFillModel::kConservative: what, if
     // anything, `trade` (new in `quote`) and `quote` fill, and the queue
     // position afterwards.
-    std::optional<Candidate> EvaluateQueued(
-        Order& order, const types::Quote& quote,
-        const std::optional<Trade>& trade) const;
+    std::optional<Candidate> EvaluateQueued(Order& order,
+                                            const types::Quote& quote,
+                                            std::optional<Trade>& trade) const;
     // Learns the size queued ahead of `order` from the book in `quote`.
     void UpdateQueue(Order& order, const types::Quote& quote) const;
-    void TryMatch(Order& order, const types::Quote& quote, bool placing,
-                  const std::optional<Trade>& trade = std::nullopt);
+    void TryMatch(Order& order, types::Quote& quote, bool placing,
+                  std::optional<Trade>& trade);
     void ExpireDayOrders();
     types::Decimal Reserve(const Order& order,
                            const types::Decimal& remaining) const;

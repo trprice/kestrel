@@ -201,7 +201,13 @@ void PaperTradingVenue::Deliver() {
     }
     for (const ExecutionUpdate& update : batch) {
         for (const auto& [id, callback] : mListeners->callbacks) {
-            callback(update);
+            try {
+                callback(update);
+            } catch (const std::exception& e) {
+                spdlog::error("paper: execution callback threw: {}", e.what());
+            } catch (...) {
+                spdlog::error("paper: execution callback threw unknown error");
+            }
         }
     }
 }
@@ -327,7 +333,10 @@ void PaperTradingVenue::UpdateQueue(Order& order,
 
 std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::EvaluateQueued(
     Order& order, const types::Quote& quote,
-    const std::optional<Trade>& trade) const {
+    std::optional<Trade>& trade) const {
+    if (!mHours->IsOpen(mClock())) {
+        return std::nullopt;
+    }
     const bool buy = order.status.side == Side::kBuy;
     const Decimal& limit = *order.status.limit_price;
     Decimal fillable;
@@ -340,6 +349,7 @@ std::optional<PaperTradingVenue::Candidate> PaperTradingVenue::EvaluateQueued(
             const Decimal used = std::min(*order.queue_ahead, *trade->size);
             *order.queue_ahead -= used;
             fillable = std::min(order.Remaining(), *trade->size - used);
+            *trade->size -= used + fillable;
         }
     }
 
@@ -502,9 +512,8 @@ bool PaperTradingVenue::Execute(Order& order, const Candidate& c,
     return true;
 }
 
-void PaperTradingVenue::TryMatch(Order& order, const types::Quote& quote,
-                                 bool placing,
-                                 const std::optional<Trade>& trade) {
+void PaperTradingVenue::TryMatch(Order& order, types::Quote& quote,
+                                 bool placing, std::optional<Trade>& trade) {
     if (!types::IsActive(order.status.state)) {
         return;
     }
@@ -519,7 +528,15 @@ void PaperTradingVenue::TryMatch(Order& order, const types::Quote& quote,
     if (candidate->triggers_stop) {
         order.triggered = true;
     }
-    Execute(order, *candidate, candidate->liquidity);
+    if (Execute(order, *candidate, candidate->liquidity) &&
+        order.status.type == OrderType::kLimit &&
+        mOptions.cap_limit_fills_at_quote_size) {
+        auto& touch =
+            order.status.side == Side::kBuy ? quote.ask_size : quote.bid_size;
+        if (touch) {
+            *touch = std::max(*touch - candidate->quantity, Decimal());
+        }
+    }
 }
 
 void PaperTradingVenue::ExpireDayOrders() {
@@ -597,7 +614,12 @@ void PaperTradingVenue::Enter(Order& order) {
         return;  // OnQuote enters it at the next quote
     }
     if (quote_it != mQuotes.end()) {
-        TryMatch(order, quote_it->second, /*placing=*/true);
+        std::optional<Trade> no_trade;
+        std::optional<types::Quote> copy;  // as in OnQuote
+        types::Quote& book = mOptions.cap_limit_fills_at_quote_size
+                                 ? copy.emplace(quote_it->second)
+                                 : quote_it->second;
+        TryMatch(order, book, /*placing=*/true, no_trade);
         if (types::IsActive(order.status.state) &&
             order.status.type == OrderType::kLimit &&
             mOptions.limit_fill_model == LimitFillModel::kConservative) {
@@ -639,6 +661,11 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     }
 
     ExpireDayOrders();
+    // With fills capped at the quote's size, the fills on this quote share
+    // it: they take it off a copy, so the next quote starts from the book.
+    std::optional<types::Quote> copy;
+    types::Quote& book =
+        mOptions.cap_limit_fills_at_quote_size ? copy.emplace(latest) : latest;
     for (Order* order : mActive) {
         if (order->status.symbol != quote.symbol || !order->arrived ||
             !types::IsActive(order->status.state)) {
@@ -658,7 +685,7 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
             Enter(*order);
             continue;
         }
-        TryMatch(*order, latest, /*placing=*/false, trade);
+        TryMatch(*order, book, /*placing=*/false, trade);
     }
 }
 
@@ -670,10 +697,31 @@ void PaperTradingVenue::SetDeferMatching(bool defer) {
 std::vector<Decimal> PaperTradingVenue::RestingPrices(
     const types::Symbol& symbol) const {
     std::lock_guard lock(mMutex);
+    const auto now = mClock();
     std::vector<Decimal> prices;
     for (const Order* order : mActive) {
-        if (order->status.symbol != symbol || !order->arrived ||
+        if (order->status.symbol != symbol ||
             !types::IsActive(order->status.state)) {
+            continue;
+        }
+        if (order->expires && now >= *order->expires) {
+            continue;
+        }
+        bool arrived = order->arrived;
+        bool cancelled = false;
+        if (!arrived || order->cancelling) {
+            for (const InFlight& action : mInFlight) {
+                if (action.order_id == order->status.order_id &&
+                    action.due <= now) {
+                    if (action.cancel) {
+                        cancelled = true;
+                    } else {
+                        arrived = true;
+                    }
+                }
+            }
+        }
+        if (!arrived || cancelled) {
             continue;
         }
         if (order->status.type == OrderType::kLimit) {
@@ -760,7 +808,11 @@ Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
         }
         const Decimal slip = buy ? one + mOptions.slippage : one;
         if (request.type == OrderType::kStop) {
-            return *request.stop_price * slip;
+            const Decimal raw = *request.stop_price * slip;
+            return buy && prepared.info.tick_size.Sign() > 0
+                       ? raw.RoundToIncrement(prepared.info.tick_size,
+                                              Rounding::kUp)
+                       : raw;
         }
         const auto ref =
             quote ? ReferencePrice(*quote, request.side) : std::nullopt;
@@ -768,7 +820,11 @@ Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
             return MakeError(ErrorCategory::kNotFound,
                              "no quote available yet for " + request.symbol);
         }
-        return *ref * slip;
+        const Decimal raw = *ref * slip;
+        return buy && prepared.info.tick_size.Sign() > 0
+                   ? raw.RoundToIncrement(prepared.info.tick_size,
+                                          Rounding::kUp)
+                   : raw;
     };
     const Decimal fee_rate =
         request.type == OrderType::kLimit
@@ -825,9 +881,11 @@ bool PaperTradingVenue::WouldTake(const Order& order,
     if (!order.post_only || !limit || !quote) {
         return false;
     }
-    return order.status.side == Side::kBuy
-               ? quote->ask && *limit >= *quote->ask
-               : quote->bid && *limit <= *quote->bid;
+    const auto ref = ReferencePrice(*quote, order.status.side);
+    if (!ref) {
+        return false;
+    }
+    return order.status.side == Side::kBuy ? *limit >= *ref : *limit <= *ref;
 }
 
 std::map<std::string, Decimal>& PaperTradingVenue::Locks(const Order& order) {
@@ -1118,7 +1176,10 @@ Result<types::OrderStatus> PaperTradingVenue::GetOrder(
 
 Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
     types::Timestamp since) {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
+    ExpireDayOrders();
     // Fills are appended as they happen, so they are sorted by time.
     const auto first =
         std::ranges::lower_bound(mFills, since, {}, &types::Fill::time);
@@ -1126,7 +1187,10 @@ Result<std::vector<types::Fill>> PaperTradingVenue::GetFills(
 }
 
 Result<std::vector<types::Position>> PaperTradingVenue::GetPositions() {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
+    ExpireDayOrders();
     std::vector<types::Position> out;
     for (auto& position : mPnl.Positions()) {
         // Flat positions are not reported, and their realized P&L goes with
@@ -1139,7 +1203,10 @@ Result<std::vector<types::Position>> PaperTradingVenue::GetPositions() {
 }
 
 Result<std::vector<types::Balance>> PaperTradingVenue::GetBalances() {
+    DeliverOnExit deliver{*this};
     std::lock_guard lock(mMutex);
+    ProcessPending();
+    ExpireDayOrders();
     std::vector<types::Balance> out;
     for (const auto& [asset, total] : mTotal) {
         const Decimal locked =

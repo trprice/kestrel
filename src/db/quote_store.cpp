@@ -42,15 +42,6 @@ std::optional<std::string> Text(const std::optional<types::Decimal>& d) {
     return d ? std::optional<std::string>(d->ToString()) : std::nullopt;
 }
 
-std::optional<types::Decimal> ParseOptional(
-    const std::optional<std::string>& text) {
-    if (!text) {
-        return std::nullopt;
-    }
-    auto d = types::Decimal::Parse(*text);
-    return d ? std::optional<types::Decimal>(*d) : std::nullopt;
-}
-
 }  // namespace
 
 Result<std::size_t> QuoteStore::Save(std::span<const types::Quote> quotes) {
@@ -110,6 +101,10 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
     std::vector<types::Quote> quotes;
     quotes.reserve(rows->size());
     for (const auto& row : *rows) {
+        if (row.size() < 10) {
+            return MakeError(ErrorCategory::kParse,
+                             "quotes: row has fewer than 10 columns");
+        }
         types::Quote q;
         q.venue = venue;
         q.symbol = symbol;
@@ -127,12 +122,15 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
             }
             q.exchange_time = *exchange;
         }
-        q.bid = ParseOptional(row[3]);
-        q.bid_size = ParseOptional(row[4]);
-        q.ask = ParseOptional(row[5]);
-        q.ask_size = ParseOptional(row[6]);
-        q.last = ParseOptional(row[7]);
-        q.last_size = ParseOptional(row[8]);
+        std::optional<types::Decimal>* const dec_fields[] = {
+            &q.bid, &q.bid_size, &q.ask, &q.ask_size, &q.last, &q.last_size};
+        for (std::size_t i = 0; i < 6; ++i) {
+            auto parsed = sql::ParseOptional(row[3 + i], "quotes: decimal");
+            if (!parsed) {
+                return std::unexpected(parsed.error());
+            }
+            *dec_fields[i] = *parsed;
+        }
         if (row[9]) {
             if (*row[9] != "buy" && *row[9] != "sell") {
                 return MakeError(
@@ -155,6 +153,9 @@ Result<std::int64_t> QuoteStore::LastSeq(const std::string& venue,
         {venue, symbol});
     if (!rows) {
         return std::unexpected(rows.error());
+    }
+    if (rows->empty() || (*rows)[0].empty()) {
+        return MakeError(ErrorCategory::kParse, "quotes: empty last seq row");
     }
     return sql::ParseInt((*rows)[0][0], "quotes: last seq");
 }

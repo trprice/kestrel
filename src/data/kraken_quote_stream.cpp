@@ -26,12 +26,24 @@ void ReadDecimal(const json& item, const char* key,
     }
 }
 
+std::string JsonString(const json& obj, const char* key,
+                       std::string_view fallback = "") {
+    const auto it = obj.find(key);
+    return it != obj.end() && it->is_string() ? it->get<std::string>()
+                                              : std::string(fallback);
+}
+
+bool JsonBool(const json& obj, const char* key, bool fallback = false) {
+    const auto it = obj.find(key);
+    return it != obj.end() && it->is_boolean() ? it->get<bool>() : fallback;
+}
+
 }  // namespace
 
 std::vector<types::Quote> KrakenTickerMerger::Apply(const json& message,
                                                     types::Timestamp received) {
     std::vector<types::Quote> out;
-    if (!message.is_object() || message.value("channel", "") != "ticker") {
+    if (!message.is_object() || JsonString(message, "channel") != "ticker") {
         return out;
     }
     const auto data = message.find("data");
@@ -141,10 +153,10 @@ void KrakenQuoteStream::OnMessage(const std::string& text) {
         return;
     }
     const json& msg = *parsed;
-    if (msg.is_object() && msg.value("method", "") == "subscribe") {
-        if (!msg.value("success", false)) {
+    if (msg.is_object() && JsonString(msg, "method") == "subscribe") {
+        if (!JsonBool(msg, "success", false)) {
             spdlog::error("kraken ws: subscription rejected: {}",
-                          msg.value("error", "unknown error"));
+                          JsonString(msg, "error", "unknown error"));
         }
         return;
     }

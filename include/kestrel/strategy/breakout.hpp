@@ -222,7 +222,10 @@ class Breakout : public Strategy {
     types::Decimal mRisk;           // kLong: the entry less the first stop
     bool mStopMoved = false;  // kLong: mLevels->stop is above the resting stop
     types::Decimal mHeld;           // base asset bought and not yet sold
+    types::Decimal mEntryFilled;    // gross entry quantity filled so far
     types::Decimal mEntryQuantity;  // what the entry out (or last) buys
+    std::string mBaseAsset;         // base asset of mParams.symbol
+    bool mBaseFeePaid = false;      // whether a buy paid a base-asset fee
     std::optional<types::Decimal> mTarget;
     Due mDue = Due::kStop;
     // kLong, daily bars: an exit called for while closed, made at the open.

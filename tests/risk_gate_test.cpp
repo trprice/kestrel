@@ -792,6 +792,23 @@ TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {
     EXPECT_TRUE(gate->IsHalted());
 }
 
+TEST_F(RiskGateTest, ADrawdownAtTheLimitClosesAtMostOnceAMinute) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    // The fall crosses the limit back and forth; the close has not filled.
+    for (const char* price : {"74", "76", "74", "76", "74"}) {
+        gate->NoteReferencePrice(kSymbol, D(price));
+        now += std::chrono::seconds(1);
+    }
+    EXPECT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->cancel_all_calls, 3);  // at each breach
+    now += std::chrono::minutes(1);
+    gate->NoteReferencePrice(kSymbol, D("74"));
+    EXPECT_EQ(venue->orders.size(), 2u);
+}
+
 TEST_F(RiskGateTest, DrawdownCloseClosesAGateHaltedBefore) {
     limits.max_drawdown_close = D("50");
     venue->positions = {HoldingOf("2", "100")};
@@ -924,6 +941,55 @@ TEST_F(RiskGateTest, StaleQuotesBlockEntriesButNotExits) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
     gate->SetQuotesStale(kSymbol, false);
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+TEST_F(RiskGateTest, MarketOrderIgnoresLeftoverLimitPriceField) {
+    limits.max_order_notional = D("100");
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("200"));
+    OrderRequest req = Market(Side::kBuy, "1");
+    req.limit_price = D("1");  // ignored for kMarket
+    ExpectRejected(req);
+}
+
+TEST_F(RiskGateTest, BuyOcoChecksHigherStopPriceAgainstMaxOrderNotional) {
+    limits.shorts = true;
+    limits.max_order_notional = D("100");
+    venue->oco = true;
+    Build();
+    types::OcoRequest pair;
+    pair.symbol = kSymbol;
+    pair.side = Side::kBuy;
+    pair.quantity = D("1");
+    pair.limit_price = D("90");
+    pair.stop_price = D("110");  // 1 * 110 > 100
+    auto r = gate->PlaceOco(pair);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().category, ErrorCategory::kRejected);
+}
+
+TEST_F(RiskGateTest, ABlockedExitSkipsTheOpenOrderLimitAndAFailedRead) {
+    limits.max_orders_per_day = 1;
+    limits.max_open_orders = 1;
+    Build();
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "2")));
+    venue->positions = {PositionOf("2")};
+    venue->open_orders = {OpenOrder("eth", "ETH/USD", Side::kBuy, "1")};
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));  // at the limit
+    venue->fail_open_orders = true;
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+}
+
+TEST_F(RiskGateTest, HaltedExitSubtractsOpenReducingOrders) {
+    venue->positions = {PositionOf("2")};
+    venue->open_orders = {OpenOrder("o1", kSymbol, Side::kSell, "1.5")};
+    Build();
+    ASSERT_OK(gate->Halt("test"));
+    venue->open_orders = {OpenOrder("o1", kSymbol, Side::kSell, "1.5")};
+    // 2 held, 1.5 already working to sell -> at most 0.5 more can pass.
+    ExpectRejected(Market(Side::kSell, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "0.5")));
 }
 
 }  // namespace

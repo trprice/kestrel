@@ -13,6 +13,7 @@ namespace kestrel::types {
 namespace {
 
 __extension__ using i128 = __int128;  // a GCC and Clang extension, on purpose
+__extension__ using u128 = unsigned __int128;
 constexpr std::int64_t kI64Max = std::numeric_limits<std::int64_t>::max();
 constexpr std::int64_t kI64Min = std::numeric_limits<std::int64_t>::min();
 
@@ -66,7 +67,10 @@ i128 DivRound(i128 v, i128 d, Rounding mode) {
 // nearest, once) until the scale is <= kMaxScale and the mantissa fits.
 Decimal FromWide(i128 v, int scale) {
     int drop = std::max(0, scale - Decimal::kMaxScale);
-    while (drop < scale &&
+    if (drop > 38) {
+        return Decimal(0, Decimal::kMaxScale);
+    }
+    while (drop < scale && drop < 38 &&
            !FitsI64(DivRound(v, Pow10(drop), Rounding::kNearest)))
         ++drop;
     const i128 m = drop > 0 ? DivRound(v, Pow10(drop), Rounding::kNearest) : v;
@@ -106,6 +110,7 @@ Result<Decimal> Decimal::Parse(std::string_view text) {
     int digits = 0;
     int frac_digits = 0;
     bool seen_point = false;
+    bool sticky = false;
     constexpr i128 kLimit =
         (static_cast<i128>(1) << 120);  // keeps value*10+9 in range
     for (; i < text.size(); ++i) {
@@ -116,11 +121,17 @@ Result<Decimal> Decimal::Parse(std::string_view text) {
             }
             seen_point = true;
         } else if (c >= '0' && c <= '9') {
+            ++digits;
             if (value >= kLimit) {
-                return bad("too many digits");
+                if (!seen_point) {
+                    return bad("too many digits");
+                }
+                if (c != '0') {
+                    sticky = true;
+                }
+                continue;
             }
             value = value * 10 + (c - '0');
-            ++digits;
             if (seen_point) {
                 ++frac_digits;
             }
@@ -159,6 +170,9 @@ Result<Decimal> Decimal::Parse(std::string_view text) {
         }
     }
 
+    if (sticky && value % 10 == 0) {
+        value += 1;
+    }
     if (negative) {
         value = -value;
     }
@@ -177,9 +191,6 @@ Result<Decimal> Decimal::Parse(std::string_view text) {
         value *= factor;
         scale = 0;
     }
-    if (scale > 38) {
-        return bad("too many fractional digits");
-    }
     try {
         return FromWide(value, scale);
     } catch (const std::overflow_error&) {
@@ -197,15 +208,33 @@ Decimal Decimal::Divide(const Decimal& a, const Decimal& b, int scale,
     if (scale < 0 || scale > kMaxScale) {
         throw std::invalid_argument("Decimal scale out of range");
     }
-    // (a.m / 10^as) / (b.m / 10^bs) * 10^scale = a.m * 10^(scale + bs) / (b.m *
-    // 10^as)
-    const int shift = scale + b.mScale;
-    if (a.mMantissa != 0 && Abs128(static_cast<i128>(a.mMantissa)) >
-                                (static_cast<i128>(1) << 126) / Pow10(shift)) {
-        throw std::overflow_error("Decimal overflow");
+    if (a.mMantissa == 0) {
+        return Decimal(0, scale);
     }
-    i128 num = static_cast<i128>(a.mMantissa) * Pow10(shift);
-    i128 den = static_cast<i128>(b.mMantissa) * Pow10(a.mScale);
+    // (a.m / 10^as) / (b.m / 10^bs) * 10^scale = a.m * 10^(scale + bs - as) /
+    // b.m
+    i128 a_mant = static_cast<i128>(a.mMantissa);
+    i128 b_mant = static_cast<i128>(b.mMantissa);
+    int net_shift = scale + b.mScale - a.mScale;
+    while (net_shift > 0 && b_mant % 10 == 0) {
+        b_mant /= 10;
+        --net_shift;
+    }
+    while (net_shift < 0 && a_mant % 10 == 0) {
+        a_mant /= 10;
+        ++net_shift;
+    }
+    const i128 kI128Max = static_cast<i128>((~static_cast<u128>(0)) >> 1);
+    i128 num = a_mant;
+    i128 den = b_mant;
+    if (net_shift > 0) {
+        if (net_shift > 38 || Abs128(a_mant) > kI128Max / Pow10(net_shift)) {
+            throw std::overflow_error("Decimal overflow");
+        }
+        num = a_mant * Pow10(net_shift);
+    } else if (net_shift < 0) {
+        den = b_mant * Pow10(-net_shift);
+    }
     if (den < 0) {
         num = -num;
         den = -den;

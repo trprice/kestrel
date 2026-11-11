@@ -306,7 +306,7 @@ class RiskGatedVenue : public TradingVenue {
     std::map<types::Symbol, std::chrono::sys_days> mStopped;
     std::map<types::Symbol, types::Timestamp> mLastClose;
     bool mDrawdownClosed = false;  // max_drawdown_close has halted the gate
-    types::Timestamp mLastDrawdownClose;
+    std::optional<types::Timestamp> mLastDrawdownClose;
     std::set<std::string> mUnpricedAssets;  // warned about once
 };
 

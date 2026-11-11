@@ -17,6 +17,12 @@ bool ReadInt(std::string_view s, std::size_t& pos, std::size_t width,
     if (pos + width > s.size()) {
         return false;
     }
+    for (std::size_t i = 0; i < width; ++i) {
+        const char c = s[pos + i];
+        if (c < '0' || c > '9') {
+            return false;
+        }
+    }
     const auto [ptr, ec] =
         std::from_chars(s.data() + pos, s.data() + pos + width, out);
     if (ec != std::errc() || ptr != s.data() + pos + width) {

@@ -55,10 +55,11 @@ RiskGatedVenue::RiskGatedVenue(std::shared_ptr<TradingVenue> venue,
 
 void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
                                         const Decimal& price) {
+    const types::Symbol norm = types::NormalizeSymbol(symbol).value_or(symbol);
     const types::Timestamp now = mClock();
     {
         std::lock_guard lock(mPriceMutex);
-        mPrices[symbol] = ReferencePrice{price, now};
+        mPrices[norm] = ReferencePrice{price, now};
     }
     if (!mLimits.max_drawdown && !mLimits.max_drawdown_close &&
         !mLimits.max_loss_per_position) {
@@ -87,11 +88,12 @@ void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
 }
 
 void RiskGatedVenue::SetQuotesStale(const types::Symbol& symbol, bool stale) {
+    const types::Symbol norm = types::NormalizeSymbol(symbol).value_or(symbol);
     std::lock_guard lock(mPriceMutex);
     if (stale) {
-        mStaleQuotes.insert(symbol);
+        mStaleQuotes.insert(norm);
     } else {
-        mStaleQuotes.erase(symbol);
+        mStaleQuotes.erase(norm);
     }
 }
 
@@ -335,23 +337,27 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
     std::optional<std::string> everything;
     if (mLimits.max_drawdown_close && drawdown &&
         *drawdown < *mLimits.max_drawdown_close) {
-        mDrawdownClosed = false;  // a later fall halts and cancels afresh
+        mDrawdownClosed = false;  // a later fall cancels afresh
     }
     if (mLimits.max_drawdown_close && drawdown &&
         *drawdown >= *mLimits.max_drawdown_close) {
-        // Halts once; what is still held is closed again each minute while
-        // the fall stands (a refused close, a halt that came first).
-        if (!mDrawdownClosed || now - mLastDrawdownClose >= kCloseInterval) {
-            everything = "drawdown close limit reached (down " +
-                         drawdown->ToString() + " from the peak, limit " +
-                         mLimits.max_drawdown_close->ToString() + ")";
+        // Halts and cancels at each breach; closes what is still held at most
+        // once a minute, however often the fall crosses the limit (a close
+        // still on its way shows as held).
+        const std::string reason = "drawdown close limit reached (down " +
+                                   drawdown->ToString() +
+                                   " from the peak, limit " +
+                                   mLimits.max_drawdown_close->ToString() + ")";
+        if (!mLastDrawdownClose ||
+            now - *mLastDrawdownClose >= kCloseInterval) {
+            everything = reason;
             mLastDrawdownClose = now;
         }
         mHalted = true;  // again after a Resume, while the fall stands
         if (!mDrawdownClosed) {
             mDrawdownClosed = true;
             spdlog::warn("risk: trading halted: {}; closing every position",
-                         *everything);
+                         reason);
             if (auto cancelled = mVenue->CancelAll(); !cancelled) {
                 spdlog::warn("risk: could not cancel the open orders: {}",
                              cancelled.error().ToString());
@@ -495,11 +501,13 @@ std::optional<Decimal> RiskGatedVenue::ReferencePriceFor(
 
 std::optional<Decimal> RiskGatedVenue::PriceFor(
     const types::OrderRequest& request, types::Timestamp now) const {
-    if (request.limit_price) {
-        return request.limit_price;
-    }
-    if (request.stop_price) {
-        return request.stop_price;
+    switch (request.type) {
+        case types::OrderType::kLimit:
+            return request.limit_price;
+        case types::OrderType::kStop:
+            return request.stop_price;
+        case types::OrderType::kMarket:
+            return ReferencePriceFor(request.symbol, now);
     }
     return ReferencePriceFor(request.symbol, now);
 }
@@ -586,7 +594,10 @@ types::Result<void> RiskGatedVenue::CheckSize(
 types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
     const types::OrderRequest& request) {
     std::lock_guard lock(mMutex);
-    if (auto admitted = Admit(request, 1); !admitted) {
+    types::OrderRequest normalized = request;
+    normalized.symbol =
+        types::NormalizeSymbol(request.symbol).value_or(request.symbol);
+    if (auto admitted = Admit(normalized, 1); !admitted) {
         return std::unexpected(admitted.error());
     }
     return mVenue->PlaceOrder(request);
@@ -596,13 +607,17 @@ types::Result<types::OcoAcknowledgement> RiskGatedVenue::PlaceOco(
     const types::OcoRequest& request) {
     std::lock_guard lock(mMutex);
     // Checked as its limit order, counting as two orders: both rest, though
-    // only one can fill.
+    // only one can fill. For a buy OCO, the stop price is above the limit
+    // price, so use the higher price as the worst-case notional.
     types::OrderRequest limit;
-    limit.symbol = request.symbol;
+    limit.symbol =
+        types::NormalizeSymbol(request.symbol).value_or(request.symbol);
     limit.side = request.side;
     limit.type = types::OrderType::kLimit;
     limit.quantity = request.quantity;
-    limit.limit_price = request.limit_price;
+    limit.limit_price = request.side == Side::kBuy
+                            ? std::max(request.limit_price, request.stop_price)
+                            : request.limit_price;
     if (auto admitted = Admit(limit, 2); !admitted) {
         return std::unexpected(admitted.error());
     }
@@ -706,25 +721,48 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
         return Reject(*blocked);
     }
 
-    // A position-reducing order that got past a halt skips the size limits;
-    // it still counts towards the order rate.
-    if (!blocked) {
-        std::vector<types::OrderStatus> open;
-        if (mLimits.max_open_orders || sizing) {
-            auto fetched = mVenue->GetOpenOrders();
-            if (!fetched) {
-                return Reject("could not read open orders: " +
-                              fetched.error().ToString());
+    std::vector<types::OrderStatus> open;
+    if (blocked) {
+        // An exit, as the order limits do not apply to it. Exits already
+        // working count against what is held, so two cannot sell it twice;
+        // if the open orders cannot be read, the position alone decides.
+        auto fetched = mVenue->GetOpenOrders();
+        if (!fetched) {
+            spdlog::warn(
+                "risk: could not read open orders while checking an exit: {}",
+                fetched.error().ToString());
+        } else {
+            Decimal working;
+            for (const auto& order : *fetched) {
+                if (order.symbol == request.symbol &&
+                    order.side == request.side) {
+                    working += order.quantity - order.filled_quantity;
+                }
             }
-            open = std::move(*fetched);
+            if (request.quantity + working > held.Abs()) {
+                return Reject(*blocked + "; open orders already exit " +
+                              working.ToString() + " of the " +
+                              held.Abs().ToString() + " held");
+            }
         }
+    } else if (mLimits.max_open_orders || sizing) {
+        auto fetched = mVenue->GetOpenOrders();
+        if (!fetched) {
+            return Reject("could not read open orders: " +
+                          fetched.error().ToString());
+        }
+        open = std::move(*fetched);
         if (mLimits.max_open_orders &&
             open.size() + orders > *mLimits.max_open_orders) {
             return Reject("already " + std::to_string(open.size()) +
                           " open orders (limit " +
                           std::to_string(*mLimits.max_open_orders) + ")");
         }
+    }
 
+    // A position-reducing order that got past a halt skips the size limits;
+    // it still counts towards the order rate.
+    if (!blocked) {
         if (mLimits.max_order_notional || sizing) {
             const auto price = PriceFor(request, now);
             if (!price || price->Sign() <= 0) {

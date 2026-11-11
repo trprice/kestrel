@@ -152,10 +152,27 @@ class OrderCommand : public Command {
         } else {
             auto gate =
                 std::make_shared<trading::RiskGatedVenue>(venue, *limits);
-            if (request->type == types::OrderType::kMarket) {
-                if (auto price = RecentPrice(*components->data_source,
-                                             request->symbol)) {
+            auto data = components->data_source;
+            gate->SetSymbolInfo([data](const types::Symbol& symbol) {
+                return data->GetSymbolInfo(symbol);
+            });
+            const bool need_order_price =
+                request->type == types::OrderType::kMarket ||
+                limits->max_position_notional || limits->max_total_notional ||
+                limits->max_symbol_share;
+            if (need_order_price) {
+                if (auto price = RecentPrice(*data, request->symbol)) {
                     gate->NoteReferencePrice(request->symbol, *price);
+                }
+            }
+            if (limits->max_total_notional || limits->max_symbol_share) {
+                for (const auto& symbol : config.GetSymbols()) {
+                    if (symbol == request->symbol) {
+                        continue;
+                    }
+                    if (auto price = RecentPrice(*data, symbol)) {
+                        gate->NoteReferencePrice(symbol, *price);
+                    }
                 }
             }
             venue = std::move(gate);

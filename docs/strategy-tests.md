@@ -21,7 +21,7 @@ Unless a test says otherwise:
 |---|---|---|
 | `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.17% a trade: thin but positive in every year; paper-trading now |
-| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.79% a trade, 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
+| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade, 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
@@ -169,14 +169,14 @@ return per trade, net of costs.
     meaningfully negative and +0.17% without ZEC. Results improved steadily
     from a 200- to a 1000-bar filter.
   - The double bottom rose to +0.20%, but still lost in 2022 and 2024.
-- **Daily 10-day-high breakout, sold after one day:** +0.79% a trade (697
+- **Daily 10-day-high breakout, sold after one day:** +0.80% a trade (697
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
   (−0.29%).
   - Against holding, per pair: the strategy's trades compounded (each
     trade's return on the whole stake, though the backtest bought a fixed
     quantity), against buying at the first bar and holding to the last.
 
-    | Pair | Trades | Average | Compounded | Worst drawdown | Hold |
+    | Pair | Trades | Average | Compounded | Strategy drawdown | Hold |
     |---|---|---|---|---|---|
     | BTC | 156 | +0.49% | +94% | 18% | +66% |
     | SOL | 145 | +1.18% | +280% | 39% | −45% |

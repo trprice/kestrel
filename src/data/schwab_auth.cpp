@@ -138,6 +138,7 @@ Result<void> SchwabAuth::Load() {
     std::lock_guard lock(mMutex);
     mTokens = std::move(*tokens);
     mRefreshRefused = false;
+    mRefusalLogged = false;
     mLastError.reset();
     mNextAttempt = {};
     mSavePending = false;
@@ -155,17 +156,21 @@ Result<void> SchwabAuth::Authorize(std::string_view code) {
     if (!tokens) {
         return std::unexpected(tokens.error());
     }
-    if (auto saved = mStore.Save(*tokens); !saved) {
-        return std::unexpected(saved.error());
-    }
     std::lock_guard lock(mMutex);
     mTokens = std::move(*tokens);
     mRefreshRefused = false;
+    mRefusalLogged = false;
     mLastError.reset();
     mNextAttempt = {};
     mSavePending = false;
     mRotated = false;
     mNextSave = {};
+    if (auto saved = mStore.Save(*mTokens); !saved) {
+        mSavePending = true;
+        mRotated = true;
+        mNextSave = now + kRetryInterval;
+        return std::unexpected(saved.error());
+    }
     return {};
 }
 

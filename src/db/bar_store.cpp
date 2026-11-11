@@ -85,6 +85,10 @@ Result<std::vector<types::Bar>> BarStore::Load(const std::string& venue,
     std::vector<types::Bar> bars;
     bars.reserve(rows->size());
     for (const auto& row : *rows) {
+        if (row.size() < 6) {
+            return MakeError(types::ErrorCategory::kParse,
+                             "bars: row has fewer than 6 columns");
+        }
         types::Bar bar;
         auto open_time = sql::ParseMillis(row[0], "bars: open_time");
         if (!open_time) {
@@ -94,6 +98,10 @@ Result<std::vector<types::Bar>> BarStore::Load(const std::string& venue,
         types::Decimal* fields[] = {&bar.open, &bar.high, &bar.low, &bar.close,
                                     &bar.volume};
         for (std::size_t i = 0; i < 5; ++i) {
+            if (!row[i + 1]) {
+                return MakeError(types::ErrorCategory::kParse,
+                                 "bars: NULL numeric column");
+            }
             auto d = types::Decimal::Parse(*row[i + 1]);
             if (!d) {
                 return std::unexpected(d.error());
