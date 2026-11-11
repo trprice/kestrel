@@ -21,7 +21,7 @@ Unless a test says otherwise:
 |---|---|---|
 | `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.17% a trade: thin but positive in every year; paper-trading now |
-| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.79% a trade, 7/7 pairs up: the strongest single-symbol result |
+| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.79% a trade, 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
@@ -172,6 +172,25 @@ return per trade, net of costs.
 - **Daily 10-day-high breakout, sold after one day:** +0.79% a trade (697
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
   (−0.29%).
+  - Against holding, per pair: the strategy's trades compounded (each
+    trade's return on the whole stake, though the backtest bought a fixed
+    quantity), against buying at the first bar and holding to the last.
+
+    | Pair | Trades | Average | Compounded | Worst drawdown | Hold |
+    |---|---|---|---|---|---|
+    | BTC | 156 | +0.49% | +94% | 18% | +66% |
+    | SOL | 145 | +1.18% | +280% | 39% | −45% |
+    | ZEC | 148 | +0.79% | +61% | 85% | +767% |
+    | ETH | 96 | +0.99% | +128% | 17% | −40% |
+    | ADA | 71 | +1.05% | +84% | 25% | −86% |
+    | XRP | 35 | +0.33% | +5% | 33% | −43% |
+    | HYPE | 46 | +0.19% | −5% | 53% | +155% |
+
+    It beat holding on 5 of 7 pairs, and lost on the two that rose most
+    (ZEC and HYPE). Split equally over the pairs it made about +93%
+    against +111% for holding; without ZEC, about +98% against +1%. It is
+    in the market only on the days it holds (35 to 156 of them), so most
+    of the stake sits in cash.
   - Trailing-stop versions averaged more per trade but depend on ZEC.
   - Trend filters of 20–200 days didn't reliably improve it. The 200-day
     filter skips 2022 entirely, at a third of the total.
