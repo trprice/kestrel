@@ -335,6 +335,8 @@ class Runner : private Context {
     // last quote came (or the run began), and which are reported stale.
     std::map<types::Symbol, types::Timestamp> mLastQuote;
     std::set<types::Symbol> mStaleQuotes;
+    // Those the risk gate has been told are stale (RiskLimits::max_quote_age).
+    std::set<types::Symbol> mGateStale;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
     std::shared_ptr<OrderTracker> mTracker;
     std::unique_ptr<RunRecorder> mRecorder;  // null without options.trade_log

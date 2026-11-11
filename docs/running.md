@@ -297,9 +297,10 @@ is looked up by its client order ID instead.
 **Risk limits apply to manual orders too.** With `--test` or `--confirm`, the
 order goes through the risk gate with the `[risk]` limits one order can trip:
 `allowed_symbols`, `max_order_notional`, `max_position_notional`,
-`max_open_orders` and `max_price_age`. The loss, drawdown and order-count
-limits are left out, since a process that places one order would only count
-them from its own start. A market order is valued at the newest 1-minute bar's
+`max_total_notional`, `max_symbol_share`, `max_open_orders` and
+`max_price_age`. The loss, drawdown, order-count and stale-quote limits are
+left out, since a process that places one order would only count them from
+its own start. A market order is valued at the newest 1-minute bar's
 close, and is refused if there is none in the last 15 minutes and a notional
 limit is set. `--no-risk` skips the gate, with a warning: for an exit larger
 than `max_order_notional`, say.

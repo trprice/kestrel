@@ -31,7 +31,12 @@ limit_fill_model = "cross"
 # max_price_age_ms      = 5000
 # max_orders_per_day    = 20      # then only position-reducing orders
 # max_consecutive_losses = 3      # losing sells in a row; resets on a win or a new UTC day
-# max_drawdown          = "400"   # fall from peak equity (realized + unrealized), checked at order time
+# max_drawdown          = "400"   # fall from peak equity (realized + unrealized); then only exits
+# max_drawdown_close    = "600"   # the same fall, at which the gate closes everything and halts
+# max_loss_per_position = "150"   # one position's unrealized loss; closed, and the symbol paused for the day
+# max_total_notional    = "8000"  # all positions together
+# max_symbol_share      = 0.4     # one symbol's position as a share of account equity
+# max_quote_age_ms      = 120000  # no new positions in a symbol whose quotes have stopped
 
 # Per-strategy overrides: keys given here replace the [risk] values for that
 # strategy only. The name must be a real strategy.

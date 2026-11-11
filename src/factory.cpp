@@ -597,6 +597,8 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Number("breakeven_r", params.breakeven_r), params.breakeven_r,
          error);
     Take(p.Whole("trail_bars", params.trail_bars), params.trail_bars, error);
+    Take(p.Number("risk_per_trade", params.risk_per_trade),
+         params.risk_per_trade, error);
     if (error) {
         return std::unexpected(*error);
     }
@@ -733,8 +735,13 @@ std::optional<trading::RiskLimits> ManualOrderLimits(
     manual.max_position_notional = limits->max_position_notional;
     manual.max_open_orders = limits->max_open_orders;
     manual.max_price_age = limits->max_price_age;
+    manual.max_total_notional = limits->max_total_notional;
+    manual.max_symbol_share = limits->max_symbol_share;
+    manual.shorts = limits->shorts;
+    manual.default_quote_asset = limits->default_quote_asset;
     if (manual.allowed_symbols.empty() && !manual.max_order_notional &&
-        !manual.max_position_notional && !manual.max_open_orders) {
+        !manual.max_position_notional && !manual.max_open_orders &&
+        !manual.max_total_notional && !manual.max_symbol_share) {
         return std::nullopt;
     }
     return manual;
@@ -841,6 +848,8 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     options.risk = *limits;
     if (options.risk && cfg.GetMode() == config::Mode::kPaper) {
         options.risk->shorts = cfg.GetPaperOptions().allow_short;
+        options.risk->default_quote_asset =
+            cfg.GetPaperOptions().default_quote_asset;
     }
     options.cancel_entries_on_stop = true;
     if (cfg.GetRecording().enabled) {

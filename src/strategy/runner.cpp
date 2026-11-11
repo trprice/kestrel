@@ -163,6 +163,9 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     if (mOptions.risk) {
         mGate = std::make_shared<trading::RiskGatedVenue>(
             mVenue, *mOptions.risk, mClock);
+        mGate->SetSymbolInfo([data = mData](const types::Symbol& symbol) {
+            return data->GetSymbolInfo(symbol);
+        });
         mVenue = mGate;
     }
     if (!mHours->IsAlwaysOpen()) {
@@ -504,6 +507,11 @@ void Runner::NoteQuote(const types::Symbol& symbol, types::Timestamp now) {
     if (it == mLastQuote.end()) {
         return;
     }
+    if (mGateStale.erase(symbol) > 0) {
+        mGate->SetQuotesStale(symbol, false);
+        spdlog::info("strategy {}: quotes for {} again; entries allowed", mName,
+                     symbol);
+    }
     if (mStaleQuotes.erase(symbol) > 0) {
         spdlog::info(
             "strategy {}: quotes for {} again, after {} s of open market",
@@ -516,15 +524,25 @@ void Runner::NoteQuote(const types::Symbol& symbol, types::Timestamp now) {
 }
 
 void Runner::CheckQuoteFeeds(types::Timestamp now) {
-    if (mLastQuote.empty() ||
-        mOptions.stale_quote_warning <= std::chrono::milliseconds::zero() ||
-        !mHours->IsOpen(now)) {
+    const bool warn =
+        mOptions.stale_quote_warning > std::chrono::milliseconds::zero();
+    const auto pause = mGate ? mOptions.risk->max_quote_age : std::nullopt;
+    if (mLastQuote.empty() || (!warn && !pause) || !mHours->IsOpen(now)) {
         return;
     }
     // Only open time counts: quiet from the close to the open is normal.
     for (const auto& [symbol, last] : mLastQuote) {
         const auto quiet = mHours->OpenDuration(last, now);
-        if (quiet >= mOptions.stale_quote_warning &&
+        if (pause && quiet >= *pause && mGateStale.insert(symbol).second) {
+            mGate->SetQuotesStale(symbol, true);
+            spdlog::warn(
+                "strategy {}: no quote for {} for {} s of open market; the "
+                "risk gate refuses new positions in it until quotes return",
+                mName, symbol,
+                std::chrono::duration_cast<std::chrono::seconds>(quiet)
+                    .count());
+        }
+        if (warn && quiet >= mOptions.stale_quote_warning &&
             mStaleQuotes.insert(symbol).second) {
             spdlog::warn(
                 "strategy {}: no quote for {} for {} s of open market; the "
@@ -743,7 +761,8 @@ types::Result<void> Runner::Run() {
             deadline = steady + interval;
         }
         if (!mLastQuote.empty() &&
-            mOptions.stale_quote_warning > std::chrono::milliseconds::zero()) {
+            (mOptions.stale_quote_warning > std::chrono::milliseconds::zero() ||
+             (mGate && mOptions.risk->max_quote_age))) {
             // Often enough to notice a feed gone quiet with nothing else
             // arriving.
             const SteadyTime check = steady + std::chrono::seconds(10);

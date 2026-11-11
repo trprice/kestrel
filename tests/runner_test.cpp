@@ -1530,6 +1530,49 @@ TEST_F(RunnerSessionTest, AQuietQuoteFeedIsStaleOnlyWhileTheMarketIsOpen) {
     thread.join();
 }
 
+// With max_quote_age, the gate refuses entries in a symbol whose quotes
+// have stopped, until they come back; the warning can be off.
+TEST_F(RunnerSessionTest, StaleQuotesPauseEntriesThroughTheRiskGate) {
+    LogCapture log;
+    std::atomic<std::int64_t> clock_ms{types::ToEpochMillis(Hour(1))};
+    const auto set = [&](types::Timestamp t) {
+        clock_ms = types::ToEpochMillis(t);
+    };
+    options.fill_poll_interval = std::chrono::milliseconds(10);
+    options.stale_quote_warning = std::chrono::milliseconds::zero();
+    options.risk = trading::RiskLimits{};
+    options.risk->max_quote_age = std::chrono::minutes(1);
+    std::promise<void> started;
+    strategy->on_start = [&started] { started.set_value(); };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&clock_ms] { return types::FromEpochMillis(clock_ms.load()); });
+    std::thread thread([this] { (void)runner->Run(); });
+    started.get_future().wait();
+    const auto settle = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    };
+    types::OrderRequest buy;
+    buy.symbol = kSymbol;
+    buy.side = types::Side::kBuy;
+    buy.type = types::OrderType::kMarket;
+    buy.quantity = kestrel::testing::D("1");
+
+    set(Hour(1) + std::chrono::seconds(70));
+    settle();
+    EXPECT_TRUE(log.Saw("risk gate refuses new positions in it"));
+    EXPECT_FALSE(runner->RiskGate()->PlaceOrder(buy));
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    data->quote_callback(quote);
+    settle();
+    EXPECT_TRUE(log.Saw("quotes for BTC/USD again; entries allowed"));
+    EXPECT_TRUE(runner->RiskGate()->PlaceOrder(buy));
+    runner->Stop();
+    thread.join();
+}
+
 TEST_F(RunnerSessionTest, ASessionSleptThroughGetsNoHooks) {
     Build();
     ASSERT_OK(runner->Begin());

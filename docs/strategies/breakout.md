@@ -176,7 +176,8 @@ In the `[strategy]` table (see [configuration.md](../configuration.md#strategy))
 
 | Key | Meaning |
 |---|---|
-| `symbol`, `quantity` | required; `quantity` is base units (shares) per entry |
+| `symbol`, `quantity` | required; `quantity` is base units (shares) per entry, or the most an entry buys with `risk_per_trade` |
+| `risk_per_trade` | size each entry so that a fill at the entry and a sale at the protective stop lose this much, in the quote asset, before fees and slippage (default 0: every entry buys `quantity`). The size is this over the entry's distance to the stop, rounded down to the lot and capped at `quantity`; an entry under the venue's minimum size or value is skipped. A stop-entry is sized from its trigger, a throwback from its limit, a market entry from the last close, so a gap past the trigger or the stop loses more |
 | `timeframe` | the bars it trades (default `1h`; Schwab streams `30m` or shorter for `run`, and backtests also take `1d`) |
 | `setup` | `nr`, `inside`, `range`, `rectangle`, `pipe`, `failed_breakdown`, `double_bottom`, `triple_bottom`, `inverse_head_shoulders`, `ascending_triangle`, `symmetrical_triangle`, `cup_handle` or `opening_range` (default `nr`); see [the setups](#the-setups) |
 | `direction` | `long` (default) or `short`; see [Shorts](#shorts) |
@@ -206,5 +207,5 @@ In the `[strategy]` table (see [configuration.md](../configuration.md#strategy))
 | `trail_bars` | on each close, raise the stop to the lowest low of the last `trail_bars` bars less `stop_buffer_bps` (default 0: off) |
 
 `stop_buffer_bps`, `confirm_percent`, `target_multiple`, `volume_ratio`,
-`breakeven_r` and `atr_stop` cannot be negative, and the bar counts must be
+`breakeven_r`, `atr_stop` and `risk_per_trade` cannot be negative, and the bar counts must be
 positive.

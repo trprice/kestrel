@@ -403,7 +403,10 @@ TEST(Config, RiskSectionRejectsTyposAndBadValues) {
          {"[risk]\nmax_order_notinal='1'\n",
           "[risk]\nmax_order_notional='-1'\n", "[risk]\nmax_order_notional=0\n",
           "[risk]\nmax_open_orders=0\n", "[risk]\nmax_open_orders='3'\n",
-          "[risk]\nallowed_symbols='BTC/USD'\n"}) {
+          "[risk]\nallowed_symbols='BTC/USD'\n",
+          "[risk]\nmax_symbol_share=1.5\n", "[risk]\nmax_symbol_share=0\n",
+          "[risk]\nmax_quote_age_ms=0\n",
+          "[risk]\nmax_loss_per_position='-5'\n"}) {
         EXPECT_FALSE(
             config::BinanceUSConfiguration::Parse(WithTables(bad), NoEnv())
                 .has_value())
@@ -421,6 +424,31 @@ TEST(Config, RiskSectionParsesTheStrategyLimits) {
     EXPECT_EQ(r.max_orders_per_day, 20u);
     EXPECT_EQ(r.max_consecutive_losses, 3u);
     EXPECT_EQ(r.max_drawdown, D("400"));
+}
+
+TEST(Config, RiskSectionParsesThePortfolioAndClosingLimits) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_total_notional='5000'\nmax_symbol_share=0.4\n"
+                   "max_drawdown_close='600'\nmax_loss_per_position='150'\n"
+                   "max_quote_age_ms=60000\n"),
+        NoEnv());
+    ASSERT_OK(cfg);
+    const auto& r = *cfg->GetRiskLimits();
+    EXPECT_EQ(r.max_total_notional, D("5000"));
+    EXPECT_EQ(r.max_symbol_share, D("0.4"));
+    EXPECT_EQ(r.max_drawdown_close, D("600"));
+    EXPECT_EQ(r.max_loss_per_position, D("150"));
+    EXPECT_EQ(r.max_quote_age, std::chrono::milliseconds(60000));
+
+    auto merged = config::BinanceUSConfiguration::Parse(
+        WithTables("[risk]\nmax_symbol_share=0.4\n"
+                   "[risk.breakout]\nmax_symbol_share=0.2\n"
+                   "max_loss_per_position='50'\n"),
+        NoEnv());
+    ASSERT_OK(merged);
+    const auto breakout = merged->GetRiskLimits("breakout");
+    EXPECT_EQ(breakout->max_symbol_share, D("0.2"));
+    EXPECT_EQ(breakout->max_loss_per_position, D("50"));
 }
 
 TEST(Config, PerStrategyRiskOverridesTheGlobalLimitsKeyByKey) {
@@ -500,6 +528,10 @@ TEST(Factory, ManualOrdersKeepOnlyTheLimitsOneOrderCanTrip) {
     all.max_open_orders = 3;
     all.max_drawdown = types::Decimal::FromInt(10);
     all.max_price_age = std::chrono::milliseconds(5000);
+    all.max_total_notional = types::Decimal::FromInt(900);
+    all.max_symbol_share = types::Decimal(5, 1);
+    all.max_loss_per_position = types::Decimal::FromInt(20);
+    all.max_quote_age = std::chrono::milliseconds(60000);
     const auto manual = ManualOrderLimits(all);
     ASSERT_TRUE(manual);
     EXPECT_EQ(manual->allowed_symbols, all.allowed_symbols);
@@ -510,6 +542,10 @@ TEST(Factory, ManualOrdersKeepOnlyTheLimitsOneOrderCanTrip) {
     EXPECT_FALSE(manual->max_daily_loss);
     EXPECT_FALSE(manual->max_orders_per_minute);
     EXPECT_FALSE(manual->max_drawdown);
+    EXPECT_EQ(manual->max_total_notional, all.max_total_notional);
+    EXPECT_EQ(manual->max_symbol_share, all.max_symbol_share);
+    EXPECT_FALSE(manual->max_loss_per_position);
+    EXPECT_FALSE(manual->max_quote_age);
 }
 
 TEST(Config, EmptyOrMissingRiskMeansNoLimits) {

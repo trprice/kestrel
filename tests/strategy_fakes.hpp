@@ -130,6 +130,9 @@ class RecordingVenue : public trading::TradingVenue {
         return positions;
     }
     types::Result<std::vector<types::Balance>> GetBalances() override {
+        if (fail_balances) {
+            return types::MakeError(types::ErrorCategory::kNetwork, "down");
+        }
         return balances;
     }
     // Without `pushes`, the venue has no push channel (the default).
@@ -156,6 +159,7 @@ class RecordingVenue : public trading::TradingVenue {
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_fills = false;
+    bool fail_balances = false;
     bool fail_cancel_all = false;
     std::function<void()> before_get_fills;  // e.g. to hold a poll
     std::vector<std::string> cancel_all_result;  // returned once

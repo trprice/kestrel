@@ -19,18 +19,28 @@ std::unexpected<types::Error> Reject(const std::string& why) {
     return MakeError(ErrorCategory::kRejected, "risk: " + why);
 }
 
-Decimal Held(const std::vector<types::Position>& positions,
-             const types::Symbol& symbol) {
-    for (const auto& position : positions) {
-        if (position.symbol == symbol) {
-            return position.quantity;
-        }
-    }
-    return Decimal();
-}
-
 std::chrono::sys_days DayOf(types::Timestamp t) {
     return std::chrono::floor<std::chrono::days>(t);
+}
+
+// How often a reference price may measure the losses, and how often one
+// symbol may be closed.
+constexpr std::chrono::seconds kWatchInterval{1};
+constexpr std::chrono::minutes kCloseInterval{1};
+
+// What `side` would hold of `symbol` if every open order of that side and
+// `extra` filled: a buy's side is the long, held plus open buys; with
+// shorts, a sell's side is the short, what is short plus open sells.
+Decimal SideExposure(const types::Symbol& symbol, const Decimal& held,
+                     const std::vector<types::OrderStatus>& open, Side side,
+                     const Decimal& extra) {
+    Decimal quantity = (side == Side::kBuy ? held : -held) + extra;
+    for (const auto& order : open) {
+        if (order.symbol == symbol && order.side == side) {
+            quantity += order.quantity - order.filled_quantity;
+        }
+    }
+    return quantity;
 }
 
 }  // namespace
@@ -45,8 +55,51 @@ RiskGatedVenue::RiskGatedVenue(std::shared_ptr<TradingVenue> venue,
 
 void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
                                         const Decimal& price) {
+    const types::Timestamp now = mClock();
+    {
+        std::lock_guard lock(mPriceMutex);
+        mPrices[symbol] = ReferencePrice{price, now};
+    }
+    if (!mLimits.max_drawdown && !mLimits.max_drawdown_close &&
+        !mLimits.max_loss_per_position) {
+        return;
+    }
+    // An order being placed measures the losses itself; prices keep coming.
+    std::unique_lock lock(mMutex, std::try_to_lock);
+    if (!lock || now - mLastWatch < kWatchInterval) {
+        return;
+    }
+    mLastWatch = now;
+    // On the quote thread: a Decimal overflow must not unwind into the feed.
+    types::Result<void> watched;
+    try {
+        watched = Watch(now);
+    } catch (const std::exception& e) {
+        watched = types::MakeError(types::ErrorCategory::kInternal, e.what());
+    }
+    if (!watched && !mWatchFailing) {
+        spdlog::warn("risk: could not measure the losses: {}",
+                     watched.error().ToString());
+    } else if (watched && mWatchFailing) {
+        spdlog::info("risk: measuring the losses again");
+    }
+    mWatchFailing = !watched;
+}
+
+void RiskGatedVenue::SetQuotesStale(const types::Symbol& symbol, bool stale) {
     std::lock_guard lock(mPriceMutex);
-    mPrices[symbol] = ReferencePrice{price, mClock()};
+    if (stale) {
+        mStaleQuotes.insert(symbol);
+    } else {
+        mStaleQuotes.erase(symbol);
+    }
+}
+
+void RiskGatedVenue::SetSymbolInfo(
+    std::function<types::Result<types::SymbolInfo>(const types::Symbol&)>
+        info) {
+    std::lock_guard lock(mPriceMutex);
+    mSymbolInfo = std::move(info);
 }
 
 types::Result<void> RiskGatedVenue::StartLossCount() {
@@ -161,12 +214,202 @@ types::Result<void> RiskGatedVenue::CatchUpFills(types::Timestamp now) {
     return {};
 }
 
-types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
-    types::Timestamp now) {
-    if (auto caught = CatchUpFills(now); !caught) {
-        return std::unexpected(caught.error());
+std::optional<Decimal> RiskGatedVenue::Drawdown(types::Timestamp now) {
+    const auto unrealized = Unrealized(now);
+    if (!unrealized) {
+        return std::nullopt;
+    }
+    const Decimal equity = mTotalRealized + *unrealized;
+    mPeakEquity = std::max(mPeakEquity, equity);
+    return mPeakEquity - equity;
+}
+
+std::map<types::Symbol, Decimal> RiskGatedVenue::Holdings(
+    const std::vector<types::Position>& positions, bool fills) const {
+    std::map<types::Symbol, Decimal> held;
+    for (const auto& position : positions) {
+        held[position.symbol] = position.quantity;
+    }
+    if (fills) {
+        for (const auto& position : mPnl.Positions()) {
+            Decimal& h = held[position.symbol];
+            // With shorts, the larger position either way (the venue's on a
+            // tie).
+            if (!mLimits.shorts) {
+                h = std::max(h, position.quantity);
+            } else if (position.quantity.Abs() > h.Abs()) {
+                h = position.quantity;
+            }
+        }
+    }
+    std::erase_if(held, [](const auto& h) { return h.second.Sign() == 0; });
+    return held;
+}
+
+void RiskGatedVenue::Close(const types::Symbol& symbol, const Decimal& held,
+                           const std::string& reason, types::Timestamp now) {
+    mLastClose[symbol] = now;
+    if (auto open = mVenue->GetOpenOrders()) {
+        for (const auto& order : *open) {
+            if (order.symbol != symbol) {
+                continue;
+            }
+            if (auto cancelled = mVenue->CancelOrder(order.order_id);
+                !cancelled) {
+                spdlog::warn("risk: could not cancel {} before closing {}: {}",
+                             order.order_id, symbol,
+                             cancelled.error().ToString());
+            }
+        }
+    } else {
+        spdlog::warn(
+            "risk: could not read the open orders before closing {}: {}",
+            symbol, open.error().ToString());
     }
 
+    Decimal quantity = held.Abs();
+    if (held.Sign() > 0) {
+        // No more than the account has: a fee taken in the coin is not
+        // taken off what the loss count holds.
+        auto parts = types::SplitSymbol(symbol);
+        auto balances = mVenue->GetBalances();
+        if (parts && balances) {
+            for (const auto& balance : *balances) {
+                if (balance.asset == parts->base && balance.total.Sign() > 0) {
+                    quantity = std::min(quantity, balance.total);
+                }
+            }
+        }
+    }
+    std::function<types::Result<types::SymbolInfo>(const types::Symbol&)> info;
+    {
+        std::lock_guard lock(mPriceMutex);
+        info = mSymbolInfo;
+    }
+    if (info) {
+        // Fees taken in the coin can leave less than a lot over.
+        if (auto rules = info(symbol); rules && rules->lot_size.Sign() > 0) {
+            quantity = quantity.RoundToIncrement(rules->lot_size,
+                                                 types::Rounding::kDown);
+        }
+    }
+    if (quantity.Sign() <= 0) {
+        spdlog::warn("risk: cannot close {} {}: less than one lot",
+                     held.ToString(), symbol);
+        return;
+    }
+    types::OrderRequest close;
+    close.symbol = symbol;
+    close.side = held.Sign() > 0 ? Side::kSell : Side::kBuy;
+    close.type = types::OrderType::kMarket;
+    close.quantity = quantity;
+    auto placed = mVenue->PlaceOrder(close);
+    if (!placed) {
+        spdlog::error("risk: could not close {} {} ({}): {}",
+                      quantity.ToString(), symbol, reason,
+                      placed.error().ToString());
+        return;
+    }
+    spdlog::warn("risk: closing {} {} at market ({}): order {}",
+                 quantity.ToString(), symbol, reason, placed->order_id);
+}
+
+types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
+    if (auto caught = CatchUpFills(now); !caught) {
+        return caught;
+    }
+    std::optional<Decimal> drawdown;
+    if (mLimits.max_drawdown || mLimits.max_drawdown_close) {
+        drawdown = Drawdown(now);
+        // max_drawdown fails closed at the next order; the close cannot.
+        if (mLimits.max_drawdown_close && !drawdown && !mDrawdownUnknown) {
+            spdlog::warn(
+                "risk: drawdown unknown (a held symbol has no current "
+                "price), so max_drawdown_close cannot act");
+        }
+        mDrawdownUnknown = !drawdown.has_value();
+    }
+
+    // The symbols to close, and why; with `everything`, all that is held.
+    std::map<types::Symbol, std::string> closing;
+    std::optional<std::string> everything;
+    if (mLimits.max_drawdown_close && drawdown &&
+        *drawdown < *mLimits.max_drawdown_close) {
+        mDrawdownClosed = false;  // a later fall halts and cancels afresh
+    }
+    if (mLimits.max_drawdown_close && drawdown &&
+        *drawdown >= *mLimits.max_drawdown_close) {
+        // Halts once; what is still held is closed again each minute while
+        // the fall stands (a refused close, a halt that came first).
+        if (!mDrawdownClosed || now - mLastDrawdownClose >= kCloseInterval) {
+            everything = "drawdown close limit reached (down " +
+                         drawdown->ToString() + " from the peak, limit " +
+                         mLimits.max_drawdown_close->ToString() + ")";
+            mLastDrawdownClose = now;
+        }
+        mHalted = true;  // again after a Resume, while the fall stands
+        if (!mDrawdownClosed) {
+            mDrawdownClosed = true;
+            spdlog::warn("risk: trading halted: {}; closing every position",
+                         *everything);
+            if (auto cancelled = mVenue->CancelAll(); !cancelled) {
+                spdlog::warn("risk: could not cancel the open orders: {}",
+                             cancelled.error().ToString());
+            }
+        }
+    } else if (mLimits.max_loss_per_position) {
+        for (const auto& position : mPnl.Positions()) {
+            if (position.quantity.Sign() == 0) {
+                continue;
+            }
+            const auto price = ReferencePriceFor(position.symbol, now);
+            if (!price) {
+                continue;  // not known: the strategy's own stop stands
+            }
+            const Decimal loss =
+                position.quantity * (position.average_price - *price);
+            if (loss < *mLimits.max_loss_per_position) {
+                continue;
+            }
+            const auto last = mLastClose.find(position.symbol);
+            if (last != mLastClose.end() &&
+                now - last->second < kCloseInterval) {
+                continue;  // closing already
+            }
+            mStopped[position.symbol] = DayOf(now);
+            closing[position.symbol] =
+                "position loss limit reached (down " + loss.ToString() +
+                ", limit " + mLimits.max_loss_per_position->ToString() + ")";
+        }
+    }
+    if (closing.empty() && !everything) {
+        return {};
+    }
+
+    // What to close is what is held, as the gate counts it: the venue's
+    // position too, if it reports more.
+    auto positions = mVenue->GetPositions();
+    if (!positions) {
+        spdlog::warn("risk: could not read positions; closing what filled: {}",
+                     positions.error().ToString());
+    }
+    const auto held =
+        Holdings(positions ? *positions : std::vector<types::Position>{}, true);
+    for (const auto& [symbol, quantity] : held) {
+        if (!mLimits.shorts && quantity.Sign() < 0) {
+            continue;
+        }
+        if (everything) {
+            Close(symbol, quantity, *everything, now);
+        } else if (const auto why = closing.find(symbol);
+                   why != closing.end()) {
+            Close(symbol, quantity, why->second, now);
+        }
+    }
+    return {};
+}
+
+std::optional<std::string> RiskGatedVenue::Losses(types::Timestamp now) {
     if (mLimits.max_daily_loss) {
         const Decimal loss = -mPnl.Realized();
         if (loss >= *mLimits.max_daily_loss) {
@@ -183,21 +426,57 @@ types::Result<std::optional<std::string>> RiskGatedVenue::CheckLosses(
     if (mLimits.max_drawdown) {
         // Fails closed: with something held that cannot be priced, the
         // drawdown is unknown.
-        const auto unrealized = Unrealized(now);
-        if (!unrealized) {
+        const auto drawdown = Drawdown(now);
+        if (!drawdown) {
             return std::string(
                 "drawdown unknown: a held symbol has no current price");
         }
-        const Decimal equity = mTotalRealized + *unrealized;
-        mPeakEquity = std::max(mPeakEquity, equity);
-        const Decimal drawdown = mPeakEquity - equity;
-        if (drawdown >= *mLimits.max_drawdown) {
-            return "drawdown limit reached (down " + drawdown.ToString() +
+        if (*drawdown >= *mLimits.max_drawdown) {
+            return "drawdown limit reached (down " + drawdown->ToString() +
                    " from the peak, limit " + mLimits.max_drawdown->ToString() +
                    ")";
         }
     }
     return std::nullopt;
+}
+
+types::Result<Decimal> RiskGatedVenue::Equity(const types::Symbol& symbol,
+                                              types::Timestamp now) {
+    auto parts = types::SplitSymbol(symbol);
+    if (!parts) {
+        return std::unexpected(parts.error());
+    }
+    const std::string quote =
+        parts->quote.value_or(mLimits.default_quote_asset);
+    auto balances = mVenue->GetBalances();
+    if (!balances) {
+        return std::unexpected(balances.error());
+    }
+    Decimal equity;
+    for (const auto& balance : *balances) {
+        if (balance.total.Sign() == 0) {
+            continue;
+        }
+        if (balance.asset == quote) {
+            equity += balance.total;
+            continue;
+        }
+        // A coin's symbol names its quote; an equity's is the asset itself.
+        auto price = ReferencePriceFor(balance.asset + "/" + quote, now);
+        if (!price) {
+            price = ReferencePriceFor(balance.asset, now);
+        }
+        if (!price) {
+            if (mUnpricedAssets.insert(balance.asset).second) {
+                spdlog::warn(
+                    "risk: {} {} is left out of equity: no price for it",
+                    balance.total.ToString(), balance.asset);
+            }
+            continue;
+        }
+        equity += balance.total * *price;
+    }
+    return equity;
 }
 
 std::optional<Decimal> RiskGatedVenue::ReferencePriceFor(
@@ -223,6 +502,85 @@ std::optional<Decimal> RiskGatedVenue::PriceFor(
         return request.stop_price;
     }
     return ReferencePriceFor(request.symbol, now);
+}
+
+types::Result<void> RiskGatedVenue::CheckSize(
+    const types::OrderRequest& request, const Decimal& price,
+    const Decimal& held, const std::map<types::Symbol, Decimal>& holdings,
+    const std::vector<types::OrderStatus>& open, types::Timestamp now) {
+    const Decimal position = SideExposure(request.symbol, held, open,
+                                          request.side, request.quantity) *
+                             price;
+    if (mLimits.max_position_notional &&
+        position > *mLimits.max_position_notional) {
+        return Reject("position notional " + position.ToString() +
+                      " would exceed limit " +
+                      mLimits.max_position_notional->ToString());
+    }
+
+    if (mLimits.max_total_notional) {
+        // Each symbol on its larger side; the order's own symbol at its price.
+        std::set<types::Symbol> symbols{request.symbol};
+        for (const auto& [symbol, quantity] : holdings) {
+            symbols.insert(symbol);
+        }
+        for (const auto& order : open) {
+            symbols.insert(order.symbol);
+        }
+        Decimal total;
+        for (const auto& symbol : symbols) {
+            const auto found = holdings.find(symbol);
+            const Decimal h =
+                found != holdings.end() ? found->second : Decimal();
+            const bool ordered = symbol == request.symbol;
+            const auto extra = [&](Side side) {
+                return ordered && request.side == side ? request.quantity
+                                                       : Decimal();
+            };
+            Decimal quantity = std::max(
+                SideExposure(symbol, h, open, Side::kBuy, extra(Side::kBuy)),
+                Decimal());
+            if (mLimits.shorts) {
+                quantity = std::max(quantity,
+                                    SideExposure(symbol, h, open, Side::kSell,
+                                                 extra(Side::kSell)));
+            }
+            if (quantity.Sign() == 0) {
+                continue;
+            }
+            const auto at = ordered ? std::optional<Decimal>(price)
+                                    : ReferencePriceFor(symbol, now);
+            if (!at) {
+                return Reject("no current price for " + symbol +
+                              " to count towards the total");
+            }
+            total += quantity * *at;
+        }
+        if (total > *mLimits.max_total_notional) {
+            return Reject("total notional " + total.ToString() +
+                          " would exceed limit " +
+                          mLimits.max_total_notional->ToString());
+        }
+    }
+
+    if (mLimits.max_symbol_share) {
+        auto equity = Equity(request.symbol, now);
+        if (!equity) {
+            return Reject("could not work out equity: " +
+                          equity.error().ToString());
+        }
+        if (equity->Sign() <= 0) {
+            return Reject("equity " + equity->ToString() +
+                          " is not above zero");
+        }
+        if (position > *mLimits.max_symbol_share * *equity) {
+            return Reject("position notional " + position.ToString() +
+                          " would be over " +
+                          mLimits.max_symbol_share->ToString() + " of equity " +
+                          equity->ToString());
+        }
+    }
+    return {};
 }
 
 types::Result<types::OrderAcknowledgement> RiskGatedVenue::PlaceOrder(
@@ -264,19 +622,41 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
         return Reject("symbol " + request.symbol + " is not allowed");
     }
 
+    // Watching catches up on the fills, and may close positions (and halt)
+    // before this order is judged.
     std::optional<std::string> blocked;
     bool caught_up = false;  // the fills are applied to mPnl
+    const bool counting = mLimits.max_daily_loss ||
+                          mLimits.max_consecutive_losses ||
+                          mLimits.max_drawdown || mLimits.max_drawdown_close ||
+                          mLimits.max_loss_per_position;
+    if (counting) {
+        auto watched = Watch(now);
+        // Halted, an exit can still pass on the venue's position alone.
+        if (!watched && !mHalted) {
+            return Reject("could not work out the losses: " +
+                          watched.error().ToString());
+        }
+        caught_up = watched.has_value();
+    }
     if (mHalted) {
         blocked = "trading is halted";
-    } else if (mLimits.max_daily_loss || mLimits.max_consecutive_losses ||
-               mLimits.max_drawdown) {
-        auto checked = CheckLosses(now);
-        if (!checked) {
-            return Reject("could not work out the losses: " +
-                          checked.error().ToString());
+    } else if (counting) {
+        blocked = Losses(now);
+    }
+    if (!blocked) {
+        if (const auto stopped = mStopped.find(request.symbol);
+            stopped != mStopped.end() && stopped->second == DayOf(now)) {
+            blocked = "the position in " + request.symbol +
+                      " was closed at its loss limit today";
         }
-        blocked = *checked;
-        caught_up = true;
+    }
+    if (!blocked && mLimits.max_quote_age) {
+        std::lock_guard lock(mPriceMutex);
+        if (mStaleQuotes.contains(request.symbol)) {
+            blocked = "no quotes for " + request.symbol + " for over " +
+                      std::to_string(mLimits.max_quote_age->count()) + " ms";
+        }
     }
     if (mLimits.max_orders_per_day) {
         if (DayOf(now) != mOrderDay) {
@@ -294,27 +674,20 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
     // since it started counting if that is more. A venue may report none
     // (Binance.US spot has no positions), and a halted gate must still let
     // the exit of what it bought through.
-    Decimal held;
-    if (blocked || mLimits.max_position_notional) {
+    const bool sizing = mLimits.max_position_notional ||
+                        mLimits.max_total_notional || mLimits.max_symbol_share;
+    std::map<types::Symbol, Decimal> holdings;
+    if (blocked || sizing) {
         auto fetched = mVenue->GetPositions();
         if (!fetched) {
             return Reject("could not read positions: " +
                           fetched.error().ToString());
         }
-        held = Held(*fetched, request.symbol);
         auto caught = caught_up ? types::Result<void>{} : CatchUpFills(now);
-        if (caught) {
-            // With shorts, the larger position either way (the venue's on a
-            // tie).
-            const Decimal seen = mPnl.Held(request.symbol);
-            if (!mLimits.shorts) {
-                held = std::max(held, seen);
-            } else if (seen.Abs() > held.Abs()) {
-                held = seen;
-            }
-        } else if (!blocked) {
+        if (!caught && !blocked) {
             return Reject("could not read fills: " + caught.error().ToString());
-        } else {
+        }
+        if (!caught) {
             // Only an exit can pass now: the venue's position alone is safe
             // to sell against, and refusing would keep the position open.
             spdlog::warn(
@@ -322,10 +695,13 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
                 "position counts as held: {}",
                 caught.error().ToString());
         }
+        holdings = Holdings(*fetched, caught.has_value());
     }
-    const bool reduces = request.side == Side::kSell
-                             ? request.quantity <= held
-                             : mLimits.shorts && request.quantity <= -held;
+    const auto found = holdings.find(request.symbol);
+    const Decimal held = found != holdings.end() ? found->second : Decimal();
+    const bool buy = request.side == Side::kBuy;
+    const bool reduces = !buy ? request.quantity <= held
+                              : mLimits.shorts && request.quantity <= -held;
     if (blocked && !reduces) {
         return Reject(*blocked);
     }
@@ -334,7 +710,7 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
     // it still counts towards the order rate.
     if (!blocked) {
         std::vector<types::OrderStatus> open;
-        if (mLimits.max_open_orders || mLimits.max_position_notional) {
+        if (mLimits.max_open_orders || sizing) {
             auto fetched = mVenue->GetOpenOrders();
             if (!fetched) {
                 return Reject("could not read open orders: " +
@@ -349,7 +725,7 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
                           std::to_string(*mLimits.max_open_orders) + ")");
         }
 
-        if (mLimits.max_order_notional || mLimits.max_position_notional) {
+        if (mLimits.max_order_notional || sizing) {
             const auto price = PriceFor(request, now);
             if (!price || price->Sign() <= 0) {
                 return Reject("no current price for " + request.symbol);
@@ -362,23 +738,14 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
                               mLimits.max_order_notional->ToString());
             }
             // A buy adds to a long; with shorts, a sale past what is held
-            // adds to a short.
-            const bool buy = request.side == Side::kBuy;
-            if (mLimits.max_position_notional &&
-                (buy || (mLimits.shorts && !reduces))) {
-                Decimal quantity =
-                    buy ? held + request.quantity : request.quantity - held;
-                for (const auto& order : open) {
-                    if (order.symbol == request.symbol &&
-                        order.side == request.side) {
-                        quantity += order.quantity - order.filled_quantity;
-                    }
-                }
-                const Decimal exposure = quantity * *price;
-                if (exposure > *mLimits.max_position_notional) {
-                    return Reject("position notional " + exposure.ToString() +
-                                  " would exceed limit " +
-                                  mLimits.max_position_notional->ToString());
+            // adds to a short. Other orders, a buy covering a short among
+            // them, only reduce a position.
+            const bool adds = !reduces && (buy || mLimits.shorts);
+            if (adds && sizing) {
+                if (auto sized =
+                        CheckSize(request, *price, held, holdings, open, now);
+                    !sized) {
+                    return std::unexpected(sized.error());
                 }
             }
         }

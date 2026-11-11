@@ -59,10 +59,11 @@ types::Result<std::optional<trading::RiskLimits>> ResolveRiskLimits(
     const std::string& strategy, const config::Configuration& configuration);
 
 // The [risk] limits that apply to an order placed by hand (`kestrel_app
-// order`): the symbol allowlist, the order and position notional, open
-// orders and the price age. Loss, drawdown and order-count limits are left
-// out: a process that places one order would count them from its own start,
-// so they could never trip. Absent when none of these is set.
+// order`): the symbol allowlist, the order, position and total notional,
+// the symbol's share of equity, open orders and the price age. Loss,
+// drawdown, order-count and stale-quote limits are left out: a process that
+// places one order would count them from its own start, so they could never
+// trip. Absent when none of these is set.
 std::optional<trading::RiskLimits> ManualOrderLimits(
     const std::optional<trading::RiskLimits>& limits);
 

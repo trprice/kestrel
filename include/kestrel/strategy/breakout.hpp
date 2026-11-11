@@ -66,6 +66,9 @@ struct BreakoutParams {
     std::size_t volume_bars = 20;
     types::Decimal breakeven_r;  // zero: off
     std::size_t trail_bars = 0;  // zero: off
+    // Zero: every entry buys `quantity`. Else at most this much to lose
+    // between the entry and the stop, so `quantity` is a cap.
+    types::Decimal risk_per_trade;
 };
 
 // Breakout of a bar setup, long or short; how it trades is described in
@@ -128,6 +131,12 @@ class Breakout : public Strategy {
     // so what they call for is done at the next open.
     bool CarriesOver() const;
     void ArmThrowback(Context& context);
+    // The entry's size, buying at `entry` with the stop at `stop`: quantity,
+    // or with risk_per_trade what loses that much at the stop, rounded down
+    // to the lot. nullopt (logged) if that is under the venue's minimum.
+    std::optional<types::Decimal> EntrySize(Context& context,
+                                            const types::Decimal& entry,
+                                            const types::Decimal& stop) const;
     // Closes above the trigger that confirm the breakout.
     std::size_t ClosesNeeded() const;
     void EnterAtMarket(Context& context);
@@ -213,6 +222,7 @@ class Breakout : public Strategy {
     types::Decimal mRisk;           // kLong: the entry less the first stop
     bool mStopMoved = false;  // kLong: mLevels->stop is above the resting stop
     types::Decimal mHeld;           // base asset bought and not yet sold
+    types::Decimal mEntryQuantity;  // what the entry out (or last) buys
     std::optional<types::Decimal> mTarget;
     Due mDue = Due::kStop;
     // kLong, daily bars: an exit called for while closed, made at the open.

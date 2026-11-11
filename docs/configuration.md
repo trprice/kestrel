@@ -118,7 +118,9 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 | Key | Limit |
 |---|---|
 | `max_order_notional` | one order's value |
-| `max_position_notional` | a position's value |
+| `max_position_notional` | a position's value: what is held, plus open orders that add to it, plus the new order |
+| `max_total_notional` | every symbol's position, counted that way, together; each at its reference price. Refused if a symbol held or on order has no price |
+| `max_symbol_share` | a symbol's position as a share of the account's equity (above 0, at most 1). Equity is every balance on the venue: the quote asset at 1, other assets at their symbol's price; an asset with no price is left out (logged once). Refused if balances cannot be read or equity is not above zero |
 | `max_open_orders` | orders open at once |
 | `max_orders_per_minute` | order rate |
 | `max_daily_loss` | realized loss, net of fees, since the start of the UTC day (or of the run) |
@@ -126,13 +128,23 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 | `max_price_age_ms` | refuse orders valued at a reference price older than this |
 | `max_orders_per_day` | then only position-reducing orders |
 | `max_consecutive_losses` | losing sells in a row; resets on a win or a new UTC day |
-| `max_drawdown` | fall from peak equity (realized + unrealized), checked at order time; does not reset at midnight |
+| `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second); then only position-reducing orders. Does not reset at midnight |
+| `max_drawdown_close` | the same fall, at which the gate halts, cancels every open order and closes every position at market; trading stays halted until the next run, and what is still held is closed again each minute while the fall stands. Set it above `max_drawdown`, or alone |
+| `max_loss_per_position` | one position's unrealized loss from its average cost, measured the same way; the gate cancels that symbol's orders, closes the position at market, and refuses new positions in the symbol for the rest of the UTC day. A backstop for the strategy's own stop |
+| `max_quote_age_ms` | refuse new positions in a symbol whose quotes have stopped this long while its market is open, until they return (checked every 10 s; strategies that take quotes) |
 
 `[risk.<strategy>]` lays keys over `[risk]` for that strategy only (a section
-naming an unknown strategy is an error). When a loss, drawdown or order-count
-limit is hit, only orders that reduce a position are allowed; the gate does
-not close the position itself. `max_orders_per_day`, `max_consecutive_losses`
-and `max_drawdown` suit a trend follower like `ma_crossover`.
+naming an unknown strategy is an error). When a loss, drawdown, order-count
+or stale-quote limit is hit, only orders that reduce a position are allowed.
+Only `max_drawdown_close` and `max_loss_per_position` close positions: with
+market orders the gate sends itself, outside the other limits, rounded down to
+the lot and to the coin's balance. The strategy sees their fills as it sees
+any other (`breakout` goes flat when its holding is sold, though it may first
+log that its stop was cancelled and could not be placed again), and a symbol
+is closed at most once a minute. The gate does not know market hours, so a close
+of a stock is sent even when the market is shut. `max_orders_per_day`,
+`max_consecutive_losses` and `max_drawdown` suit a trend follower like
+`ma_crossover`.
 
 ## `[strategy]`
 

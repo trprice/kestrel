@@ -331,6 +331,8 @@ types::Result<BacktestResult> RunBacktest(
     runner_options.risk = options.risk;
     if (runner_options.risk) {
         runner_options.risk->shorts = options.paper.allow_short;
+        runner_options.risk->default_quote_asset =
+            options.paper.default_quote_asset;
     }
     runner_options.max_queued_bars = 0;  // each bar is drained as it is emitted
     strategy::Runner runner(data, venue, std::move(strategy), runner_options,

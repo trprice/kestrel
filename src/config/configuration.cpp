@@ -448,7 +448,10 @@ class ConfigParser {
             "max_open_orders",        "max_orders_per_minute",
             "max_daily_loss",         "allowed_symbols",
             "max_price_age_ms",       "max_orders_per_day",
-            "max_consecutive_losses", "max_drawdown"};
+            "max_consecutive_losses", "max_drawdown",
+            "max_drawdown_close",     "max_loss_per_position",
+            "max_total_notional",     "max_symbol_share",
+            "max_quote_age_ms"};
         for (const auto& [key, node] : section) {
             if (allow_tables && node.is_table()) {
                 continue;
@@ -473,6 +476,12 @@ class ConfigParser {
         auto per_day = RiskCount(section, where, "max_orders_per_day");
         auto streak = RiskCount(section, where, "max_consecutive_losses");
         auto drawdown = RiskAmount(section, where, "max_drawdown");
+        auto drawdown_close = RiskAmount(section, where, "max_drawdown_close");
+        auto position_loss =
+            RiskAmount(section, where, "max_loss_per_position");
+        auto total = RiskAmount(section, where, "max_total_notional");
+        auto share = RiskAmount(section, where, "max_symbol_share");
+        auto quote_age = RiskCount(section, where, "max_quote_age_ms");
         if (!order) return std::unexpected(order.error());
         if (!position) return std::unexpected(position.error());
         if (!loss) return std::unexpected(loss.error());
@@ -482,6 +491,15 @@ class ConfigParser {
         if (!per_day) return std::unexpected(per_day.error());
         if (!streak) return std::unexpected(streak.error());
         if (!drawdown) return std::unexpected(drawdown.error());
+        if (!drawdown_close) return std::unexpected(drawdown_close.error());
+        if (!position_loss) return std::unexpected(position_loss.error());
+        if (!total) return std::unexpected(total.error());
+        if (!share) return std::unexpected(share.error());
+        if (!quote_age) return std::unexpected(quote_age.error());
+        if (*share && **share > Decimal(1, 0)) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             where + " max_symbol_share must be at most 1");
+        }
         limits.max_order_notional = *order;
         limits.max_position_notional = *position;
         limits.max_daily_loss = *loss;
@@ -490,6 +508,13 @@ class ConfigParser {
         limits.max_orders_per_day = *per_day;
         limits.max_consecutive_losses = *streak;
         limits.max_drawdown = *drawdown;
+        limits.max_drawdown_close = *drawdown_close;
+        limits.max_loss_per_position = *position_loss;
+        limits.max_total_notional = *total;
+        limits.max_symbol_share = *share;
+        if (*quote_age) {
+            limits.max_quote_age = std::chrono::milliseconds(**quote_age);
+        }
         if (*age) {
             limits.max_price_age = std::chrono::milliseconds(**age);
         }
@@ -518,7 +543,10 @@ class ConfigParser {
             limits.max_open_orders || limits.max_orders_per_minute ||
             limits.max_daily_loss || limits.max_price_age ||
             limits.max_orders_per_day || limits.max_consecutive_losses ||
-            limits.max_drawdown || !limits.allowed_symbols.empty();
+            limits.max_drawdown || limits.max_drawdown_close ||
+            limits.max_loss_per_position || limits.max_total_notional ||
+            limits.max_symbol_share || limits.max_quote_age ||
+            !limits.allowed_symbols.empty();
         if (!any) {
             return std::optional<trading::RiskLimits>{};
         }
@@ -785,6 +813,11 @@ std::optional<trading::RiskLimits> Configuration::GetRiskLimits(
     take(merged.max_orders_per_day, o.max_orders_per_day);
     take(merged.max_consecutive_losses, o.max_consecutive_losses);
     take(merged.max_drawdown, o.max_drawdown);
+    take(merged.max_drawdown_close, o.max_drawdown_close);
+    take(merged.max_loss_per_position, o.max_loss_per_position);
+    take(merged.max_total_notional, o.max_total_notional);
+    take(merged.max_symbol_share, o.max_symbol_share);
+    take(merged.max_quote_age, o.max_quote_age);
     if (!o.allowed_symbols.empty()) {
         merged.allowed_symbols = o.allowed_symbols;
     }

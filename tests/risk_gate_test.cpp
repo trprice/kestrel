@@ -671,4 +671,259 @@ TEST_F(RiskGateTest, WithShortsPositionNotionalNeverBlocksAnExit) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "50")));
 }
 
+types::OrderStatus OpenOrder(const char* id, const char* symbol, Side side,
+                             const char* quantity) {
+    types::OrderStatus o;
+    o.order_id = id;
+    o.symbol = symbol;
+    o.side = side;
+    o.type = OrderType::kLimit;
+    o.quantity = D(quantity);
+    return o;
+}
+
+types::Balance BalanceOf(const char* asset, const char* total) {
+    return types::Balance{asset, D(total), D(total), D("0")};
+}
+
+TEST_F(RiskGateTest, TotalNotionalCountsEverySymbolAndOpenBuys) {
+    limits.max_total_notional = D("300");
+    venue->positions = {PositionOf("1")};  // BTC at 100
+    venue->open_orders = {OpenOrder("o1", "ETH/USD", Side::kBuy, "1")};
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    gate->NoteReferencePrice("ETH/USD", D("50"));
+    // 100 of BTC and 50 of ETH on order: 150 more of ETH is 300.
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "3", "ETH/USD")));
+    ExpectRejected(Market(Side::kBuy, "3.01", "ETH/USD"));
+    ExpectRejected(Market(Side::kBuy, "1.51"));  // 151 more of BTC
+}
+
+TEST_F(RiskGateTest, TotalNotionalFailsClosedWithoutAPriceForAHolding) {
+    limits.max_total_notional = D("1000");
+    venue->positions = {PositionOf("1")};  // BTC, never priced
+    Build();
+    gate->NoteReferencePrice("ETH/USD", D("50"));
+    ExpectRejected(Market(Side::kBuy, "1", "ETH/USD"));
+}
+
+TEST_F(RiskGateTest, SymbolShareIsMeasuredAgainstEquity) {
+    limits.max_symbol_share = D("0.5");
+    venue->positions = {PositionOf("1")};
+    // 1,000 of cash and 100 of BTC; DOGE has no price, so is left out.
+    venue->balances = {BalanceOf("USD", "1000"), BalanceOf("BTC", "1"),
+                       BalanceOf("DOGE", "500")};
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ExpectRejected(Market(Side::kBuy, "4.51"));  // 551 of 1,100
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "4.5")));
+}
+
+TEST_F(RiskGateTest, SymbolShareFailsClosed) {
+    limits.max_symbol_share = D("0.5");
+    venue->balances = {BalanceOf("USD", "-10")};
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ExpectRejected(Market(Side::kBuy, "0.01"));  // equity below zero
+    venue->fail_balances = true;
+    ExpectRejected(Market(Side::kBuy, "0.01"));
+}
+
+TEST_F(RiskGateTest, DrawdownPeaksBetweenOrdersAreSeen) {
+    limits.max_drawdown = D("50");
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("160"));  // a peak of +60, no order
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("105"));  // 55 below it
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+}
+
+TEST_F(RiskGateTest, PricesMeasureTheLossesAtMostOnceASecond) {
+    limits.max_drawdown = D("50");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    const int before = venue->get_fills_calls;
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    gate->NoteReferencePrice(kSymbol, D("101"));
+    EXPECT_EQ(venue->get_fills_calls, before + 1);
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("102"));
+    EXPECT_EQ(venue->get_fills_calls, before + 2);
+}
+
+TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("80"));  // -40
+    EXPECT_FALSE(gate->IsHalted());
+    EXPECT_TRUE(venue->orders.empty());
+
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("74"));  // -52
+    EXPECT_TRUE(gate->IsHalted());
+    EXPECT_EQ(venue->cancel_all_calls, 1);
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].type, OrderType::kMarket);
+    EXPECT_EQ(venue->orders[0].quantity, D("2"));
+
+    ExpectRejected(Market(Side::kBuy, "1"));
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));  // closing already
+    EXPECT_EQ(venue->orders.size(), 1u);
+
+    // Still held a minute on (the close did not fill): closed again, without
+    // a second halt.
+    now += std::chrono::minutes(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_EQ(venue->cancel_all_calls, 1);
+    ASSERT_EQ(venue->orders.size(), 2u);
+    EXPECT_EQ(venue->orders[1].side, Side::kSell);
+
+    // Resume halts again while the fall stands.
+    gate->Resume();
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_TRUE(gate->IsHalted());
+}
+
+TEST_F(RiskGateTest, DrawdownCloseClosesAGateHaltedBefore) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    ASSERT_OK(gate->Halt("by hand"));
+    gate->NoteReferencePrice(kSymbol, D("74"));  // -52
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+}
+
+TEST_F(RiskGateTest, WithShortsTheSizeLimitsDoNotBlockACover) {
+    limits.shorts = true;
+    limits.max_total_notional = D("100");
+    limits.max_symbol_share = D("0.1");
+    venue->positions = {PositionOf("-2")};
+    venue->balances = {BalanceOf("USD", "-50")};  // equity below zero
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "2")));
+    ExpectRejected(Market(Side::kBuy, "3"));  // past the short: a long
+}
+
+TEST_F(RiskGateTest, DrawdownCloseAlsoTripsAtAnOrder) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    // Within the second: the price is noted but the losses not measured.
+    gate->NoteReferencePrice(kSymbol, D("49"));
+    EXPECT_FALSE(gate->IsHalted());
+    auto r = gate->PlaceOrder(Market(Side::kBuy, "1"));
+    ASSERT_FALSE(r);
+    EXPECT_TRUE(gate->IsHalted());
+    ASSERT_EQ(venue->orders.size(), 1u);  // the close, not the buy
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+}
+
+TEST_F(RiskGateTest, PositionLossClosesThatSymbolAndBlocksItForTheDay) {
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->open_orders = {OpenOrder("stop", kSymbol, Side::kSell, "1"),
+                          OpenOrder("eth", "ETH/USD", Side::kBuy, "1")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("71"));  // -29
+    EXPECT_TRUE(venue->orders.empty());
+
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));  // -30
+    EXPECT_EQ(venue->cancels, std::vector<std::string>{"stop"});
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("1"));
+    EXPECT_FALSE(gate->IsHalted());
+
+    // Not again while it closes, though the venue still shows it held.
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("69"));
+    EXPECT_EQ(venue->orders.size(), 1u);
+
+    venue->fills = {FillOf("close", Side::kSell, "1", "69", now)};
+    venue->positions.clear();
+    venue->open_orders.clear();
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    now += std::chrono::hours(24);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+TEST_F(RiskGateTest, AFailedCloseIsTriedAgainAfterAMinute) {
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->reject_orders = true;
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("50"));
+    EXPECT_EQ(venue->attempts, 1);
+    now += std::chrono::seconds(30);
+    gate->NoteReferencePrice(kSymbol, D("50"));
+    EXPECT_EQ(venue->attempts, 1);
+    now += std::chrono::seconds(30);
+    venue->reject_orders = false;
+    gate->NoteReferencePrice(kSymbol, D("50"));
+    EXPECT_EQ(venue->orders.size(), 1u);
+}
+
+TEST_F(RiskGateTest, ACloseIsRoundedDownToTheLot) {
+    limits.max_loss_per_position = D("1");
+    Build();
+    types::SymbolInfo info;
+    info.symbol = kSymbol;
+    info.lot_size = D("0.01");
+    gate->SetSymbolInfo([info](const types::Symbol&) {
+        return types::Result<types::SymbolInfo>(info);
+    });
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    // Bought 1, less a fee of 0.005 in the coin.
+    types::Fill fill = FillOf("f1", Side::kBuy, "1", "100", now);
+    fill.fee = D("0.005");
+    fill.fee_asset = "BTC";
+    venue->fills = {fill};
+    venue->balances = {BalanceOf("BTC", "0.995")};
+    gate->NoteReferencePrice(kSymbol, D("90"));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].quantity, D("0.99"));
+}
+
+TEST_F(RiskGateTest, WithShortsAPositionLossBuysTheShortBack) {
+    limits.shorts = true;
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("-1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("131"));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kBuy);
+    EXPECT_EQ(venue->orders[0].quantity, D("1"));
+}
+
+TEST_F(RiskGateTest, StaleQuotesBlockEntriesButNotExits) {
+    limits.max_quote_age = std::chrono::minutes(1);
+    venue->positions = {PositionOf("1")};
+    Build();
+    gate->SetQuotesStale(kSymbol, true);
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "1")));
+    gate->SetQuotesStale(kSymbol, false);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
 }  // namespace

@@ -61,15 +61,14 @@ forming one; the volume can be fractional (REST truncates it); the bars match
 Sections in priority order: safety first, then what is in use.
 
 ### Risk
-- [ ] Portfolio-level limits (total exposure across symbols, concentration)
-- [ ] Drawdown that is measured continuously (the `max_drawdown` limit is
-      sampled at order attempts only), and a version that halts and closes
-      the position instead of only blocking entries
-- [ ] A per-position loss limit (`max_loss_per_position`) in the risk gate,
-      and risk-per-trade sizing from an order's stop distance. `breakout`
-      places its own protective stops; the gate does not check them.
 - [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
       reports that use them
+- [ ] Closes from the risk gate during market hours only: it has no
+      `MarketHours`, so a stock's close is sent while the market is shut
+- [ ] The gate's count of what is held does not take off a fee paid in the
+      coin (PnlTracker adds it to the cost instead); a close is capped at
+      the coin's balance for that reason, but `max_position_notional` still
+      counts the fee as held
 
 ### Venues
 Each stub's header has a TODO comment listing the endpoints and auth it needs.
@@ -285,9 +284,24 @@ the header of the code concerned.
   (`ValidateForRun`); a driver that builds its own `Runner` is not checked.
 - Daily loss and drawdown are summed across symbols, so they must share a
   quote asset.
-- `max_drawdown` is sampled when an order is attempted: a peak or trough
-  between orders is not seen. It and the other loss limits block entries only;
-  they do not close a position that is already open.
+- `max_drawdown`, `max_drawdown_close` and `max_loss_per_position` are
+  measured at each order and at each reference price, at most once a second
+  and not while an order is being placed: a peak or trough shorter than that
+  can be missed. Only the last two close positions; the other loss limits
+  block entries.
+- A close cancels the symbol's orders and sells at market straight away, so
+  a cancel still on its way (venue latency) can let the strategy's stop sell
+  too; on a spot venue the second sale is refused for want of the coin.
+- The strategy can hear of its stop's cancel before the close's fill (and
+  run a bar in between): `breakout` then places the stop again, or its time
+  exit, which the venue refuses for want of the coin, and logs that it is
+  held without a stop until the fill reaches it. Seen in a daily BTC
+  backtest with `max_loss_per_position = 15`: harmless, but noisy.
+- `max_symbol_share` reads the venue's balances at every entry, and values a
+  coin by the reference price of `COIN/QUOTE` (the quote of the order's
+  symbol): a coin traded against another quote is left out of equity.
+- `max_quote_age` relies on the runner's check every 10 seconds, so an entry
+  can pass up to 10 s after the age is reached; backtests do not check it.
 - `max_consecutive_losses` counts losing sell fills, so a sell that fills in
   several pieces counts each losing piece.
 - Daily loss counts only fills at or after the baseline call, relying on the
@@ -596,9 +610,9 @@ the header of the code concerned.
 - Stream liveness: every WebSocket pings every 20 s, and IXWebSocket closes
   and reconnects one whose pong has not come back by the next ping; Schwab's
   streamer also reconnects after 60 s without a message. `run` logs a quote feed
-  quiet for 2 minutes of open market time, but only logs it: pausing (or
-  halting) the strategy on a stale feed is a trading-safety feature and
-  belongs with the risk work.
+  quiet for 2 minutes of open market time, and with `[risk]
+  max_quote_age_ms` the gate refuses new positions in it until quotes
+  return. A bar strategy's feed is not checked.
 - Schwab's `GetSymbolInfo` sets the tick from the price when first asked
   (0.0001 under $1), so a stock that crosses $1 during a run keeps its old
   tick until the next one.
@@ -765,6 +779,17 @@ the header of the code concerned.
 - [x] `order` goes through the risk gate with the limits one order can trip
       (`ManualOrderLimits`), `--test` included; `--no-risk` skips it with a
       warning
+- [x] Portfolio limits: `max_total_notional` (every symbol's position
+      together) and `max_symbol_share` (one symbol's position as a share of
+      the account's equity, from the venue's balances)
+- [x] Drawdown measured at each reference price as well as each order, and
+      `max_drawdown_close`, which halts and closes every position at market
+- [x] `max_loss_per_position`: a position's unrealized loss from its cost;
+      the gate closes it at market and pauses the symbol for the UTC day
+- [x] `max_quote_age_ms`: no new positions in a symbol whose quotes have
+      stopped while its market is open, until they return
+- [x] `breakout` `risk_per_trade`: entries sized from the distance to the
+      stop, capped at `quantity`
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP

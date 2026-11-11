@@ -156,6 +156,47 @@ TEST(Breakout, TheProtectiveStopSellsBelowTheSetup) {
     EXPECT_EQ(trades[1].price, D("10.98"));
 }
 
+// Fills' quantities, in order.
+std::vector<types::Decimal> Quantities(std::shared_ptr<ReplayDataSource> data,
+                                       BreakoutParams params) {
+    auto result = backtest::RunBacktest(
+        data, std::make_unique<Breakout>(std::move(params)), Options(8));
+    EXPECT_TRUE(result.has_value()) << result.error().ToString();
+    std::vector<types::Decimal> quantities;
+    if (result) {
+        for (const auto& fill : result->fills) {
+            quantities.push_back(fill.quantity);
+        }
+    }
+    return quantities;
+}
+
+TEST(Breakout, RiskPerTradeSizesTheEntryFromTheStop) {
+    const auto bars = [] {
+        return Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                        {"13", "13.2", "10.5", "11"},
+                        {"11", "11", "11", "11"}});
+    };
+    // In at 13.01, stop 10.98: 2.03 a unit, so 1 to risk buys 0.4926 (to the
+    // lot) and the stop sells the same.
+    auto params = Params();
+    params.risk_per_trade = D("1");
+    EXPECT_EQ(Quantities(bars(), params),
+              (std::vector<types::Decimal>{D("0.4926"), D("0.4926")}));
+    // 5 would buy 2.46: quantity caps it.
+    params.risk_per_trade = D("5");
+    EXPECT_EQ(Quantities(bars(), params),
+              (std::vector<types::Decimal>{D("1"), D("1")}));
+    // Under the venue's minimum: no trade.
+    params.risk_per_trade = D("0.0001");
+    EXPECT_TRUE(Quantities(bars(), params).empty());
+    // A size past what twelve places can hold (more than the account can
+    // pay for, so refused) is worked out without overflowing.
+    params.quantity = D("1000000000");
+    params.risk_per_trade = D("100000000");
+    EXPECT_NO_THROW(Quantities(bars(), params));
+}
+
 TEST(Breakout, AnUntriggeredEntryExpires) {
     // Hour 5 never reaches 13.01 (and, wide, is no new setup); hour 6 would
     // have, but the entry was cancelled at hour 5's close.

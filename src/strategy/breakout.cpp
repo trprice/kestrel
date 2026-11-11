@@ -29,7 +29,8 @@ bool ClosedUnfilled(const types::OrderStatus& status) {
 
 Breakout::Breakout(BreakoutParams params)
     : mParams(std::move(params)),
-      mShort(mParams.direction == BreakoutParams::Direction::kShort) {
+      mShort(mParams.direction == BreakoutParams::Direction::kShort),
+      mEntryQuantity(mParams.quantity) {
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -83,10 +84,10 @@ Breakout::Breakout(BreakoutParams params)
         mParams.confirm_percent.IsNegative() ||
         mParams.target_multiple.IsNegative() ||
         mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative() ||
-        mParams.atr_stop.IsNegative()) {
+        mParams.atr_stop.IsNegative() || mParams.risk_per_trade.IsNegative()) {
         throw std::invalid_argument(
             "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio, "
-            "breakeven_r and atr_stop cannot be negative");
+            "breakeven_r, atr_stop and risk_per_trade cannot be negative");
     }
     if (mParams.volume_bars == 0 || mParams.atr_bars == 0) {
         throw std::invalid_argument(
@@ -451,14 +452,63 @@ bool Breakout::CarriesOver() const {
     return !bar || *bar >= std::chrono::hours(24);
 }
 
+std::optional<Decimal> Breakout::EntrySize(Context& context,
+                                           const Decimal& entry,
+                                           const Decimal& stop) const {
+    if (mParams.risk_per_trade.Sign() == 0) {
+        return mParams.quantity;
+    }
+    const Decimal distance = entry - stop;  // in long terms, so above zero
+    if (distance.Sign() <= 0) {
+        spdlog::warn("breakout: {} stop {} is not below the entry {}; no entry",
+                     mParams.symbol, Price(stop), Price(entry));
+        return std::nullopt;
+    }
+    auto info = context.SymbolInfo(mParams.symbol);
+    if (!info) {
+        spdlog::warn("breakout: cannot size the entry in {}: {}",
+                     mParams.symbol, info.error().ToString());
+        return std::nullopt;
+    }
+    // quantity caps the size; below it, divide only to the lot's places, so
+    // the quotient stays small enough to hold.
+    Decimal size = mParams.quantity;
+    if (mParams.risk_per_trade < mParams.quantity * distance) {
+        const int places =
+            info->lot_size.Sign() > 0 ? info->lot_size.Normalized().Scale() : 8;
+        size = Decimal::Divide(mParams.risk_per_trade, distance, places,
+                               Rounding::kDown);
+        if (info->lot_size.Sign() > 0) {
+            size = size.RoundToIncrement(info->lot_size, Rounding::kDown);
+        }
+    }
+    size = size.Normalized();
+    if (size.Sign() <= 0 || size < info->min_order_size ||
+        (info->min_notional.Sign() > 0 &&
+         size * entry.Abs() < info->min_notional)) {
+        spdlog::info(
+            "breakout: {} entry of {} to risk {} with the stop {} away is "
+            "under the venue's minimum; no entry",
+            mParams.symbol, size.ToString(), mParams.risk_per_trade.ToString(),
+            distance.ToString());
+        return std::nullopt;
+    }
+    return size;
+}
+
 void Breakout::Arm(Context& context, const Levels& levels) {
+    const auto size = EntrySize(context, levels.trigger, levels.stop);
+    if (!size) {
+        return;
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kBuy;
     request.type = types::OrderType::kStop;
-    request.quantity = mParams.quantity;
+    request.quantity = *size;
     request.stop_price = levels.trigger;
     if (auto id = Place(context, request, "entry stop")) {
+        mEntryQuantity = *size;
         mDue = Due::kStop;
         mEntryId = *id;
         mLevels = levels;
@@ -474,11 +524,17 @@ std::size_t Breakout::ClosesNeeded() const {
 }
 
 void Breakout::ArmThrowback(Context& context) {
+    const auto size = EntrySize(context, mLevels->high, mLevels->stop);
+    if (!size) {
+        mLevels.reset();
+        mState = State::kFlat;
+        return;
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kBuy;
     request.type = types::OrderType::kLimit;
-    request.quantity = mParams.quantity;
+    request.quantity = *size;
     request.limit_price = mLevels->high;
     // Only ever a maker: if the price is already back at the level, the
     // venue refuses it rather than buying at market, and the setup is
@@ -490,6 +546,7 @@ void Breakout::ArmThrowback(Context& context) {
                      Price(mLevels->high));
         mDue = Due::kThrowback;
         mEntryId = *id;
+        mEntryQuantity = *size;
         mState = State::kArmed;
         mBarsLeft = mParams.throwback_bars;
     } else {
@@ -499,13 +556,22 @@ void Breakout::ArmThrowback(Context& context) {
 }
 
 void Breakout::EnterAtMarket(Context& context) {
+    // Sized from the last close, the nearest price to the fill there is.
+    const auto bars = Bars(context);
+    const auto size =
+        EntrySize(context, bars.empty() ? mLevels->trigger : bars.back().close,
+                  mLevels->stop);
+    if (!size) {
+        return;
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
     request.side = Side::kBuy;
     request.type = types::OrderType::kMarket;
-    request.quantity = mParams.quantity;
+    request.quantity = *size;
     if (auto id = Place(context, request, "entry")) {
         mEntryId = *id;
+        mEntryQuantity = *size;
         mState = State::kEntering;
     }
 }
@@ -833,7 +899,7 @@ void Breakout::Disarm(Context& context) {
     if (mHeld.Sign() > 0) {
         // Partly filled: hold what was bought, protected like a full entry.
         spdlog::warn("breakout: entry {} closed after filling {} of {}",
-                     mEntryId, mHeld.ToString(), mParams.quantity.ToString());
+                     mEntryId, mHeld.ToString(), mEntryQuantity.ToString());
         GoLong(context);
         return;
     }
@@ -923,7 +989,7 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
             mEntryTime = fill.time;
         }
         mHeld += fill.quantity;
-        if (mHeld >= mParams.quantity) {
+        if (mHeld >= mEntryQuantity) {
             GoLong(context);
         }
         return;
@@ -1049,7 +1115,7 @@ void Breakout::OnOrderUpdate(Context& context,
         (mState == State::kArmed || mState == State::kEntering)) {
         spdlog::warn("breakout: entry {} closed: {}, {} of {} filled",
                      status.order_id, types::ToString(status.state),
-                     mHeld.ToString(), mParams.quantity.ToString());
+                     mHeld.ToString(), mEntryQuantity.ToString());
         if (mHeld.Sign() > 0) {
             GoLong(context);  // protect the part bought
         } else {
