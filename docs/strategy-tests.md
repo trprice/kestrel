@@ -29,6 +29,7 @@ Unless a test says otherwise:
 | `breakout` ascending and symmetrical triangles | 33 stocks daily; crypto 1h | +1.67% and +1.36% a trade on daily stocks (390 and 559 trades), positive in both periods, though most trades lose; mixed on crypto 1h |
 | `breakout` cup-and-handle | 33 stocks daily; crypto 1h | +2.35% a trade on daily stocks with a year's window (150 trades), positive in both periods, but only 32% won; lost on crypto 1h |
 | `breakout` failed breakdown | 33 stocks, daily | +0.9% a trade, but gone since 2022 except on broad ETFs |
+| `mean_reversion` Connors RSI(2) | SPY and QQQ, daily, 2016–2026 | +0.25% to +0.36% a trade, 63–70% won, on both and with or without the 200-day filter; the filter cut SPY's worst fall from −14.7% to −5.8%. In the market 11–16% of days, so 15 shares made +18% to +26% against +85% to +88% for holding them |
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 
@@ -313,6 +314,41 @@ Does the early part of the day predict its last half-hour?
   trade in every variant; the best was a 5-minute range on 1m bars. The
   published results trade only "stocks in play" (high volume or a gap),
   which this didn't screen for.
+
+## Mean reversion on stocks
+
+SPY and QQQ, daily bars from Mar 2016 to Nov 4, 2026 (2,687 bars, warmup
+from Apr 2015), 15 shares a trade from $10,000, filled at the next open.
+Connors RSI(2) buys at an RSI of 10 or under and sells at 90 or a close at
+the 5-day average; RSI(14) buys at 35 or under below the lower 20-day
+Bollinger band (2 deviations) and sells at 70 or the 20-day average. No
+holding limit or stop.
+
+| Symbol | Setup | Return | Worst fall | Trades | Won | A trade | Median held | Days in |
+|---|---|---|---|---|---|---|---|---|
+| SPY | Connors, 200-day filter | +23.26% | −5.77% | 93 | 70% | +0.33% | 4 days | 11% |
+| SPY | Connors, no filter | +26.48% | −14.74% | 125 | 67% | +0.25% | 4 days | 16% |
+| SPY | RSI(14) + band, 200-day filter | +4.42% | −13.02% | 16 | 75% | +0.61% | 19 days | 7% |
+| QQQ | Connors, 200-day filter | +18.74% | −4.94% | 89 | 66% | +0.36% | 5 days | 12% |
+| QQQ | Connors, no filter | +24.30% | −7.84% | 119 | 63% | +0.34% | 5 days | 16% |
+| QQQ | RSI(14) + band, 200-day filter | +15.11% | −7.06% | 18 | 83% | +1.36% | 16 days | 7% |
+
+- **Connors RSI(2) made money on both, with or without the filter.** The
+  200-day filter cost SPY a little (+23% against +26%) and cut its worst
+  fall from −14.7% (the 2020 crash) to −5.8%. On QQQ the filter's fall
+  was −4.9% against −7.8%.
+- **Holding the same 15 shares made more:** about +$8,530 on SPY (+85% of
+  the account) and +$8,790 on QQQ (+88%). The strategy was in the market
+  11–16% of days with a fixed 15 shares, so it put far less to work; per
+  day invested it did well, and the cash between trades is free for
+  something else.
+- **RSI(14) under the band is rare:** 16–18 trades in ten years, too few
+  to weigh its 75–83% won.
+- **A second run agrees:** another model's backtest of the same six
+  matched four exactly and was one trade off on the two filtered Connors
+  runs (+23.19% and +18.37%, 94 and 90 trades). The cause wasn't found;
+  several signals sat within 0.2% of the 200-day average, where a tiny
+  difference in a price flips the filter.
 
 ## Paper runs
 

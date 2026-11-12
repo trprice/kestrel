@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "kestrel/strategy/orders.hpp"
 #include "kestrel/types/timeframe.hpp"
 
 namespace kestrel::strategy {
@@ -18,8 +19,7 @@ using types::Side;
 namespace {
 
 bool Closed(OrderState state) {
-    return state == OrderState::kFilled || state == OrderState::kCancelled ||
-           state == OrderState::kRejected || state == OrderState::kExpired;
+    return state == OrderState::kFilled || ClosedUnfilled(state);
 }
 
 std::string Percent(const Decimal& fraction) {
@@ -405,19 +405,15 @@ std::optional<std::string> MomentumRotation::Place(Context& context,
     request.side = side;
     request.type = types::OrderType::kMarket;
     request.quantity = quantity;
-    auto ack = context.Venue().PlaceOrder(request);
+    const auto ack =
+        Submit(context, request, "momentum_rotation",
+               std::string(types::ToString(side)) + " " + quantity.ToString());
     if (!ack) {
-        spdlog::warn("momentum_rotation: {} {} {} failed: {}",
-                     types::ToString(side), quantity.ToString(), symbol,
-                     ack.error().ToString());
         return std::nullopt;
     }
     spdlog::info("momentum_rotation: {} {} {} (order {}, {})",
                  types::ToString(side), quantity.ToString(), symbol,
                  ack->order_id, types::ToString(ack->state));
-    if (ack->state != OrderState::kFilled && Closed(ack->state)) {
-        return std::nullopt;  // closed without a fill
-    }
     if (!Closed(ack->state)) {
         mOrders[ack->order_id] = OrderInfo{side == Side::kSell, symbol, {}};
     }

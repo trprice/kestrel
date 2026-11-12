@@ -16,10 +16,13 @@ at market when it crosses back below. The averages are simple, or with
 window of four slow periods of bars, so an exponential average has settled
 from its seed.
 
-It goes long or flat when the order's fill arrives (`OnFill`), and places no
-new order while one is outstanding. An order the venue accepted and later
-cancelled, rejected or expired without filling (`OnOrderUpdate`) ends the
-wait.
+Its orders go through `SingleOrderPosition` (see
+[writing-strategies.md](../writing-strategies.md)). It goes long or flat when
+the order's fills arrive (`OnFill`), and places no new order while one is
+working: an order filled in parts is waited on until its last part, and one
+the venue cancelled, rejected or expired (`OnOrderUpdate`) until the fills of
+what it filled. The position is not kept across a restart: a run started
+while holding begins flat, and does not sell what it holds.
 
 ## Parameters
 

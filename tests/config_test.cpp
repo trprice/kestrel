@@ -607,6 +607,37 @@ TEST(Factory, MaCrossoverTakesAnExponentialAverage) {
     EXPECT_FALSE(make("average='wma'\n").has_value());
 }
 
+TEST(Factory, CreateStrategyBuildsMeanReversionFromParameters) {
+    const std::string base = "[strategy]\nsymbol='BTC/USD'\nquantity='0.1'\n";
+    auto make = [&](const std::string& extra) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables(base + extra), NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return CreateStrategy("mean_reversion", *cfg);
+    };
+    auto plain = make("");
+    ASSERT_OK(plain);
+    EXPECT_EQ((*plain)->Name(), "mean_reversion");
+    EXPECT_EQ((*plain)->Needs().warmup_bars, 85u);  // 6 * 14 + 1
+
+    auto connors = make(
+        "timeframe='1d'\nrsi_period=2\noversold=10\noverbought=90\n"
+        "bollinger_period=20\nbollinger_width=2\nexit_sma=5\ntrend_sma=200\n"
+        "atr_stop=2.5\natr_bars=14\nmax_hold_bars=10\nflatten_at_close=true\n");
+    ASSERT_OK(connors);
+    EXPECT_EQ((*connors)->Needs().warmup_bars, 200u);
+    EXPECT_EQ((*connors)->Needs().bar_timeframes,
+              std::vector<types::Timeframe>{types::Timeframe::kD1});
+
+    EXPECT_FALSE(make("rsi_period=0\n").has_value());
+    EXPECT_FALSE(make("oversold=80\noverbought=70\n").has_value());
+    EXPECT_FALSE(make("bollinger_period=1\n").has_value());
+    EXPECT_FALSE(make("bollinger_width=0\n").has_value());
+    EXPECT_FALSE(make("atr_stop=-1\n").has_value());
+    EXPECT_FALSE(make("exit_sma=1\n").has_value());
+    EXPECT_FALSE(make("unknown_key=1\n").has_value());
+}
+
 TEST(Factory, MarketMakerProtectionRulesAreOptIn) {
     const std::string base =
         "[strategy]\nsymbol='BTC/USD'\nquantity='0.05'\n"

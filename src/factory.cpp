@@ -17,6 +17,7 @@
 #include "kestrel/strategy/breakout.hpp"
 #include "kestrel/strategy/ma_crossover.hpp"
 #include "kestrel/strategy/market_maker.hpp"
+#include "kestrel/strategy/mean_reversion.hpp"
 #include "kestrel/strategy/momentum_rotation.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/kraken_trading_venue.hpp"
@@ -643,6 +644,42 @@ Result<StrategyPtr> BuildMomentumRotation(ParamReader& p) {
     }
 }
 
+Result<StrategyPtr> BuildMeanReversion(ParamReader& p) {
+    strategy::MeanReversionParams params;
+    std::optional<types::Error> error;
+    Take(p.Symbol(), params.symbol, error);
+    Take(p.Quantity("quantity"), params.quantity, error);
+    Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
+    Take(p.Count("rsi_period", params.rsi_period), params.rsi_period, error);
+    Take(p.Number("oversold", params.oversold), params.oversold, error);
+    Take(p.Number("overbought", params.overbought), params.overbought, error);
+    Take(p.Whole("bollinger_period", params.bollinger_period),
+         params.bollinger_period, error);
+    Take(p.Number("bollinger_width", params.bollinger_width),
+         params.bollinger_width, error);
+    Take(p.Whole("exit_sma", params.exit_sma), params.exit_sma, error);
+    Take(p.Whole("trend_sma", params.trend_sma), params.trend_sma, error);
+    Take(p.Number("atr_stop", params.atr_stop), params.atr_stop, error);
+    Take(p.Count("atr_bars", params.atr_bars), params.atr_bars, error);
+    Take(p.Whole("max_hold_bars", params.max_hold_bars), params.max_hold_bars,
+         error);
+    Take(p.Flag("flatten_at_close", params.flatten_at_close),
+         params.flatten_at_close, error);
+    if (error) {
+        return std::unexpected(*error);
+    }
+    if (auto ok = p.Finish(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    try {
+        return StrategyPtr(
+            std::make_unique<strategy::MeanReversion>(std::move(params)));
+    } catch (const std::invalid_argument& e) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         std::string("[strategy] ") + e.what());
+    }
+}
+
 struct StrategyEntry {
     const char* name;
     Result<StrategyPtr> (*build)(ParamReader&);
@@ -653,6 +690,7 @@ constexpr StrategyEntry kStrategies[] = {
     {"market_maker", BuildMarketMaker},
     {"breakout", BuildBreakout},
     {"momentum_rotation", BuildMomentumRotation},
+    {"mean_reversion", BuildMeanReversion},
 };
 
 // Whether the provider's TradingVenue is a real implementation.

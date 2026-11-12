@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "kestrel/strategy/orders.hpp"
 #include "kestrel/strategy/patterns.hpp"
 #include "kestrel/types/timeframe.hpp"
 
@@ -16,24 +17,11 @@ using types::OrderState;
 using types::Rounding;
 using types::Side;
 
-namespace {
-
-// Closed without filling completely (perhaps partly).
-bool ClosedUnfilled(const types::OrderStatus& status) {
-    return status.state == OrderState::kCancelled ||
-           status.state == OrderState::kRejected ||
-           status.state == OrderState::kExpired;
-}
-
-}  // namespace
-
 Breakout::Breakout(BreakoutParams params)
     : mParams(std::move(params)),
       mShort(mParams.direction == BreakoutParams::Direction::kShort),
       mEntryQuantity(mParams.quantity) {
-    if (const auto parts = types::SplitSymbol(mParams.symbol)) {
-        mBaseAsset = parts->base;
-    }
+    mBaseAsset = BaseAsset(mParams.symbol);
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -679,13 +667,10 @@ void Breakout::RetryStrays(Context& context) {
 void Breakout::PlaceStop(Context& context) {
     mStopMoved = false;  // placed at mLevels->stop, or retried next bar
     if (mBaseFeePaid) {
-        if (auto info = context.SymbolInfo(mParams.symbol);
-            info && info->lot_size.Sign() > 0) {
-            const Decimal rounded =
-                mHeld.RoundToIncrement(info->lot_size, Rounding::kDown);
-            if (rounded.Sign() > 0) {
-                mHeld = rounded;
-            }
+        if (const Decimal rounded =
+                RoundDownToLot(context, mParams.symbol, mHeld);
+            rounded.Sign() > 0) {
+            mHeld = rounded;
         }
     }
     if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused) {
@@ -887,13 +872,10 @@ void Breakout::Exit(Context& context, const char* why) {
         mTargetId.clear();  // cancelled with its stop
     }
     if (mBaseFeePaid) {
-        if (auto info = context.SymbolInfo(mParams.symbol);
-            info && info->lot_size.Sign() > 0) {
-            const Decimal rounded =
-                mHeld.RoundToIncrement(info->lot_size, Rounding::kDown);
-            if (rounded.Sign() > 0) {
-                mHeld = rounded;
-            }
+        if (const Decimal rounded =
+                RoundDownToLot(context, mParams.symbol, mHeld);
+            rounded.Sign() > 0) {
+            mHeld = rounded;
         }
     }
     types::OrderRequest request;
@@ -943,20 +925,10 @@ std::optional<std::string> Breakout::Place(Context& context,
             request.stop_price = -*request.stop_price;
         }
     }
-    auto ack = context.Venue().PlaceOrder(request);
-    if (!ack) {
-        spdlog::warn("breakout: {} for {} failed: {}", what, mParams.symbol,
-                     ack.error().ToString());
-        return std::nullopt;
+    if (auto ack = Submit(context, request, "breakout", what)) {
+        return ack->order_id;
     }
-    if (ack->state == OrderState::kCancelled ||
-        ack->state == OrderState::kRejected ||
-        ack->state == OrderState::kExpired) {
-        spdlog::warn("breakout: {} for {} closed at once: {}", what,
-                     mParams.symbol, types::ToString(ack->state));
-        return std::nullopt;
-    }
-    return ack->order_id;
+    return std::nullopt;
 }
 
 void Breakout::OnFill(Context& context, const types::Fill& raw) {
@@ -977,11 +949,10 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         fill.price = -fill.price;
     }
     if (fill.side == Side::kBuy) {
-        Decimal received = fill.quantity;
-        if (!mShort && raw.fee.Sign() > 0 && !mBaseAsset.empty() &&
-            raw.fee_asset == mBaseAsset) {
-            received = std::max(received - raw.fee, Decimal());
-            mBaseFeePaid = true;
+        const Decimal received =
+            mShort ? fill.quantity : ReceivedOnBuy(raw, mBaseAsset);
+        if (received != fill.quantity) {
+            mBaseFeePaid = true;  // a fee in the coin: less held than bought
         }
         if (mState == State::kLong) {
             // A late part of a partly filled entry (its cancel crossed this
@@ -1139,7 +1110,7 @@ std::span<const types::Bar> Breakout::Bars(Context& context) const {
 
 void Breakout::OnOrderUpdate(Context& context,
                              const types::OrderStatus& status) {
-    if (!ClosedUnfilled(status)) {
+    if (!ClosedUnfilled(status.state)) {
         return;
     }
     // Orders cancelled on purpose have had their IDs cleared already. The

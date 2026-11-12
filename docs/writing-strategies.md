@@ -99,6 +99,16 @@ class MyStrategy : public strategy::Strategy {
 };
 ```
 
+A strategy that holds one long position in one symbol, entered and left by
+market orders, can leave the order handling to `SingleOrderPosition`
+(`include/kestrel/strategy/single_order_position.hpp`), as `ma_crossover` and
+`mean_reversion` do. It sends one order at a time, counts the position from
+the fills (an order filled in parts is one entry or exit), takes a fee in the
+coin off what is held and sells in whole lots. Pass it every `OnFill` and
+`OnOrderUpdate`; it reports when the position was entered or exited. Smaller
+helpers (`Submit`, `RoundDownToLot`, `ReceivedOnBuy`, `ClosedUnfilled`) are in
+`include/kestrel/strategy/orders.hpp`.
+
 ## 3. Rules to follow
 
 - **Threading:** every hook runs on the runner's one strategy thread, one at a
@@ -146,8 +156,9 @@ class MyStrategy : public strategy::Strategy {
 - **The risk gate sits between you and the venue.** If `[risk]` is set, an
   order that breaks a limit comes back as an error. After a loss, drawdown or
   order-count limit trips, only orders that reduce a position are allowed.
-  The gate never closes your position for you; do that in the strategy, as
-  `MarketMaker`'s protection rules do.
+  Only `max_drawdown_close` and `max_loss_per_position` close a position for
+  you (see [configuration.md](configuration.md)); otherwise do that in the
+  strategy, as `MarketMaker`'s protection rules do.
 
 ## 4. Register it
 

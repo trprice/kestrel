@@ -158,6 +158,7 @@ Each strategy's document lists its parameters:
 | `breakout` | [strategies/breakout.md](strategies/breakout.md#parameters) |
 | `market_maker` | [strategies/market-maker.md](strategies/market-maker.md#parameters) |
 | `momentum_rotation` | [strategies/momentum-rotation.md](strategies/momentum-rotation.md#parameters) |
+| `mean_reversion` | [strategies/mean-reversion.md](strategies/mean-reversion.md#parameters) |
 | `ma_crossover` | [strategies/ma-crossover.md](strategies/ma-crossover.md#parameters) |
 
 ## `[recording]`

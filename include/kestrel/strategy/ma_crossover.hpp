@@ -2,6 +2,7 @@
 
 #include <cstddef>
 
+#include "kestrel/strategy/single_order_position.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/types/decimal.hpp"
 
@@ -21,9 +22,9 @@ struct MaCrossoverParams {
 // A moving-average crossover, the worked example of the Strategy interface;
 // see docs/strategies/ma-crossover.md.
 //
-// No order is placed while one is outstanding, so a cross back and forth
-// inside one fill's round trip cannot stack two orders; the position changes
-// on the fill (OnFill), not on the order.
+// The orders go through a SingleOrderPosition: no order is placed while one
+// is working, so a cross back and forth inside one order's fills cannot stack
+// two orders, and the position changes on the fills, not on the order.
 class MaCrossover : public Strategy {
    public:
     // Throws std::invalid_argument for parameters out of range.
@@ -38,14 +39,8 @@ class MaCrossover : public Strategy {
                        const types::OrderStatus& status) override;
 
    private:
-    void Trade(Context& context, types::Side side);
-
     MaCrossoverParams mParams;
-    std::string mBaseAsset;
-    types::Decimal mHeld;
-    bool mLong = false;
-    bool mPending = false;  // an order was accepted and has not filled
-    std::string mOrderId;   // the pending order
+    SingleOrderPosition mPosition;
 };
 
 }  // namespace kestrel::strategy

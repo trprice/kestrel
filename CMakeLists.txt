@@ -103,7 +103,10 @@ add_library(kestrel
   src/strategy/runner.cpp
   src/strategy/run_recorder.cpp
   src/strategy/ma_crossover.cpp
+  src/strategy/mean_reversion.cpp
   src/strategy/momentum_rotation.cpp
+  src/strategy/orders.cpp
+  src/strategy/single_order_position.cpp
   src/strategy/patterns.cpp
   src/strategy/breakout.cpp
   src/strategy/market_maker.cpp
@@ -240,7 +243,9 @@ if(KESTREL_BUILD_TESTS)
     tests/backtest_db_test.cpp
     tests/backtest_summary_test.cpp
     tests/ma_crossover_test.cpp
+    tests/mean_reversion_test.cpp
     tests/momentum_rotation_test.cpp
+    tests/single_order_position_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp
   )

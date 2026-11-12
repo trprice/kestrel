@@ -189,11 +189,17 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 ### Strategies
 - [ ] Agent access (out of scope so far). What it should look
       like isn't defined yet; decide that before building it.
-- [ ] RSI mean-reversion (`Rsi` is in `patterns.hpp`)
+- [ ] Volatility squeeze breakout: Bollinger bands inside Keltner channels,
+      entered as they widen (needs `Keltner`)
+- [ ] Pairs trading: the z-score of two symbols' spread (long-only on spot)
+- [ ] `momentum_rotation` ranked and sized by volatility (`Atr` / close)
 - [ ] Grid trading and dollar-cost averaging
-- [ ] Pairs trading
+- [ ] Session VWAP reversion (needs `SessionVwap`)
+- [ ] `mean_reversion`: keep the position across a restart, and a resting
+      stop order instead of the check at the close
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
-
+- [ ] Indicators: `Keltner`, `Adx`, `Supertrend` and `SessionVwap` in
+      `patterns.hpp`
 
 #### Market maker
 Every item here is done (Nov 2026; see Done). The Nov 2026 replays found
@@ -649,6 +655,12 @@ the header of the code concerned.
       exceptions contained, fill polling, `Begin`/`Drain`/`End` for
       deterministic drivers
 - [x] `MaCrossover` example strategy
+- [x] `mean_reversion`: RSI mean reversion (classic RSI(14) or Connors
+      RSI(2)) with a Bollinger band, trend and exit averages, an ATR stop and
+      a holding limit
+- [x] `SingleOrderPosition`, the order handling `ma_crossover` and
+      `mean_reversion` share (orders filled in parts, coin fees, lots), and
+      the order helpers in `strategy/orders.hpp`
 - [x] `OnOrderUpdate` hook and `TradingVenue::GetOrder`; the runner tracks the
       strategy's active orders and reports state changes; `MaCrossover` stops
       waiting on an order that closed without a fill
