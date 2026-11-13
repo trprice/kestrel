@@ -346,7 +346,8 @@ void AddOrderCommand(CLI::App& app, CommandSlot& slot) {
     sub->add_flag("--post-only", args->post_only,
                   "With --limit: refused instead of taking liquidity");
     sub->add_option("--client-id", args->client_id,
-                    "Client order ID (default: a generated kst-... ID)");
+                    "Client order ID (Binance.US: default a generated kst-... "
+                    "ID; Schwab orders have none)");
     sub->add_flag("--test", args->test,
                   "Send to the venue's test endpoint: checked, not placed");
     sub->add_flag("--confirm", args->confirm, "Place the order for real");

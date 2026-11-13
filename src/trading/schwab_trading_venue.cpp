@@ -72,6 +72,31 @@ bool IsNumericId(std::string_view s) {
     });
 }
 
+// `url` with its account hash and order ID taken out, for logs and timing:
+// .../accounts/{account}/orders/{id}.
+std::string EndpointLabel(std::string_view url) {
+    std::string out(url);
+    const auto replace_segment = [&out](std::string_view after,
+                                        std::string_view with, bool digits) {
+        const auto at = out.find(after);
+        if (at == std::string::npos) {
+            return;
+        }
+        const auto start = at + after.size();
+        const auto end = std::min(out.find('/', start), out.size());
+        const std::string_view segment =
+            std::string_view(out).substr(start, end - start);
+        if (segment.empty() || segment == "accountNumbers" ||
+            (digits && !IsNumericId(segment))) {
+            return;
+        }
+        out.replace(start, end - start, with);
+    };
+    replace_segment("/accounts/", "{account}", false);
+    replace_segment("/orders/", "{id}", true);
+    return out;
+}
+
 // A stock ("EQUITY") or an ETF ("COLLECTIVE_INVESTMENT", or "EQUITY").
 bool IsTradableEquityAsset(std::string_view asset_type) {
     return asset_type.empty() || asset_type == "EQUITY" ||
@@ -1335,6 +1360,7 @@ Result<net::HttpResponse> SchwabTradingVenue::SendGet(
     net::HttpRequest request;
     request.method = net::HttpMethod::kGet;
     request.url = url;
+    request.label = EndpointLabel(url);
     request.query = std::move(query);
     request.headers["Accept"] = "application/json";
     return util::Retry(
@@ -1346,6 +1372,7 @@ Result<net::HttpResponse> SchwabTradingVenue::SendOrderRequest(
     net::HttpMethod method, std::string url, std::string body) {
     net::HttpRequest request;
     request.method = method;
+    request.label = EndpointLabel(url);
     request.url = std::move(url);
     request.headers["Accept"] = "application/json";
     if (!body.empty()) {

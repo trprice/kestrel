@@ -28,6 +28,11 @@ struct HttpRequest {
     std::string raw_query;
     std::map<std::string, std::string> headers;
     std::string body;  // sent verbatim for POST
+    // What logs, errors and timing call the request instead of `url`, for a
+    // URL that holds an account or order ID; empty: `url`.
+    std::string label;
+
+    const std::string& Label() const { return label.empty() ? url : label; }
 };
 
 struct HttpResponse {

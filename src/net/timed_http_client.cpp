@@ -128,7 +128,7 @@ types::Result<HttpResponse> TimedHttpClient::Send(const HttpRequest& request) {
     const auto elapsed =
         std::chrono::duration_cast<std::chrono::microseconds>(mClock() - start);
 
-    const std::string endpoint = MethodName(request.method) + " " + request.url;
+    const std::string endpoint = MethodName(request.method) + " " + request.Label();
     const bool ok = response.has_value();
     const int status =
         ok ? response->status : response.error().http_status.value_or(0);

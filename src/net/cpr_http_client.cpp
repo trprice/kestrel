@@ -115,7 +115,7 @@ types::Result<HttpResponse> CprHttpClient::Send(const HttpRequest& request) {
         const auto category = r.error.code == cpr::ErrorCode::OPERATION_TIMEDOUT
                                   ? ErrorCategory::kTimeout
                                   : ErrorCategory::kNetwork;
-        return types::MakeError(category, "request to " + request.url +
+        return types::MakeError(category, "request to " + request.Label() +
                                               " failed: " + r.error.message);
     }
 

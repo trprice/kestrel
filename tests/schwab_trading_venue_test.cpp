@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <functional>
 #include <nlohmann/json.hpp>
+#include <set>
 
 #include "test_helpers.hpp"
 
@@ -2358,6 +2359,37 @@ TEST_F(SchwabTradingVenueTest, ACancelAlreadyPendingCountsAsCancelled) {
     auto outcome = Venue().CancelOrder("77");
     ASSERT_OK(outcome);
     EXPECT_EQ(*outcome, CancelOutcome::kCancelled);
+}
+
+TEST_F(SchwabTradingVenueTest, RequestsAreLabelledWithoutTheAccountOrOrderId) {
+    mHttp->reply = [](const net::HttpRequest& r) {
+        if (r.url.ends_with("/accounts/accountNumbers")) {
+            return Ok(kSingleAccount);
+        }
+        if (r.method == net::HttpMethod::kDelete) {
+            return Ok("");
+        }
+        if (r.url.ends_with("/orders/77")) {
+            return Ok(WorkingOrder(77, "SPY", "2026-11-05T14:00:00+0000"));
+        }
+        return Ok("[]");
+    };
+    auto venue = Venue();
+    ASSERT_OK(venue.GetOrder("77"));
+    ASSERT_OK(venue.CancelOrder("77"));
+    ASSERT_OK(venue.GetOpenOrders());
+
+    std::set<std::string> labels;
+    for (const auto& r : mHttp->requests) {
+        EXPECT_EQ(r.Label().find("HASH123"), std::string::npos) << r.Label();
+        labels.insert(r.Label());
+    }
+    EXPECT_EQ(labels, (std::set<std::string>{
+                          "https://api.test/trader/v1/accounts/accountNumbers",
+                          "https://api.test/trader/v1/accounts/{account}/"
+                          "orders",
+                          "https://api.test/trader/v1/accounts/{account}/"
+                          "orders/{id}"}));
 }
 
 }  // namespace

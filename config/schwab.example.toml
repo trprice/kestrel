@@ -1,6 +1,6 @@
 # US stocks on Schwab: market data from Schwab, trading on the paper venue.
-# Copy to config/schwab.toml and edit. Live trading on Schwab is not
-# implemented yet, so mode stays "paper".
+# Copy to config/schwab.toml and edit. For live trading set mode = "live",
+# a [risk] section and [schwab] live_trading = true (see [schwab] below).
 #
 # Credentials do NOT go in this file. Schwab needs an app (developer.schwab.com,
 # "Market Data" product) even for paper trading, since its market data is
@@ -43,6 +43,13 @@ extended_hours = false
 # default) stops streaming, so the other keeps it; more than 0 reconnects
 # after that many milliseconds, taking it back.
 takeover_reconnect_ms = 0
+# Live trading: `run` trades live only with this on (off by default, until
+# the venue has been checked on a real account; `order` and `cancel` work
+# without it). Orders are for the regular session only.
+# live_trading = true
+# With more than one account on the login: the one to trade (a string, the
+# account number or its hashValue). Default: the first.
+# account_number = "..."
 
 [risk]                         # optional in paper mode
 # max_order_notional    = "2000"

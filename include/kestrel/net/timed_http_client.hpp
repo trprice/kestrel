@@ -64,8 +64,9 @@ void LogLatency(const std::vector<types::EndpointLatency>& summary);
 // Times every call of the client it wraps, and warns when one is slow. The
 // time is the whole Send(): connect, request and response, for one attempt, so
 // a call that the caller retries shows up as several samples. The endpoint is
-// the method and the URL without its query string, so signatures and
-// parameters never reach the log or the statistics.
+// the method and the URL without its query string (or the request's label),
+// so signatures, parameters and account IDs never reach the log or the
+// statistics.
 class TimedHttpClient : public HttpClient {
    public:
     using Clock = std::function<std::chrono::steady_clock::time_point()>;

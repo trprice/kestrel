@@ -183,6 +183,19 @@ TEST(TimedHttpClient, KeysByMethodAndUrlButNeverTheQuery) {
     EXPECT_EQ(rows[0].endpoint.find("KEY"), std::string::npos);
 }
 
+TEST(TimedHttpClient, KeysByTheLabelWhenTheRequestHasOne) {
+    Fixture f;
+    HttpRequest request = Get("https://x.test/accounts/HASH/orders/42");
+    request.label = "https://x.test/accounts/{account}/orders/{id}";
+    ASSERT_TRUE(f.client.Send(request).has_value());
+
+    EXPECT_EQ(f.inner->last.url, "https://x.test/accounts/HASH/orders/42");
+    const auto rows = f.stats->Summarize(false);
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].endpoint,
+              "GET https://x.test/accounts/{account}/orders/{id}");
+}
+
 TEST(TimedHttpClient, SeparatesMethodsOnTheSameUrl) {
     Fixture f;
     HttpRequest get = Get("https://x.test/api/v3/order");
