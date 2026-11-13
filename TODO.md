@@ -1,10 +1,10 @@
 # Kestrel TODO
 
 The strategy, risk and backtest code runs on Binance.US, in paper mode and
-live; `run` refuses live mode on any other provider until its trading venue
-is implemented (`HasLiveVenue` in `factory.cpp`). The Kraken and Schwab
-trading venues are stubs (see Venues under Projects); Schwab's market data is
-real (see Schwab data source under In progress).
+live, and on Schwab in paper mode; Schwab's trading venue is written but stays
+off live until `[schwab] live_trading` (see Schwab data source under In
+progress). `run` refuses live mode on Kraken, whose trading venue is a stub
+(see Venues under Projects; `NoLiveVenue` in `factory.cpp`).
 
 Order of this file: Priorities, In progress, Projects (each by priority), then
 the reference sections, Known limitations and Done.
@@ -51,10 +51,11 @@ forming one; the volume can be fractional (REST truncates it); the bars match
       `STOP_STREAMING` (code 30): none has been seen live. The handling is
       defensive (see Done); renewals work, and do not rotate the refresh
       token, so the 7 days still run from `authorize`.
-- [ ] Then the trading venue (see Venues under Projects). Its header's TODO
-      lists the endpoints, built on `SchwabAuth` and `SchwabApi`; pushed
-      executions (ACCT_ACTIVITY) would have to share `SchwabStreamer`'s
-      connection.
+- [ ] Check the trading venue (see Done) on a real account, then default
+      `[schwab] live_trading` on: `order --test` (previewOrder), a resting
+      limit placed and cancelled, an ETF's `assetType`, an OCO's legs
+      cancelling each other, `activityId` on fills, and the balance fields of
+      cash and margin accounts.
 
 ## Projects
 
@@ -75,11 +76,9 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
       history, signed with the existing HMAC helper. Data source is already
       done.
-- [ ] **Schwab trading venue.** Orders, open orders, fills, positions and
-      balances on the Trader API, after the data source (see Schwab data
-      source under In progress). It can reuse `SchwabAuth` and `SchwabApi`,
-      which already handle tokens, renewal and retrying once after a 401;
-      order placement has its own rate limit.
+- [ ] Schwab pushed executions: `ACCT_ACTIVITY` behind
+      `SchwabTradingVenue::StreamExecutions`, on `SchwabStreamer`'s one
+      connection. Until then fills and order changes are polled, every 5 s.
 - [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
       until a fill shows in `GetFills`, and the venue's clock against ours,
       stored beside `venue_latency`.
@@ -569,7 +568,20 @@ the header of the code concerned.
 - `backtest` records nothing.
 
 ### Venues and data
-- Kraken and Schwab trading venues are stubs that return `kNotImplemented`.
+- The Kraken trading venue is a stub that returns `kNotImplemented`.
+- Schwab orders are for the regular session, even with `extended_hours`.
+  There is no post-only order (refused), so an OCO's limit leg is a plain
+  limit, and no client order ID: `client_order_id` is known only for orders
+  the running process placed. A placement lost to a timeout is found by its
+  symbol, side, type, duration, quantity, price and time, and not guessed at
+  when two orders fit.
+- Schwab executions give no fee (the SEC and TAF fees on sales) or
+  liquidity: fills say 0 USD and taker.
+- Schwab: one malformed order anywhere on the account (on any symbol) fails
+  the whole read of open orders or fills, and so `run`'s startup.
+- Schwab margin accounts: cash is read from the non-marginable fields, so
+  that borrowing power does not count; a margin loan makes the USD total
+  negative and nothing available.
 - The Binance.US venue runs live under `run`, polled for fills (no user-data
   stream yet). Its `GetPositions` returns nothing, so the risk gate counts
   only what filled since the run started (see Risk gate above).
@@ -620,8 +632,8 @@ the header of the code concerned.
   max_quote_age_ms` the gate refuses new positions in it until quotes
   return. A bar strategy's feed is not checked.
 - Schwab's `GetSymbolInfo` sets the tick from the price when first asked
-  (0.0001 under $1), so a stock that crosses $1 during a run keeps its old
-  tick until the next one.
+  (0.0001 under $1). The trading venue takes the tick from each order's
+  price; paper mode keeps the first until the next run.
 
 ## Done
 
@@ -838,6 +850,14 @@ the header of the code concerned.
       on 2026-10-29), and `market_maker` traded live on ZEC/USDT in Oct-Nov
       2026. `run` cancels every open order on its symbols before starting.
       Fills are polled; the user-data stream is under Venues in Projects.
+- [x] Schwab trading venue (`SchwabTradingVenue`), on `SchwabAuth` and its
+      own `SchwabApi`: market, limit and stop orders, OCO, previewOrder
+      (`order --test`), cancels, open orders, fills, positions and balances
+      (cash and margin accounts, with the shares held). Only the configured
+      symbols' orders and fills count, so `CancelAll` leaves the rest of the
+      account alone. Order fetches start at the oldest order working at the
+      last one, not 180 days back each poll. `[schwab] account_number` picks
+      the account; `[schwab] live_trading` (default off) lets `run` trade.
 
 ### Market hours
 - [x] `DataSource::Hours()`: always open for crypto; for Schwab, the US

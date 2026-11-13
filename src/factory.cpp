@@ -101,8 +101,9 @@ Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
 // source fails to build without the app's credentials and a token file from
 // `kestrel_app authorize`. An expired refresh token fails here, loudly, rather
 // than at the first request.
-Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
-    const config::SchwabConfiguration& cfg) {
+Result<std::shared_ptr<data::SchwabAuth>> MakeSchwabAuth(
+    const config::SchwabConfiguration& cfg,
+    const std::shared_ptr<net::HttpClient>& http) {
     if (!cfg.Credentials()) {
         return MakeError(
             ErrorCategory::kAuth,
@@ -110,13 +111,19 @@ Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
             "paper mode; set KESTREL_SCHWAB_APP_KEY and "
             "KESTREL_SCHWAB_APP_SECRET or add them to the secrets file");
     }
-    auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
     auto auth = std::make_shared<data::SchwabAuth>(
         *cfg.Credentials(), config::SchwabTokenStore(cfg.TokenFile()), http,
         cfg.RedirectUri());
     if (auto loaded = auth->Load(); !loaded) {
         return std::unexpected(loaded.error());
     }
+    return auth;
+}
+
+std::shared_ptr<data::SchwabDataSource> MakeSchwabDataSourceFromAuth(
+    const config::SchwabConfiguration& cfg,
+    const std::shared_ptr<data::SchwabAuth>& auth,
+    const std::shared_ptr<net::HttpClient>& http) {
     data::SchwabDataSource::Options options;
     options.extended_hours = cfg.ExtendedHours();
     options.takeover_reconnect = cfg.TakeoverReconnect();
@@ -126,20 +133,38 @@ Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
         std::move(options));
 }
 
-Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
-    auto ds = MakeSchwabDataSource(cfg);
-    if (!ds) {
-        return std::unexpected(ds.error());
+Result<std::shared_ptr<data::SchwabDataSource>> MakeSchwabDataSource(
+    const config::SchwabConfiguration& cfg) {
+    auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
+    auto auth = MakeSchwabAuth(cfg, http);
+    if (!auth) {
+        return std::unexpected(auth.error());
     }
+    return MakeSchwabDataSourceFromAuth(cfg, *auth, http);
+}
+
+Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
+    auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
+    auto auth = MakeSchwabAuth(cfg, http);
+    if (!auth) {
+        return std::unexpected(auth.error());
+    }
+    auto ds = MakeSchwabDataSourceFromAuth(cfg, *auth, http);
     if (cfg.GetMode() == config::Mode::kPaper) {
-        auto venue = MakePaper(cfg, *ds);
+        auto venue = MakePaper(cfg, ds);
         if (!venue) {
             return std::unexpected(venue.error());
         }
-        return Components{*ds, std::move(*venue)};
+        return Components{ds, std::move(*venue)};
     }
-    return Components{*ds, std::make_unique<trading::SchwabTradingVenue>(
-                               *cfg.Credentials(), *ds)};
+    trading::SchwabTradingVenue::Options venue_options;
+    venue_options.account_number = cfg.AccountNumber();
+    venue_options.symbols = cfg.GetSymbols();
+    auto trader_api = std::make_shared<data::SchwabApi>(
+        *auth, http, data::SchwabApi::Options{});
+    return Components{ds,
+                      std::make_unique<trading::SchwabTradingVenue>(
+                          std::move(trader_api), ds, std::move(venue_options))};
 }
 
 using StrategyPtr = std::unique_ptr<strategy::Strategy>;
@@ -693,12 +718,34 @@ constexpr StrategyEntry kStrategies[] = {
     {"mean_reversion", BuildMeanReversion},
 };
 
-// Whether the provider's TradingVenue is a real implementation.
-// TODO: add Schwab and Kraken as their venues are completed (TODO.md,
-// Venues).
-bool HasLiveVenue(config::Provider provider) {
-    return provider == config::Provider::kBinanceUS;
+// Why `run` may not trade live with `cfg`, or nothing if it may. Kraken's
+// venue is a stub (TODO.md, Venues); Schwab's is real but off until
+// [schwab] live_trading, as it has not traded on a real account yet.
+std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
+    switch (cfg.GetProvider()) {
+        case config::Provider::kBinanceUS:
+            return std::nullopt;
+        case config::Provider::kSchwab:
+            if (const auto* schwab =
+                    dynamic_cast<const config::SchwabConfiguration*>(&cfg);
+                schwab && schwab->LiveTrading()) {
+                return std::nullopt;
+            }
+            return "live trading on schwab is off until the venue has been "
+                   "checked on a real account; set [schwab] live_trading = "
+                   "true to turn it on";
+        case config::Provider::kKraken:
+            break;
+    }
+    return "live trading on " +
+           std::string(config::ToString(cfg.GetProvider())) +
+           " is not implemented yet";
 }
+
+// Schwab's fills and order changes are polled (no pushed executions yet), and
+// each poll is two requests against the app's 120 a minute, which the data
+// source shares.
+constexpr std::chrono::milliseconds kSchwabFillPollInterval{5000};
 
 }  // namespace
 
@@ -795,11 +842,8 @@ Result<void> ValidateForRun(const config::Configuration& cfg,
                          "live mode needs a [risk] section with at least one "
                          "limit");
     }
-    if (!HasLiveVenue(cfg.GetProvider())) {
-        return MakeError(ErrorCategory::kNotImplemented,
-                         "live trading on " +
-                             std::string(config::ToString(cfg.GetProvider())) +
-                             " is not implemented yet");
+    if (auto why = NoLiveVenue(cfg)) {
+        return MakeError(ErrorCategory::kNotImplemented, std::move(*why));
     }
     return {};
 }
@@ -890,6 +934,10 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
             cfg.GetPaperOptions().default_quote_asset;
     }
     options.cancel_entries_on_stop = true;
+    if (cfg.GetProvider() == config::Provider::kSchwab &&
+        cfg.GetMode() == config::Mode::kLive) {
+        options.fill_poll_interval = kSchwabFillPollInterval;
+    }
     if (cfg.GetRecording().enabled) {
         auto log = make_log(cfg, strategy_name,
                             std::string(components->venue->Name()));

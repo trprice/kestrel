@@ -1,5 +1,6 @@
 #include <spdlog/spdlog.h>
 
+#include <functional>
 #include <iostream>
 
 #include "command.hpp"
@@ -7,24 +8,28 @@
 #include "kestrel/factory.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/risk_gate.hpp"
+#include "kestrel/trading/schwab_trading_venue.hpp"
 
 namespace kestrel::app {
 
 namespace {
 
-// Passes everything to the Binance.US venue except PlaceOrder, which goes to
-// its test endpoint instead, so `order --test` goes through the risk gate
-// like a real order and places nothing.
+// Passes everything to the underlying venue except PlaceOrder, which goes to
+// its test/preview endpoint instead, so `order --test` goes through the risk
+// gate like a real order and places nothing.
 class TestEndpointVenue final : public trading::TradingVenue {
    public:
-    explicit TestEndpointVenue(
-        std::shared_ptr<trading::BinanceUSTradingVenue> venue)
-        : mVenue(std::move(venue)) {}
+    using TestOrderFn =
+        std::function<types::Result<void>(const types::OrderRequest&)>;
+
+    TestEndpointVenue(std::shared_ptr<trading::TradingVenue> venue,
+                      TestOrderFn test_order)
+        : mVenue(std::move(venue)), mTestOrder(std::move(test_order)) {}
 
     std::string_view Name() const override { return mVenue->Name(); }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override {
-        if (auto tested = mVenue->TestOrder(request); !tested) {
+        if (auto tested = mTestOrder(request); !tested) {
             return std::unexpected(tested.error());
         }
         return types::OrderAcknowledgement{
@@ -60,7 +65,8 @@ class TestEndpointVenue final : public trading::TradingVenue {
     }
 
    private:
-    std::shared_ptr<trading::BinanceUSTradingVenue> mVenue;
+    std::shared_ptr<trading::TradingVenue> mVenue;
+    TestOrderFn mTestOrder;
 };
 
 // The close of the newest 1-minute bar in the last 15 minutes, to value a
@@ -130,15 +136,24 @@ class OrderCommand : public Command {
         std::shared_ptr<trading::TradingVenue> venue =
             std::move(components->venue);
         if (mArgs.test) {
-            auto binance =
-                std::dynamic_pointer_cast<trading::BinanceUSTradingVenue>(
-                    venue);
-            if (!binance) {
+            if (auto binance =
+                    std::dynamic_pointer_cast<trading::BinanceUSTradingVenue>(
+                        venue)) {
+                venue = std::make_shared<TestEndpointVenue>(
+                    venue, [binance](const types::OrderRequest& r) {
+                        return binance->TestOrder(r);
+                    });
+            } else if (auto schwab = std::dynamic_pointer_cast<
+                           trading::SchwabTradingVenue>(venue)) {
+                venue = std::make_shared<TestEndpointVenue>(
+                    venue, [schwab](const types::OrderRequest& r) {
+                        return schwab->TestOrder(r);
+                    });
+            } else {
                 spdlog::error("order --test: {} has no test endpoint",
                               venue->Name());
                 return 2;
             }
-            venue = std::make_shared<TestEndpointVenue>(std::move(binance));
         }
 
         const auto limits = ManualOrderLimits(config.GetRiskLimits());

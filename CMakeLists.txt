@@ -233,6 +233,7 @@ if(KESTREL_BUILD_TESTS)
     tests/schwab_auth_test.cpp
     tests/schwab_data_source_test.cpp
     tests/schwab_streamer_test.cpp
+    tests/schwab_trading_venue_test.cpp
     tests/binanceus_api_test.cpp
     tests/binanceus_trading_venue_test.cpp
     tests/risk_gate_test.cpp

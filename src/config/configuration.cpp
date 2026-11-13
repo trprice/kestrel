@@ -965,7 +965,7 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (auto ok = ConfigParser::RejectUnknownKeys(
             section, "schwab",
             {"redirect_uri", "token_file", "extended_hours",
-             "takeover_reconnect_ms"});
+             "takeover_reconnect_ms", "account_number", "live_trading"});
         !ok) {
         return std::unexpected(ok.error());
     }
@@ -986,13 +986,25 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (token_file.is_relative()) {
         token_file = options.base_dir / token_file;
     }
-    bool extended_hours = false;
-    if (const auto* node = section ? section->get("extended_hours") : nullptr) {
-        if (!node->is_boolean()) {
-            return MakeError(ErrorCategory::kInvalidArgument,
-                             "[schwab] extended_hours must be true or false");
+    const auto flag = [&](const char* key) -> Result<bool> {
+        const auto* node = section ? section->get(key) : nullptr;
+        if (!node) {
+            return false;
         }
-        extended_hours = node->value_or(false);
+        if (!node->is_boolean()) {
+            return MakeError(
+                ErrorCategory::kInvalidArgument,
+                std::string("[schwab] ") + key + " must be true or false");
+        }
+        return node->value_or(false);
+    };
+    auto extended_hours = flag("extended_hours");
+    if (!extended_hours) {
+        return std::unexpected(extended_hours.error());
+    }
+    auto live_trading = flag("live_trading");
+    if (!live_trading) {
+        return std::unexpected(live_trading.error());
     }
     std::chrono::milliseconds takeover_reconnect{0};
     if (const auto* node =
@@ -1011,9 +1023,15 @@ Result<SchwabConfiguration> SchwabConfiguration::Parse(std::string_view text,
     if (!redirect_uri) {
         return std::unexpected(redirect_uri.error());
     }
+    auto account_number =
+        ConfigParser::Str(section, "schwab", "account_number", "");
+    if (!account_number) {
+        return std::unexpected(account_number.error());
+    }
     return SchwabConfiguration(std::move(*common), std::move(*redirect_uri),
                                std::move(token_file), std::move(*creds),
-                               extended_hours, takeover_reconnect);
+                               *extended_hours, takeover_reconnect,
+                               std::move(*account_number), *live_trading);
 }
 
 Result<SchwabConfiguration> SchwabConfiguration::Load(

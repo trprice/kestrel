@@ -337,6 +337,24 @@ TEST(Config, SchwabSettings) {
     EXPECT_FALSE(config::SchwabConfiguration::Parse(
                      base + "[schwab]\ntakeover_reconnect_ms=-1\n", NoEnv())
                      .has_value());
+
+    EXPECT_TRUE(cfg->AccountNumber().empty());
+    auto account = config::SchwabConfiguration::Parse(
+        base + "[schwab]\naccount_number='12345678'\n", NoEnv());
+    ASSERT_OK(account);
+    EXPECT_EQ(account->AccountNumber(), "12345678");
+    EXPECT_FALSE(config::SchwabConfiguration::Parse(
+                     base + "[schwab]\naccount_number=12345678\n", NoEnv())
+                     .has_value());
+
+    EXPECT_FALSE(cfg->LiveTrading());
+    auto live = config::SchwabConfiguration::Parse(
+        base + "[schwab]\nlive_trading=true\n", NoEnv());
+    ASSERT_OK(live);
+    EXPECT_TRUE(live->LiveTrading());
+    EXPECT_FALSE(config::SchwabConfiguration::Parse(
+                     base + "[schwab]\nlive_trading='yes'\n", NoEnv())
+                     .has_value());
 }
 
 TEST(Config, LoadConfigurationDispatchesOnProvider) {
@@ -1227,6 +1245,23 @@ TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {
         WithTables("[risk]\nmax_open_orders=1\n", "live"), env);
     ASSERT_OK(live);
     EXPECT_TRUE(ValidateForRun(*live, live->GetRiskLimits()).has_value());
+
+    // Schwab's venue is off until [schwab] live_trading turns it on.
+    const std::string schwab_base =
+        "[general]\nprovider='schwab'\nmode='live'\nsymbols=['SPY']\n"
+        "[risk]\nmax_open_orders=1\n";
+    auto schwab_off = config::SchwabConfiguration::Parse(schwab_base, NoEnv());
+    ASSERT_OK(schwab_off);
+    auto schwab_refused =
+        ValidateForRun(*schwab_off, schwab_off->GetRiskLimits());
+    ASSERT_FALSE(schwab_refused);
+    EXPECT_NE(schwab_refused.error().message.find("live_trading"),
+              std::string::npos);
+    auto schwab_on = config::SchwabConfiguration::Parse(
+        schwab_base + "[schwab]\nlive_trading=true\n", NoEnv());
+    ASSERT_OK(schwab_on);
+    EXPECT_TRUE(
+        ValidateForRun(*schwab_on, schwab_on->GetRiskLimits()).has_value());
 
     // Kraken's venue is still a stub.
     auto stub = config::KrakenConfiguration::Parse(

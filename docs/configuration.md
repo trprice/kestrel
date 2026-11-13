@@ -72,9 +72,10 @@ production endpoints). `[schwab]` takes `redirect_uri` (default
 Schwab developer portal exactly, `token_file`, and `extended_hours` (default
 `false`): intraday bars from outside the regular session too (pre-market,
 after hours and the overnight session), from `GetBars` and from the bar
-stream alike, and orders in Schwab's extended hours (07:00 to 09:30 and the
-close to 20:00 New York time; not overnight). Without it, orders are refused
-outside the regular session. The trading days, holidays and early closes come
+stream alike, and, in paper mode, orders in Schwab's extended hours (07:00
+to 09:30 and the close to 20:00 New York time; not overnight). Without it,
+orders are refused outside the regular session. Live orders are always for
+the regular session. The trading days, holidays and early closes come
 from Kestrel's US equity calendar, checked against Schwab's `/markets` for the
 coming days.
 
@@ -84,6 +85,14 @@ bar streams are disconnected. `[schwab] takeover_reconnect_ms` says what then
 happens: 0, the default, stops the streams for good (the other one is presumed
 to be wanted), and their subscriptions go quiet; more than 0 waits that long
 and reconnects, which in turn disconnects the other one.
+
+Live trading on Schwab is off until `[schwab] live_trading = true` (default
+`false`): the trading venue has not yet traded on a real account. With more
+than one account on the login, `[schwab] account_number` (a string, the
+number or its hashValue) picks the one to trade; otherwise it is the first.
+Live, the runner polls Schwab for fills every 5 seconds, and only orders and
+fills on `[general] symbols` are Kestrel's: orders on other symbols are left
+alone, at startup and by the risk gate's kill switch.
 
 ## `[paper]`
 

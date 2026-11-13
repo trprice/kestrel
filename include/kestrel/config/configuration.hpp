@@ -255,25 +255,36 @@ class SchwabConfiguration : public Configuration {
     std::chrono::milliseconds TakeoverReconnect() const {
         return mTakeoverReconnect;
     }
+    // [schwab] account_number: the account to trade (its number or its
+    // hashValue) when the login has more than one. Empty: the first.
+    const std::string& AccountNumber() const { return mAccountNumber; }
+    // [schwab] live_trading: whether `run` may trade live on Schwab. Default
+    // false, until the trading venue has been checked on a real account.
+    bool LiveTrading() const { return mLiveTrading; }
 
    private:
     SchwabConfiguration(CommonSettings c, std::string redirect,
                         std::filesystem::path token_file,
                         std::optional<SchwabCredentials> cr,
                         bool extended_hours,
-                        std::chrono::milliseconds takeover_reconnect)
+                        std::chrono::milliseconds takeover_reconnect,
+                        std::string account_number, bool live_trading)
         : Configuration(std::move(c)),
           mRedirectUri(std::move(redirect)),
           mTokenFile(std::move(token_file)),
           mCredentials(std::move(cr)),
           mExtendedHours(extended_hours),
-          mTakeoverReconnect(takeover_reconnect) {}
+          mTakeoverReconnect(takeover_reconnect),
+          mAccountNumber(std::move(account_number)),
+          mLiveTrading(live_trading) {}
     friend class ConfigParser;
     std::string mRedirectUri;
     std::filesystem::path mTokenFile;
     std::optional<SchwabCredentials> mCredentials;
     bool mExtendedHours = false;
     std::chrono::milliseconds mTakeoverReconnect{0};
+    std::string mAccountNumber;
+    bool mLiveTrading = false;
 };
 
 // Reads [general] provider from the file and returns the matching subclass.
