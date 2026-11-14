@@ -90,6 +90,11 @@ Result<std::vector<types::Fill>> AccountFillStore::Load(
     return fills;
 }
 
+// Re-read before the newest stored fill: a venue may report a fill late
+// (Schwab's transactions can lag the executions they index), after a newer
+// one was stored.
+constexpr std::chrono::hours kSyncOverlap{1};
+
 Result<types::Timestamp> SyncStart(const AccountFillStore& store,
                                    const std::string& venue,
                                    const std::vector<types::Symbol>& symbols,
@@ -103,7 +108,8 @@ Result<types::Timestamp> SyncStart(const AccountFillStore& store,
         if (!newest) {
             return std::unexpected(newest.error());
         }
-        start = std::min(start, newest->value_or(first_since));
+        start = std::min(start, *newest ? **newest - kSyncOverlap
+                                        : first_since);
     }
     return start;
 }

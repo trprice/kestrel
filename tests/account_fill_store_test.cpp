@@ -139,10 +139,11 @@ TEST_F(AccountFillStoreTest, SyncStartsBackThenCarriesOnFromTheNewest) {
     venue.fills.push_back(FillOf("c", 30));
     auto second = db::SyncAccountFills(venue, *mStore, {"ZEC/USDT"}, At(0));
     ASSERT_OK(second);
-    EXPECT_EQ(second->since, At(20));  // the newest stored
-    EXPECT_EQ(second->fetched, 2u);    // b again, and c
-    EXPECT_EQ(second->stored, 1u);
-    EXPECT_EQ(mStore->Load(kVenue, At(-1000), At(1000))->size(), 3u);
+    // An hour before the newest stored: old, a and b again, and c.
+    EXPECT_EQ(second->since, At(20 - 3600));
+    EXPECT_EQ(second->fetched, 4u);
+    EXPECT_EQ(second->stored, 2u);  // c, and old (before the first sync)
+    EXPECT_EQ(mStore->Load(kVenue, At(-1000), At(1000))->size(), 4u);
 }
 
 TEST_F(AccountFillStoreTest, ASymbolNotSyncedBeforeStartsBackFromFirstSince) {
@@ -150,11 +151,11 @@ TEST_F(AccountFillStoreTest, ASymbolNotSyncedBeforeStartsBackFromFirstSince) {
     venue.fills = {FillOf("a", 10)};
     ASSERT_OK(db::SyncAccountFills(venue, *mStore, {"ZEC/USDT"}, At(0)));
 
-    venue.fills.push_back(FillOf("btc", 5, "BTC/USDT"));
-    auto sync =
-        db::SyncAccountFills(venue, *mStore, {"ZEC/USDT", "BTC/USDT"}, At(0));
+    venue.fills.push_back(FillOf("btc", -5000, "BTC/USDT"));
+    auto sync = db::SyncAccountFills(venue, *mStore, {"ZEC/USDT", "BTC/USDT"},
+                                     At(-9000));
     ASSERT_OK(sync);
-    EXPECT_EQ(sync->since, At(0));  // BTC/USDT has nothing stored yet
+    EXPECT_EQ(sync->since, At(-9000));  // BTC/USDT has nothing stored yet
     EXPECT_EQ(sync->stored, 1u);
 }
 
@@ -173,13 +174,14 @@ TEST_F(AccountFillStoreTest, SyncStartIsTheOldestNewestOrFirstSince) {
                                             FillOf("b", 50, "BTC/USDT")};
     ASSERT_OK(mStore->Save(kVenue, fills));
     EXPECT_EQ(db::SyncStart(*mStore, kVenue, {"ZEC/USDT"}, At(0)).value(),
-              At(30));
+              At(30 - 3600));
     EXPECT_EQ(
         db::SyncStart(*mStore, kVenue, {"ZEC/USDT", "BTC/USDT"}, At(0)).value(),
-        At(30));
+        At(30 - 3600));
     EXPECT_EQ(
-        db::SyncStart(*mStore, kVenue, {"ZEC/USDT", "ETH/USDT"}, At(0)).value(),
-        At(0));  // ETH/USDT has nothing stored
+        db::SyncStart(*mStore, kVenue, {"ZEC/USDT", "ETH/USDT"}, At(-9000))
+            .value(),
+        At(-9000));  // ETH/USDT has nothing stored
 }
 
 TEST_F(AccountFillStoreTest, ARowWithAnUnknownSideOrLiquidityIsAParseError) {

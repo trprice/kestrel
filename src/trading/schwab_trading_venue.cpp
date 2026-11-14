@@ -50,6 +50,12 @@ constexpr std::chrono::minutes kMinSplitSpan{1};
 // Order fetches remembered for narrowing the next; past this the oldest two
 // are merged.
 constexpr std::size_t kMaxScans = 1024;
+// Schwab does not document how many transactions one request returns; at
+// this many, some may be missing and the window is widened instead.
+constexpr std::size_t kTransactionsTrusted = 1000;
+// Orders entered before a fills window that traded in it, looked up one by
+// one; past this the window is widened instead.
+constexpr std::size_t kMaxOrderLookups = 8;
 
 // Whether Schwab may have acted on a request that failed.
 bool OutcomeUnknown(ErrorCategory category) {
@@ -1189,6 +1195,50 @@ std::optional<types::Timestamp> WorkingSince(
     return std::min(*since, outer.value_or(*since));
 }
 
+// The IDs of `order` and the orders inside it.
+void CollectOrderIds(const json& order, std::unordered_set<std::string>& out) {
+    if (!order.is_object()) {
+        return;
+    }
+    if (auto id = IdMember(order, "orderId")) {
+        out.insert(std::move(*id));
+    }
+    for (const char* key :
+         {"childOrderStrategies", "replacingOrderCollection"}) {
+        if (const auto it = order.find(key);
+            it != order.end() && it->is_array()) {
+            for (const auto& child : *it) {
+                CollectOrderIds(child, out);
+            }
+        }
+    }
+}
+
+// The symbol a TRADE transaction moved (its one non-currency item), if it
+// can be read.
+std::optional<types::Symbol> TransactionSymbol(const json& transaction) {
+    const auto items = transaction.find("transferItems");
+    if (items == transaction.end() || !items->is_array()) {
+        return std::nullopt;
+    }
+    for (const auto& item : *items) {
+        if (!item.is_object()) {
+            continue;
+        }
+        const auto inst = item.find("instrument");
+        if (inst == item.end() || !inst->is_object() ||
+            OptionalText(*inst, "assetType") == "CURRENCY") {
+            continue;
+        }
+        if (auto symbol =
+                data::FromSchwabSymbol(OptionalText(*inst, "symbol"))) {
+            return *symbol;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
 // Whether the order `id`, in `order` or inside it, has Schwab status `status`.
 bool HasStatus(const json& order, std::string_view id,
                std::string_view status) {
@@ -1476,21 +1526,24 @@ bool SchwabTradingVenue::IsOurs(const types::Symbol& symbol) const {
 // them; and each fetch knows the oldest order working when it ran. So the
 // orders to read start at the oldest of those. Without a fetch before
 // `since`, back as far as a GTC order lives.
+std::optional<types::Timestamp> SchwabTradingVenue::OldestWorkingSince(
+    types::Timestamp since) const {
+    std::optional<types::Timestamp> oldest;
+    std::lock_guard lock(mMutex);
+    auto it = std::ranges::upper_bound(mScans, since, {}, &OrderScan::time);
+    if (it != mScans.begin()) {
+        for (--it; it != mScans.end(); ++it) {
+            oldest = std::min(oldest.value_or(it->oldest_working),
+                              it->oldest_working);
+        }
+    }
+    return oldest;
+}
+
 types::Timestamp SchwabTradingVenue::OrdersFrom(types::Timestamp since,
                                                 types::Timestamp now) const {
     const auto earliest = now - kMaxOrderQuerySpan;
-    std::optional<types::Timestamp> oldest;
-    {
-        std::lock_guard lock(mMutex);
-        auto it = std::ranges::upper_bound(mScans, since, {}, &OrderScan::time);
-        if (it != mScans.begin()) {
-            for (--it; it != mScans.end(); ++it) {
-                oldest = std::min(oldest.value_or(it->oldest_working),
-                                  it->oldest_working);
-            }
-        }
-    }
-    if (oldest) {
+    if (const auto oldest = OldestWorkingSince(since)) {
         return std::clamp(*oldest - kQueryClockSkew, earliest, now);
     }
     const auto start = std::min(since, now);
@@ -2259,17 +2312,9 @@ Result<OrderStatus> SchwabTradingVenue::GetOrder(const std::string& order_id) {
     if (!hash) {
         return std::unexpected(hash.error());
     }
-    auto response =
-        SendGet(AccountUrl(*hash, "/orders/" + util::UrlEncode(order_id)));
-    if (!response) {
-        return std::unexpected(
-            FormatSchwabError(response.error(), "get order " + order_id));
-    }
-
-    auto parsed = util::ParseJson(response->body);
-    if (!parsed || !parsed->is_object()) {
-        return MakeError(ErrorCategory::kParse,
-                         "schwab get order: expected a JSON object");
+    auto parsed = FetchOrder(*hash, order_id);
+    if (!parsed) {
+        return std::unexpected(parsed.error());
     }
 
     // An unsupported sibling in an OCO is skipped, but the order asked for
@@ -2321,6 +2366,66 @@ Result<OrderStatus> SchwabTradingVenue::GetOrder(const std::string& order_id) {
         "schwab get order " + order_id + ": order ID not found in response");
 }
 
+Result<json> SchwabTradingVenue::FetchOrder(const std::string& hash,
+                                            const std::string& order_id) const {
+    auto response =
+        SendGet(AccountUrl(hash, "/orders/" + util::UrlEncode(order_id)));
+    if (!response) {
+        return std::unexpected(
+            FormatSchwabError(response.error(), "get order " + order_id));
+    }
+    auto parsed = util::ParseJson(response->body);
+    if (!parsed || !parsed->is_object()) {
+        return MakeError(ErrorCategory::kParse, "schwab get order " +
+                                                    order_id +
+                                                    ": expected a JSON object");
+    }
+    return parsed;
+}
+
+Result<std::optional<std::vector<std::string>>>
+SchwabTradingVenue::TradedOrderIds(const std::string& hash,
+                                   types::Timestamp since,
+                                   types::Timestamp now) const {
+    auto response = SendGet(
+        AccountUrl(hash, "/transactions"),
+        {{"startDate", types::FormatIso8601(since - kQueryClockSkew)},
+         {"endDate", types::FormatIso8601(now + kQueryClockSkew)},
+         {"types", "TRADE"}});
+    if (!response) {
+        return std::unexpected(
+            FormatSchwabError(response.error(), "transactions"));
+    }
+    auto parsed = util::ParseJson(response->body);
+    if (!parsed || !parsed->is_array()) {
+        return MakeError(ErrorCategory::kParse,
+                         "schwab transactions: expected a JSON array");
+    }
+    if (parsed->size() >= kTransactionsTrusted) {
+        return std::nullopt;
+    }
+    std::vector<std::string> ids;
+    std::unordered_set<std::string> seen;
+    for (const auto& transaction : *parsed) {
+        if (!transaction.is_object() ||
+            OptionalText(transaction, "type") != "TRADE") {
+            continue;
+        }
+        if (const auto symbol = TransactionSymbol(transaction);
+            symbol && !IsOurs(*symbol)) {
+            continue;
+        }
+        auto id = IdMember(transaction, "orderId");
+        if (!id) {
+            return std::nullopt;  // a trade we could not trace to its order
+        }
+        if (seen.insert(*id).second) {
+            ids.push_back(std::move(*id));
+        }
+    }
+    return ids;
+}
+
 Result<std::vector<types::Fill>> SchwabTradingVenue::GetFills(
     types::Timestamp since) {
     auto hash = AccountHash();
@@ -2328,9 +2433,83 @@ Result<std::vector<types::Fill>> SchwabTradingVenue::GetFills(
         return std::unexpected(hash.error());
     }
     const auto now = mOptions.clock();
+    if (!OldestWorkingSince(since) && since < now &&
+        since > now - kMaxOrderQuerySpan) {
+        if (auto fills = FillsInWindow(*hash, since, now)) {
+            return std::move(*fills);
+        }
+    }
+    return FillsFromOrders(*hash, since, now);
+}
+
+std::optional<Result<std::vector<types::Fill>>>
+SchwabTradingVenue::FillsInWindow(const std::string& hash,
+                                  types::Timestamp since,
+                                  types::Timestamp now) {
+    auto traded = TradedOrderIds(hash, since, now);
+    if (!traded || !*traded) {
+        if (!traded) {
+            spdlog::warn("schwab: reading fills from the orders instead: {}",
+                         traded.error().ToString());
+        }
+        return std::nullopt;
+    }
+    auto orders = FetchOrders(hash, since - kQueryClockSkew,
+                              now + kQueryClockSkew);
+    if (!orders) {
+        return std::unexpected(orders.error());
+    }
+    std::unordered_set<std::string> fetched;
+    for (const auto& item : *orders) {
+        CollectOrderIds(item, fetched);
+    }
+    std::vector<std::string> older;
+    for (auto& id : **traded) {
+        if (!fetched.contains(id)) {
+            older.push_back(std::move(id));
+        }
+    }
+    if (older.size() > kMaxOrderLookups) {
+        return std::nullopt;
+    }
+    for (const auto& id : older) {
+        auto order = FetchOrder(hash, id);
+        if (!order) {
+            spdlog::warn("schwab: reading fills from the orders instead: {}",
+                         order.error().ToString());
+            return std::nullopt;
+        }
+        orders->push_back(std::move(*order));
+    }
+
+    // Not recorded as a scan: an order entered before the window and still
+    // working is not among these, so the oldest working is unknown.
+    std::vector<types::Fill> fills;
+    std::unordered_set<std::string> seen_fills;
+    const auto client_ids = ClientIds();
+    for (const auto& item : *orders) {
+        if (auto ok = CollectFillsFromJson(item, since, client_ids, fills,
+                                           seen_fills);
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+    }
+    return OurFillsInOrder(std::move(fills));
+}
+
+std::vector<types::Fill> SchwabTradingVenue::OurFillsInOrder(
+    std::vector<types::Fill> fills) const {
+    std::erase_if(fills,
+                  [this](const types::Fill& f) { return !IsOurs(f.symbol); });
+    std::ranges::stable_sort(fills, {}, &types::Fill::time);
+    return fills;
+}
+
+Result<std::vector<types::Fill>> SchwabTradingVenue::FillsFromOrders(
+    const std::string& hash, types::Timestamp since, types::Timestamp now) {
     const auto from = OrdersFrom(since, now);
     auto parsed =
-        FetchOrders(*hash, from, std::max(now, since) + kQueryClockSkew);
+        FetchOrders(hash, from, std::max(now, since) + kQueryClockSkew);
     if (!parsed) {
         return std::unexpected(parsed.error());
     }
@@ -2358,11 +2537,8 @@ Result<std::vector<types::Fill>> SchwabTradingVenue::GetFills(
             oldest_working = std::min(oldest_working, *working);
         }
     }
-    std::erase_if(fills,
-                  [this](const types::Fill& f) { return !IsOurs(f.symbol); });
     RecordScan(now, oldest_working);
-    std::ranges::stable_sort(fills, {}, &types::Fill::time);
-    return fills;
+    return OurFillsInOrder(std::move(fills));
 }
 
 Result<std::vector<types::Position>> SchwabTradingVenue::GetPositions() {

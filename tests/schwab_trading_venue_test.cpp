@@ -731,6 +731,9 @@ TEST_F(SchwabTradingVenueTest,
         if (r.url.ends_with("/accounts/accountNumbers")) {
             return Ok(kSingleAccount);
         }
+        if (r.url.ends_with("/transactions")) {
+            return Ok("[]");
+        }
         // Even when GetFills(Timestamp{}) is called, fromEnteredTime must be
         // clamped within 1 year of `mNow` (2026-11-05).
         EXPECT_GE(*types::ParseIso8601(r.query.at("fromEnteredTime")),
@@ -2134,6 +2137,9 @@ TEST_F(SchwabTradingVenueTest,
         if (r.url.ends_with("/accounts/accountNumbers")) {
             return Ok(kSingleAccount);
         }
+        if (r.url.ends_with("/transactions")) {
+            return HttpStatus(403);  // so the fills come from the long fetch
+        }
         from_param = r.query.at("fromEnteredTime");
         to_param = r.query.at("toEnteredTime");
         return Ok("[]");
@@ -2221,11 +2227,16 @@ TEST_F(SchwabTradingVenueTest, OnlyTheConfiguredSymbolsOrdersAndFillsAreOurs) {
 
 TEST_F(SchwabTradingVenueTest, OrderFetchesStartAtTheOldestWorkingOrder) {
     std::vector<std::string> froms;
+    int transactions = 0;
     std::string orders =
         "[" + WorkingOrder(1, "SPY", "2026-11-04T10:00:00+0000") + "]";
     mHttp->reply = [&](const net::HttpRequest& r) {
         if (r.url.ends_with("/accounts/accountNumbers")) {
             return Ok(kSingleAccount);
+        }
+        if (r.url.ends_with("/transactions")) {
+            ++transactions;
+            return Ok("[]");
         }
         froms.push_back(r.query.at("fromEnteredTime"));
         return Ok(orders);
@@ -2260,10 +2271,164 @@ TEST_F(SchwabTradingVenueTest, OrderFetchesStartAtTheOldestWorkingOrder) {
     ASSERT_OK(venue.GetFills(quiet - 30s));
     EXPECT_EQ(from(5), At("2026-11-04T09:55:00Z"));
 
-    // Fills since before any fetch: 180 days before `since`.
+    EXPECT_EQ(transactions, 0);
+
+    // Fills since before any fetch: the orders entered since then (and the
+    // older ones the transactions show trading, none here).
     const auto early = At("2026-11-01T00:00:00Z");
     ASSERT_OK(venue.GetFills(early));
-    EXPECT_EQ(from(6), early - std::chrono::days(180));
+    EXPECT_EQ(transactions, 1);
+    EXPECT_EQ(from(6), early - 5min);
+}
+
+// A TRADE transaction for order `order_id` on `symbol`.
+std::string Trade(int order_id, std::string_view symbol) {
+    return json{{"activityId", order_id * 10 + 1},
+                {"type", "TRADE"},
+                {"orderId", order_id},
+                {"transferItems",
+                 {{{"instrument",
+                    {{"assetType", "CURRENCY"}, {"symbol", "CURRENCY_USD"}}},
+                   {"feeType", "COMMISSION"}},
+                  {{"instrument",
+                    {{"assetType", "EQUITY"}, {"symbol", symbol}}},
+                   {"amount", 1}}}}}
+        .dump();
+}
+
+TEST_F(SchwabTradingVenueTest,
+       FillsBeforeAnyFetchComeFromTheWindowAndTheOrdersTradedInIt) {
+    std::map<std::string, std::string> transaction_query;
+    std::string orders_from;
+    std::vector<std::string> looked_up;
+    mHttp->reply = [&](const net::HttpRequest& r) {
+        if (r.url.ends_with("/accounts/accountNumbers")) {
+            return Ok(kSingleAccount);
+        }
+        if (r.url.ends_with("/transactions")) {
+            transaction_query = r.query;
+            // 3 was entered in the window, 5 before it, 9 is not ours.
+            return Ok("[" + Trade(3, "SPY") + "," + Trade(5, "SPY") + "," +
+                      Trade(9, "AAPL") + "," + Trade(5, "SPY") +
+                      R"(,{"type":"RECEIVE_AND_DELIVER","orderId":7}])");
+        }
+        if (r.url.ends_with("/orders")) {
+            orders_from = r.query.at("fromEnteredTime");
+            return Ok("[" +
+                      WorkingOrder(3, "SPY", "2026-11-05T14:20:00+0000",
+                                   "2026-11-05T14:21:00+0000") +
+                      "]");
+        }
+        looked_up.push_back(r.url.substr(r.url.rfind('/') + 1));
+        return Ok(WorkingOrder(5, "SPY", "2026-10-01T14:00:00+0000",
+                               "2026-11-05T14:30:00+0000"));
+    };
+    auto venue = Venue("", {"SPY"});
+
+    auto fills = venue.GetFills(At("2026-11-05T14:00:00Z"));
+    ASSERT_OK(fills);
+    EXPECT_EQ(transaction_query["startDate"], "2026-11-05T13:55:00.000Z");
+    EXPECT_EQ(transaction_query["endDate"], "2026-11-05T15:05:00.000Z");
+    EXPECT_EQ(transaction_query["types"], "TRADE");
+    EXPECT_EQ(orders_from, "2026-11-05T13:55:00.000Z");
+    EXPECT_EQ(looked_up, std::vector<std::string>{"5"});
+    ASSERT_EQ(fills->size(), 2u);
+    EXPECT_EQ((*fills)[0].fill_id, "3:30:0");
+    EXPECT_EQ((*fills)[1].fill_id, "5:50:0");
+}
+
+TEST_F(SchwabTradingVenueTest,
+       FillsFallBackToTheLongFetchWhenAnOlderOrderIsNotKnown) {
+    // A trade without an order ID, and a lookup that fails.
+    for (const std::string& trade :
+         {std::string(R"({"type":"TRADE","activityId":1})"),
+          Trade(5, "SPY")}) {
+        std::vector<std::string> froms;
+        mHttp->reply = [&](const net::HttpRequest& r) {
+            if (r.url.ends_with("/accounts/accountNumbers")) {
+                return Ok(kSingleAccount);
+            }
+            if (r.url.ends_with("/transactions")) {
+                return Ok("[" + trade + "]");
+            }
+            if (r.url.ends_with("/orders")) {
+                froms.push_back(r.query.at("fromEnteredTime"));
+                return Ok("[]");
+            }
+            return HttpStatus(404);
+        };
+        auto venue = Venue("", {"SPY"});
+        const auto since = At("2026-11-05T14:00:00Z");
+        ASSERT_OK(venue.GetFills(since));
+        ASSERT_FALSE(froms.empty()) << trade;
+        EXPECT_EQ(*types::ParseIso8601(froms.back()),
+                  since - std::chrono::days(180))
+            << trade;
+    }
+}
+
+TEST_F(SchwabTradingVenueTest,
+       AnOcoLegTradedInTheWindowIsReadFromItsParentNotLookedUp) {
+    json parent = {{"orderId", 11},
+                   {"status", "FILLED"},
+                   {"orderStrategyType", "OCO"},
+                   {"enteredTime", "2026-11-05T14:20:00+0000"},
+                   {"childOrderStrategies",
+                    {json::parse(WorkingOrder(12, "SPY",
+                                              "2026-11-05T14:20:00+0000",
+                                              "2026-11-05T14:25:00+0000"))}}};
+    int lookups = 0;
+    mHttp->reply = [&](const net::HttpRequest& r) {
+        if (r.url.ends_with("/accounts/accountNumbers")) {
+            return Ok(kSingleAccount);
+        }
+        if (r.url.ends_with("/transactions")) {
+            return Ok("[" + Trade(12, "SPY") + "]");
+        }
+        if (r.url.ends_with("/orders")) {
+            return Ok("[" + parent.dump() + "]");
+        }
+        ++lookups;
+        return HttpStatus(404);
+    };
+    auto venue = Venue("", {"SPY"});
+    auto fills = venue.GetFills(At("2026-11-05T14:00:00Z"));
+    ASSERT_OK(fills);
+    EXPECT_EQ(lookups, 0);
+    ASSERT_EQ(fills->size(), 1u);
+    EXPECT_EQ((*fills)[0].fill_id, "12:120:0");
+}
+
+TEST_F(SchwabTradingVenueTest,
+       FillsFallBackToTheLongFetchWithTooManyOlderOrdersTraded) {
+    std::vector<std::string> froms;
+    int lookups = 0;
+    mHttp->reply = [&](const net::HttpRequest& r) {
+        if (r.url.ends_with("/accounts/accountNumbers")) {
+            return Ok(kSingleAccount);
+        }
+        if (r.url.ends_with("/transactions")) {
+            std::string trades = "[";
+            for (int id = 1; id <= 9; ++id) {
+                trades += (id > 1 ? "," : "") + Trade(id, "SPY");
+            }
+            return Ok(trades + "]");
+        }
+        if (r.url.ends_with("/orders")) {
+            froms.push_back(r.query.at("fromEnteredTime"));
+            return Ok("[]");
+        }
+        ++lookups;
+        return Ok("{}");
+    };
+    auto venue = Venue("", {"SPY"});
+
+    const auto since = At("2026-11-05T14:00:00Z");
+    ASSERT_OK(venue.GetFills(since));
+    EXPECT_EQ(lookups, 0);
+    ASSERT_EQ(froms.size(), 2u);
+    EXPECT_EQ(*types::ParseIso8601(froms[0]), since - 5min);
+    EXPECT_EQ(*types::ParseIso8601(froms[1]), since - std::chrono::days(180));
 }
 
 TEST_F(SchwabTradingVenueTest, AnOrderFilledDuringAFetchStillWidensTheNext) {

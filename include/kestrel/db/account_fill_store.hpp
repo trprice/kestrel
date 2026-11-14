@@ -47,9 +47,10 @@ struct FillSync {
     std::size_t stored = 0;  // of those, new to the table
 };
 
-// Where a sync of `venue`'s `symbols` has to start: the oldest of the
-// symbols' newest stored fills (a fill at that time comes back again and is
-// skipped as a duplicate), or `first_since` for a symbol with none stored yet.
+// Where a sync of `venue`'s `symbols` has to start: an hour before the oldest
+// of the symbols' newest stored fills (for fills reported late; those already
+// stored come back and are skipped as duplicates), or `first_since` for a
+// symbol with none stored yet.
 types::Result<types::Timestamp> SyncStart(
     const AccountFillStore& store, const std::string& venue,
     const std::vector<types::Symbol>& symbols, types::Timestamp first_since);

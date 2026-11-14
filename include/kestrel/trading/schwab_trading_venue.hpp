@@ -41,6 +41,11 @@ inline constexpr std::string_view kSchwabTraderBaseUrl =
 //   oldest order working at the last fetch (or 180 days back, the longest a
 //   GTC order lives), not 180 days back every time. A fetch that reaches
 //   Schwab's 3000 orders is split in two.
+// - Fills since before any fetch (a fresh process: `account`, the fill sync)
+//   come from the orders entered since then, plus the older ones that the
+//   account's TRADE transactions show trading since then, looked up by ID.
+//   A transaction can lag its execution, so an old order's fill in the last
+//   moments may be missed there.
 // - Orders are for the regular session. Schwab has no post-only flag (such
 //   an order is refused), and no client order ID: client_order_id is known
 //   only for orders this instance placed.
@@ -124,12 +129,35 @@ class SchwabTradingVenue : public TradingVenue {
     types::Result<nlohmann::json> RecentOrders(const std::string& hash,
                                                types::Timestamp placed_at,
                                                int attempt) const;
+    types::Result<nlohmann::json> FetchOrder(const std::string& hash,
+                                             const std::string& order_id) const;
+    // The IDs of our symbols' orders that traded from `since` to `now`, from
+    // the TRADE transactions; nullopt if some may be missing (Schwab's cap,
+    // or a trade without an order ID).
+    types::Result<std::optional<std::vector<std::string>>> TradedOrderIds(
+        const std::string& hash, types::Timestamp since,
+        types::Timestamp now) const;
+    // Fills from the orders entered since `since` and the older ones traded
+    // since then; nullopt (for FillsFromOrders instead) when those are not
+    // all known: the transactions or a lookup failed, or too many lookups.
+    std::optional<types::Result<std::vector<types::Fill>>> FillsInWindow(
+        const std::string& hash, types::Timestamp since, types::Timestamp now);
+    // Fills from a fetch starting at OrdersFrom, recorded as a scan.
+    types::Result<std::vector<types::Fill>> FillsFromOrders(
+        const std::string& hash, types::Timestamp since, types::Timestamp now);
+    // `fills` on our symbols, oldest first.
+    std::vector<types::Fill> OurFillsInOrder(
+        std::vector<types::Fill> fills) const;
     // The account's securitiesAccount object, with its positions.
     types::Result<nlohmann::json> SecuritiesAccount(std::string_view what);
     types::Result<PreparedOrder> PrepareOrder(
         const types::OrderRequest& request) const;
 
     bool IsOurs(const types::Symbol& symbol) const;
+    // The oldest order working at the last fetch at or before `since` and at
+    // every fetch since; nullopt if there was no fetch by then.
+    std::optional<types::Timestamp> OldestWorkingSince(
+        types::Timestamp since) const;
     // Where GetOpenOrders (since = now) and GetFills fetch orders from.
     types::Timestamp OrdersFrom(types::Timestamp since,
                                 types::Timestamp now) const;

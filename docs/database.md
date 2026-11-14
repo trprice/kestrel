@@ -165,8 +165,9 @@ cancel, time until a fill is visible) are not measured yet; see
 `account_fills`, keyed by venue and fill ID: every fill on the account,
 whatever placed the order, where `fills` holds only what a run saw. The first
 sync of a symbol reaches back `--days` (default 7, at most 90); later ones
-carry on from its newest stored fill, so running it again only tops up, and a
-fill stored twice is kept once. The listing and the sync share one fetch.
+carry on from an hour before its newest stored fill (a venue can report a fill
+late), so running it again only tops up, and a fill stored twice is kept
+once. The listing and the sync share one fetch.
 
 On Binance.US the fills are fetched per configured symbol, in 24 hour windows
 of weight 20 each, so a first sync costs 20 × days × symbols: 1800 for 90 days

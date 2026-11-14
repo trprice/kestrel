@@ -201,7 +201,8 @@ void AddAccountCommand(CLI::App& app, CommandSlot& slot) {
                     "Also look up this order ID (GetOrder)");
     sub->add_flag("--store", args->store,
                   "Also sync the account's fills into the [database] "
-                  "(account_fills): from the newest stored fill, or --days "
+                  "(account_fills): from an hour before the newest stored "
+                  "fill, or --days "
                   "back the first time. Live mode only");
     sub->callback([&slot, args] {
         slot = std::make_unique<AccountCommand>(args->days, args->order_id,
