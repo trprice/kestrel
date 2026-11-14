@@ -87,9 +87,11 @@ to be wanted), and their subscriptions go quiet; more than 0 waits that long
 and reconnects, which in turn disconnects the other one.
 
 Live trading on Schwab is off until `[schwab] live_trading = true` (default
-`false`): the trading venue has not yet traded on a real account. With more
-than one account on the login, `[schwab] account_number` (a string, the
-number or its hashValue) picks the one to trade; otherwise it is the first.
+`false`): the venue has placed market orders and run live for 15 minutes on
+a cash account, but resting orders, OCO and margin accounts have not been
+checked live. With more than one account on the login, `[schwab]
+account_number` (a string, the number or its hashValue) picks the one to
+trade; otherwise it is the first.
 Live, the runner polls Schwab for fills every 5 seconds, and only orders and
 fills on `[general] symbols` are Kestrel's: orders on other symbols are left
 alone, at startup and by the risk gate's kill switch.

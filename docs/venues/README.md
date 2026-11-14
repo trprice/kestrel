@@ -8,7 +8,7 @@ provider's own details are in its document:
 |---|---|---|---|
 | `binanceus` | below, under [Binance.US](#binanceus) | crypto spot | yes |
 | `kraken` | below, under [Kraken](#kraken) | crypto spot | no: the trading venue is a stub |
-| `schwab` | [schwab.md](schwab.md) | US stocks and ETFs | written, off until `[schwab] live_trading = true` |
+| `schwab` | [schwab.md](schwab.md) | US stocks and ETFs | market orders checked live; off until `[schwab] live_trading = true` |
 
 The config file's `[general] provider` picks the provider and `[general]
 mode` picks `paper` or `live` (see

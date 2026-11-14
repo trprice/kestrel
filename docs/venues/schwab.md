@@ -6,10 +6,11 @@ paper and live, the layers in front of a venue, how fills are polled) is in
 [README.md](README.md); this document covers what is particular to Schwab.
 
 **Status (Nov 2026).** Market data works, and strategies run on Schwab in
-paper mode. The trading venue (`SchwabTradingVenue`) is written and covered
-by unit tests, but `run` will not trade live until `[schwab]
-live_trading = true`, while it is being checked on a real account (see
-[TODO.md](../../TODO.md)). Setting up is in
+paper mode. The trading venue (`SchwabTradingVenue`) has traded on a real
+account (Nov 13 2026: previewOrder, market orders bought and sold, and a
+short live run), but `run` will not trade live until `[schwab]
+live_trading = true`, while resting orders, OCO and margin accounts are
+checked (see [TODO.md](../../TODO.md)). Setting up is in
 [running.md](../running.md#authorizing-schwab) and
 [configuration.md](../configuration.md#provider-tables), with a commented
 example in `config/schwab.example.toml`.
@@ -428,10 +429,11 @@ token, and STOP_STREAMING (code 30).
 
 ## Known limitations
 
-- **Live trading is off by default** until the venue has been checked on a
-  real account: placing and cancelling a resting order, an OCO's legs
-  cancelling each other, `activityId` on fills, an ETF's `assetType`, and the
-  balance fields of cash and margin accounts.
+- **Live trading is off by default** until the rest of the venue has been
+  checked on a real account: placing and cancelling a resting order, an
+  OCO's legs cancelling each other, an ETF bought, and the balance fields of
+  a margin account. Market orders, `activityId` on fills, previewOrder and a
+  cash account's balances have been checked.
 - **Regular session only** for live orders, even with `extended_hours`.
 - **No fees on fills**: Schwab's executions give no fee (the SEC and FINRA TAF
   fees on sales) or liquidity, so recorded P&L leaves those fees out.

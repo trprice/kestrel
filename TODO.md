@@ -1,9 +1,10 @@
 # Kestrel TODO
 
 The strategy, risk and backtest code runs on Binance.US, in paper mode and
-live, and on Schwab in paper mode; Schwab's trading venue is written but stays
-off live until `[schwab] live_trading` (see Schwab data source under In
-progress). `run` refuses live mode on Kraken, whose trading venue is a stub
+live, and on Schwab in paper mode. Schwab's trading venue traded on a real
+account on Nov 13 2026 (see Done), but `run` trades live on Schwab only with
+`[schwab] live_trading = true` (see Schwab data source under In progress).
+`run` refuses live mode on Kraken, whose trading venue is a stub
 (see Venues under Projects; `NoLiveVenue` in `factory.cpp`).
 
 Order of this file: Priorities, In progress, Projects (each by priority), then
@@ -28,11 +29,13 @@ and what the live API showed beyond Schwab's documents, is in
       `STOP_STREAMING` (code 30): none has been seen live. The handling is
       defensive (see Done); renewals work, and do not rotate the refresh
       token, so the 7 days still run from `authorize`.
-- [ ] Check the trading venue (see Done) on a real account, then default
-      `[schwab] live_trading` on: `order --test` (previewOrder), a resting
-      limit placed and cancelled, an ETF's `assetType`, an OCO's legs
-      cancelling each other, `activityId` on fills, and the balance fields of
-      cash and margin accounts.
+- [ ] Finish checking the trading venue on a real account (what the Nov 13
+      check covered is under Done), then default `[schwab] live_trading` on:
+      a resting limit and a stop placed (not only previewed) and cancelled,
+      `cancel --all` leaving an order on another symbol alone, an ETF bought
+      (previewOrder accepted SCHB sent as `EQUITY`), an OCO's legs cancelling each other (`order` cannot
+      place one; `breakout` with `resting_target` can), and a margin
+      account's balance fields.
 
 ## Projects
 
@@ -70,15 +73,17 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       weight per minute the client keeps to, per symbol, so a live run on
       several symbols needs a longer `fill_poll_interval`.
 - [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
-      provider's docs (Schwab's is a step under In progress). The lists in the code
-      and docs/design.md came from memory.
-
-- [ ] Follow redirects in `CprHttpClient` (bounded, HTTPS only), deciding
-      whether `Authorization` goes to another host. Before the Kraken or
-      Schwab trading venue lands.
-- [ ] Keep `BinanceUSApi`'s rule in the Kraken and Schwab venues: a request
-      that is not idempotent is never retried (`util::Retry` itself retries
-      a timeout).
+      provider's docs. The lists in the code and docs/design.md came from
+      memory.
+- [ ] Bound redirects in `CprHttpClient`: cpr follows them by default, up to
+      50 and to any host. Allow a few, HTTPS only, and check that libcurl
+      still drops `Authorization` on a redirect to another host. Before the
+      Kraken trading venue lands (Schwab already trades without it).
+- [ ] Keep `BinanceUSApi`'s rule in the Kraken venue: a request that is not
+      idempotent is never retried (`util::Retry` itself retries a timeout).
+      The Schwab venue keeps it: orders and cancels are not retried on a
+      timeout or error, only re-sent once with a new token after a 401,
+      which Schwab answers before acting on the request.
 - [ ] A stop-limit order type, if a venue needs one.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 
@@ -136,8 +141,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Run several strategies in one process, sharing data subscriptions
 - [ ] Quote `seq` is numbered per process: two recorders of one symbol
       interleave. Check the stored maximum at each flush, or number in SQL.
-- [ ] Database rows that do not parse: `std::stoll`/`stod` throw and
-      `sql::ParseDecimal` reads zero; return kParse instead.
 
 ### Backtesting and research
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
@@ -196,8 +199,7 @@ four recorded days. Check a change's markouts, not only "vs hold".
   - `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
     through.
   - `RunBacktest`: build the timeline in a function of its own.
-  - Tests: `types/time.cpp` round trips, malformed database rows,
-    `RateLimiter::Penalize`, `Migrate()` failures.
+  - Tests: `types/time.cpp` round trips, `Migrate()` failures.
 - [ ] Building components in the factory starts the paper venue's quote
       stream as a side effect, so `bars` and `run` open a WebSocket whether or
       not they need it (`stream`, `stream-bars` and `backtest` already avoid
@@ -239,7 +241,8 @@ the header of the code concerned.
   newest one dropped in a quiet market is not seen until the next bar.
 - Fills and order changes are pushed only by venues that implement
   `StreamExecutions` (today only the paper venue). Others are polled, so
-  `OnFill` can lag the fill by up to `fill_poll_interval` (default 1 s).
+  `OnFill` can lag the fill by up to `fill_poll_interval` (default 1 s; 5 s
+  on Schwab live).
 - With pushes, the backstop poll looks back `Runner::kSeenFillHorizon`
   (10 minutes) behind the newest fill, and a pushed fill older than that is
   dropped as stale. The paper venue pushes at once unless `[paper]
@@ -799,6 +802,15 @@ the header of the code concerned.
       account alone. Order fetches start at the oldest order working at the
       last one, not 180 days back each poll. `[schwab] account_number` picks
       the account; `[schwab] live_trading` (default off) lets `run` trade.
+- [x] Schwab trading venue checked live (Nov 13 2026, a cash account):
+      `order --test` (previewOrder) accepted limit, stop and ETF orders and
+      returned Schwab's reason for one larger than the cash; 1 F bought and
+      sold at market, and `account` showed fill IDs of the form
+      `<orderId>:<activityId>:<leg>`, a fee of 0, and the right average
+      price and cash balance; and a 15-minute live
+      `ma_crossover` run placed 3 orders with no errors, at about 13
+      requests a minute and a median 372 ms per `/orders` poll. The account
+      hash stayed out of the logs.
 
 ### Market hours
 - [x] `DataSource::Hours()`: always open for crypto; for Schwab, the US
@@ -978,6 +990,9 @@ the header of the code concerned.
 ### Operations
 - [x] Store the account's own trade history: `account_fills`, synced
       incrementally by `kestrel_app account --store` (live mode).
+- [x] Database rows that do not parse (a NULL or a bad number in a fill or
+      snapshot row) are kParse errors, not exceptions or zero
+      (`sql::ParseNumber`, `sql::ParseDecimal`).
 
 ### Engineering
 - [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
