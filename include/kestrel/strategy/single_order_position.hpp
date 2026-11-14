@@ -48,6 +48,10 @@ class SingleOrderPosition {
     Change OnOrderUpdate(Context& context, const types::OrderStatus& status);
 
    private:
+    // context.Log() with symbol=<symbol>, which the runner's has already;
+    // the messages leave the symbol out.
+    LogContext Log(Context& context) const;
+
     struct Order {
         std::string id;
         types::Side side = types::Side::kBuy;

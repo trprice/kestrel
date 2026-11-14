@@ -1628,6 +1628,31 @@ TEST(LogContextTest, BuildsPrefixUpdatesInPlaceAndRemovesEmptyFields) {
     EXPECT_EQ(trimmed.WithStrategy("").Prefix(), "symbol=BTC/USDT");
 }
 
+TEST(LogContextTest, WithDefaultKeepsASetValue) {
+    const auto base = strategy::LogContext("breakout").With("symbol", "F");
+    EXPECT_EQ(base.WithDefault("symbol", "SCHB").Prefix(), "breakout symbol=F");
+    EXPECT_EQ(base.WithDefault("run", "7").Prefix(), "breakout symbol=F run=7");
+}
+
+TEST(LogContextTest, QuotesValuesThatWouldBeAmbiguous) {
+    const strategy::LogContext base("market_maker");
+    EXPECT_EQ(base.With("note", "two words").Prefix(),
+              R"(market_maker note="two words")");
+    EXPECT_EQ(base.With("expr", "a=b").Prefix(), R"(market_maker expr="a=b")");
+    EXPECT_EQ(base.With("q", R"(say "hi" \ bye)").Prefix(),
+              R"(market_maker q="say \"hi\" \\ bye")");
+    EXPECT_EQ(base.With("symbol", "BRK.B").Prefix(),
+              "market_maker symbol=BRK.B");
+    EXPECT_EQ(base.With("note", "a\nb\tc\x01").Prefix(),
+              R"(market_maker note="a\nb\tc\x01")");
+
+    // Later fields follow a quoted one as usual; the stored value is raw.
+    const auto two = base.With("note", "two words").With("run", "7");
+    EXPECT_EQ(two.Prefix(), R"(market_maker note="two words" run=7)");
+    EXPECT_EQ(two.Fields()[0].value, "two words");
+    EXPECT_EQ(two.With("note", "one").Prefix(), "market_maker note=one run=7");
+}
+
 TEST(LogContextTest, RoutesMessagesToCustomSinkAndSpdlog) {
     using Level = strategy::LogContext::Level;
     std::vector<std::pair<Level, std::string>> captured;

@@ -96,6 +96,10 @@ class Breakout : public Strategy {
     void OnSessionClosing(Context& context, types::Timestamp close) override;
 
    private:
+    // context.Log() with symbol=<symbol>, which the runner's has already;
+    // the messages leave the symbol out.
+    LogContext Log(Context& context) const;
+
     // What a setup gives a trade.
     struct Levels {
         // Per setup: see docs/strategies/breakout.md#the-setups.
@@ -181,7 +185,7 @@ class Breakout : public Strategy {
         return mShort ? -price : price;
     }
     std::string Price(const types::Decimal& price) const {
-        return Mirror(price).ToString();
+        return Mirror(price).Normalized().ToString();
     }
     types::Bar Mirror(const types::Bar& bar) const;
     // The symbol's bars, in the trade's terms.

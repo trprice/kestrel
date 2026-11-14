@@ -46,6 +46,10 @@ MeanReversion::MeanReversion(MeanReversionParams params)
     }
 }
 
+LogContext MeanReversion::Log(Context& context) const {
+    return context.Log().WithDefault("symbol", mParams.symbol);
+}
+
 Requirements MeanReversion::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
@@ -101,7 +105,7 @@ void MeanReversion::OnBar(Context& context, const types::Symbol& symbol,
             }
             const Decimal stop = bar.close - mParams.atr_stop * *atr;
             if (stop.Sign() <= 0) {
-                context.Log().Warn(
+                Log(context).Warn(
                     "{} ATRs of {} under {} is no price for a stop; no entry",
                     mParams.atr_stop.ToString(), atr->ToString(),
                     bar.close.ToString());
@@ -160,10 +164,10 @@ void MeanReversion::Apply(Context& context,
             if (stop.Sign() > 0) {
                 mStopPrice = stop;
             } else {
-                context.Log().Warn(
-                    "paid {} for {}, too little for a stop {} ATRs under; the "
+                Log(context).Warn(
+                    "paid {}, too little for a stop {} ATRs under; the "
                     "signal's stop {} stands",
-                    mPosition.EntryPrice().ToString(), mParams.symbol,
+                    mPosition.EntryPrice().ToString(),
                     mParams.atr_stop.ToString(), mStopPrice.ToString());
             }
         }

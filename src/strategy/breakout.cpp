@@ -91,6 +91,10 @@ Breakout::Breakout(BreakoutParams params)
     }
 }
 
+LogContext Breakout::Log(Context& context) const {
+    return context.Log().WithDefault("symbol", mParams.symbol);
+}
+
 Requirements Breakout::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
@@ -221,8 +225,7 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     }
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
-        context.Log().Warn("no symbol info for {}: {}", mParams.symbol,
-                           info.error().ToString());
+        Log(context).Warn("no symbol info: {}", info.error().ToString());
         return std::nullopt;
     }
     const Decimal& tick = info->tick_size;
@@ -248,10 +251,10 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
     if (mParams.atr_stop.Sign() > 0) {
         const auto atr = Atr(bars, mParams.atr_bars);
         if (!atr || atr->Sign() <= 0) {
-            context.Log().Debug(
-                "{} setup not armed: no average true range over {} bars ({} "
+            Log(context).Debug(
+                "setup not armed: no average true range over {} bars ({} "
                 "loaded)",
-                mParams.symbol, mParams.atr_bars, bars.size());
+                mParams.atr_bars, bars.size());
             return std::nullopt;
         }
         levels.stop = (level - mParams.atr_stop * *atr)
@@ -449,14 +452,13 @@ std::optional<Decimal> Breakout::EntrySize(Context& context,
     }
     const Decimal distance = entry - stop;  // in long terms, so above zero
     if (distance.Sign() <= 0) {
-        context.Log().Warn("{} stop {} is not below the entry {}; no entry",
-                           mParams.symbol, Price(stop), Price(entry));
+        Log(context).Warn("stop {} is not below the entry {}; no entry",
+                          Price(stop), Price(entry));
         return std::nullopt;
     }
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
-        context.Log().Warn("cannot size the entry in {}: {}", mParams.symbol,
-                           info.error().ToString());
+        Log(context).Warn("cannot size the entry: {}", info.error().ToString());
         return std::nullopt;
     }
     // quantity caps the size; below it, divide only to the lot's places, so
@@ -475,10 +477,10 @@ std::optional<Decimal> Breakout::EntrySize(Context& context,
     if (size.Sign() <= 0 || size < info->min_order_size ||
         (info->min_notional.Sign() > 0 &&
          size * entry.Abs() < info->min_notional)) {
-        context.Log().Info(
-            "{} entry of {} to risk {} with the stop {} away is under the "
-            "venue's minimum; no entry",
-            mParams.symbol, size.ToString(), mParams.risk_per_trade.ToString(),
+        Log(context).Info(
+            "entry of {} to risk {} with the stop {} away is under the venue's "
+            "minimum; no entry",
+            size.ToString(), mParams.risk_per_trade.ToString(),
             distance.ToString());
         return std::nullopt;
     }
@@ -503,6 +505,12 @@ void Breakout::Arm(Context& context, const Levels& levels) {
         mLevels = levels;
         mState = State::kArmed;
         mBarsLeft = mParams.arm_bars;
+        Log(context).Info(
+            "armed: {} {} on a stop at {} (order {}); stop {}, "
+            "for {} bar{}",
+            mShort ? "short" : "long", size->ToString(), Price(levels.trigger),
+            *id, Price(levels.stop), mParams.arm_bars,
+            mParams.arm_bars == 1 ? "" : "s");
     }
 }
 
@@ -531,8 +539,7 @@ void Breakout::ArmThrowback(Context& context) {
     // the level), where a buy-stop would be placed again.
     request.post_only = true;
     if (auto id = Place(context, request, "throwback limit")) {
-        context.Log().Info("{} throwback limit at {}", mParams.symbol,
-                           Price(mLevels->high));
+        Log(context).Info("throwback limit at {}", Price(mLevels->high));
         mDue = Due::kThrowback;
         mEntryId = *id;
         mEntryQuantity = *size;
@@ -579,11 +586,10 @@ void Breakout::GoLong(Context& context) {
     if (mParams.target_multiple.Sign() > 0) {
         mTarget = mEntryPrice + mParams.target_multiple * mLevels->height;
     }
-    context.Log().Info("{} {} {} at {}; stop {}, target {}",
-                       mShort ? "short" : "long", mHeld.ToString(),
-                       mParams.symbol, Price(mEntryPrice),
-                       Price(mLevels->stop),
-                       mTarget ? Price(*mTarget) : std::string("none"));
+    Log(context).Info("{} {} at {}; stop {}, target {}",
+                      mShort ? "short" : "long", mHeld.ToString(),
+                      Price(mEntryPrice), Price(mLevels->stop),
+                      mTarget ? Price(*mTarget) : std::string("none"));
     PlaceStop(context);
 }
 
@@ -615,14 +621,12 @@ void Breakout::CancelOther(Context& context, std::string& id,
     if (!cancelled) {
         // Still live, perhaps: kept, so its cancel is retried and its fill
         // recognised.
-        context.Log().Error(
-            "cannot cancel the {} {} for {}: {}; trying again each bar", what,
-            id, mParams.symbol, cancelled.error().ToString());
+        Log(context).Error("cannot cancel the {} {}: {}; trying again each bar",
+                           what, id, cancelled.error().ToString());
         AddStray(id);
     } else if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
-        context.Log().Error(
-            "the {} {} for {} filled too: sold more than was held", what, id,
-            mParams.symbol);
+        Log(context).Error("the {} {} filled too: sold more than was held",
+                           what, id);
         AddStray(id);  // its fill is still on the way
     }
     id.clear();
@@ -649,13 +653,13 @@ void Breakout::RetryStrays(Context& context) {
             return false;
         }
         if (++stray.tries >= kMaxTries) {
-            context.Log().Error(
-                "giving up cancelling {} for {} after {} tries: {}", stray.id,
-                mParams.symbol, stray.tries, cancelled.error().ToString());
+            Log(context).Error("giving up cancelling {} after {} tries: {}",
+                               stray.id, stray.tries,
+                               cancelled.error().ToString());
             return true;
         }
-        context.Log().Warn("still cannot cancel {} for {}: {}", stray.id,
-                           mParams.symbol, cancelled.error().ToString());
+        Log(context).Warn("still cannot cancel {}: {}", stray.id,
+                          cancelled.error().ToString());
         return false;
     });
 }
@@ -687,10 +691,10 @@ void Breakout::PlaceStop(Context& context) {
             // One leg closed at once: take the other down (cancelling either
             // cancels both) and try again on the next bar. A stop that sold
             // at once makes us flat by its fill.
-            context.Log().Error(
-                "{}'s target and stop came back {} and {}; trying again on the "
+            Log(context).Error(
+                "the target and stop came back {} and {}; trying again on the "
                 "next bar",
-                mParams.symbol, types::ToString(ack->limit.state),
+                types::ToString(ack->limit.state),
                 types::ToString(ack->stop.state));
             for (const auto* leg : {&ack->limit, &ack->stop}) {
                 if (types::IsActive(leg->state)) {
@@ -707,14 +711,14 @@ void Breakout::PlaceStop(Context& context) {
             category == types::ErrorCategory::kRateLimit) {
             // It may have been placed, or may be next time: not a second
             // sell beside it now.
-            context.Log().Error(
-                "{}'s target and stop failed: {}; unprotected until the next "
+            Log(context).Error(
+                "the target and stop failed: {}; unprotected until the next "
                 "bar",
-                mParams.symbol, ack.error().ToString());
+                ack.error().ToString());
             return;
         }
         if (category == types::ErrorCategory::kNotImplemented) {
-            context.Log().Warn(
+            Log(context).Warn(
                 "{} cannot rest the target with the stop ({}); selling on a "
                 "close past it instead",
                 context.Venue().Name(), ack.error().ToString());
@@ -722,10 +726,10 @@ void Breakout::PlaceStop(Context& context) {
         } else {
             // Refused (the price already past the target, a risk limit the
             // pair's two orders break): the stop alone, the close the target.
-            context.Log().Warn(
-                "{}'s target {} cannot rest with the stop: {}; selling on a "
+            Log(context).Warn(
+                "the target {} cannot rest with the stop: {}; selling on a "
                 "close past it instead",
-                mParams.symbol, Price(*mTarget), ack.error().ToString());
+                Price(*mTarget), ack.error().ToString());
             mTargetRefused = true;
         }
     }
@@ -739,8 +743,7 @@ void Breakout::PlaceStop(Context& context) {
         mStopId = *id;
     } else {
         // Unprotected until the next bar, which tries again.
-        context.Log().Error("{} is held without a protective stop",
-                            mParams.symbol);
+        Log(context).Error("held without a protective stop");
     }
 }
 
@@ -764,11 +767,10 @@ bool Breakout::VolumeConfirms(Context& context, const types::Bar& bar) const {
     const bool enough =
         average.Sign() > 0 && bar.volume >= mParams.volume_ratio * average;
     if (!enough) {
-        context.Log().Info(
-            "{} closed above {} on {} volume, under {}x the average of {}; not "
+        Log(context).Info(
+            "closed above {} on {} volume, under {}x the average of {}; not "
             "counted",
-            mParams.symbol, Price(mLevels->trigger),
-            bar.volume.Normalized().ToString(),
+            Price(mLevels->trigger), bar.volume.Normalized().ToString(),
             mParams.volume_ratio.Normalized().ToString(),
             average.Normalized().ToString());
     }
@@ -809,9 +811,9 @@ void Breakout::RaiseStop(Context& context, const types::Bar& bar) {
     }
     // A sell-stop at or above the price would sell at once.
     if (why && level < bar.close) {
-        context.Log().Info("{} stop {} from {} to {} ({})", mParams.symbol,
-                           mShort ? "lowered" : "raised", Price(mLevels->stop),
-                           Price(level), why);
+        Log(context).Info("stop {} from {} to {} ({})",
+                          mShort ? "lowered" : "raised", Price(mLevels->stop),
+                          Price(level), why);
         mLevels->stop = level;
         mStopMoved = true;
     }
@@ -825,8 +827,8 @@ void Breakout::MoveStop(Context& context) {
     const auto cancelled = context.Venue().CancelOrder(mStopId);
     if (!cancelled) {
         // The old stop still protects; try again on the next bar.
-        context.Log().Warn("cannot cancel the protective stop {} to move it: {}",
-                           mStopId, cancelled.error().ToString());
+        Log(context).Warn("cannot cancel the protective stop {} to move it: {}",
+                          mStopId, cancelled.error().ToString());
         return;
     }
     if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
@@ -854,8 +856,8 @@ void Breakout::Exit(Context& context, const char* why) {
             return;  // the stop got there first; its fill makes us flat
         }
         if (!cancelled) {
-            context.Log().Warn("cannot cancel the protective stop {}: {}",
-                               mStopId, cancelled.error().ToString());
+            Log(context).Warn("cannot cancel the protective stop {}: {}",
+                              mStopId, cancelled.error().ToString());
             return;  // it still protects; try again on the next bar
         }
         if (*cancelled == trading::CancelOutcome::kAlreadyClosed &&
@@ -877,7 +879,7 @@ void Breakout::Exit(Context& context, const char* why) {
     request.side = Side::kSell;
     request.type = types::OrderType::kMarket;
     request.quantity = mHeld;
-    context.Log().Info("exit {} ({})", mParams.symbol, why);
+    Log(context).Info("exit ({})", why);
     if (auto id = Place(context, request, "exit")) {
         mExitId = *id;
         mState = State::kExiting;
@@ -890,8 +892,8 @@ void Breakout::Disarm(Context& context) {
     mBarsLeft = 0;  // if this stays armed, the next bar tries again
     const auto cancelled = context.Venue().CancelOrder(mEntryId);
     if (!cancelled) {
-        context.Log().Warn("cannot cancel the entry {}: {}", mEntryId,
-                           cancelled.error().ToString());
+        Log(context).Warn("cannot cancel the entry {}: {}", mEntryId,
+                          cancelled.error().ToString());
         return;  // it may still fill: stay armed and keep tracking it
     }
     if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
@@ -899,11 +901,12 @@ void Breakout::Disarm(Context& context) {
     }
     if (mHeld.Sign() > 0) {
         // Partly filled: hold what was bought, protected like a full entry.
-        context.Log().Warn("entry {} closed after filling {} of {}", mEntryId,
-                           mHeld.ToString(), mEntryQuantity.ToString());
+        Log(context).Warn("entry {} closed after filling {} of {}", mEntryId,
+                          mHeld.ToString(), mEntryQuantity.ToString());
         GoLong(context);
         return;
     }
+    Log(context).Debug("entry {} cancelled unfilled", mEntryId);
     GoFlat();
 }
 
@@ -931,9 +934,9 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
     }
     if (const auto stray = std::ranges::find(mStrays, raw.order_id, &Stray::id);
         stray != mStrays.end() && stray->trade != mTrade) {
-        context.Log().Error(
-            "late fill of {} {} ({}) from an earlier trade; not counted",
-            raw.quantity.ToString(), mParams.symbol, raw.order_id);
+        Log(context).Error(
+            "late fill of {} ({}) from an earlier trade; not counted",
+            raw.quantity.ToString(), raw.order_id);
         return;
     }
     types::Fill fill = raw;  // in the trade's terms
@@ -950,9 +953,8 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         if (mState == State::kLong) {
             // A late part of a partly filled entry (its cancel crossed this
             // fill): the stop must cover it too.
-            context.Log().Warn(
-                "late entry fill of {} {}; resizing the stop",
-                fill.quantity.ToString(), mParams.symbol);
+            Log(context).Warn("late entry fill of {}; resizing the stop",
+                              fill.quantity.ToString());
             mHeld += received;
             mEntryFilled += fill.quantity;
             CancelOther(context, mStopId, "protective stop");
@@ -963,9 +965,8 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         if (mState == State::kExiting) {
             // A late part of the entry, bought by this trade: counted, though
             // the exit already out was sized before it.
-            context.Log().Error("late entry fill of {} {} ({}) while exiting",
-                                fill.quantity.ToString(), mParams.symbol,
-                                fill.order_id);
+            Log(context).Error("late entry fill of {} ({}) while exiting",
+                               fill.quantity.ToString(), fill.order_id);
             mHeld += received;
             mEntryFilled += fill.quantity;
             return;
@@ -973,10 +974,9 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         if (mState != State::kArmed && mState != State::kEntering) {
             // Not this strategy's trade: counting it would size the next
             // trade's stop and exit for more than that trade bought.
-            context.Log().Error(
-                "unexpected buy of {} {} ({}) while {}; not counted",
-                fill.quantity.ToString(), mParams.symbol, fill.order_id,
-                StateName());
+            Log(context).Error(
+                "unexpected buy of {} ({}) while {}; not counted",
+                fill.quantity.ToString(), fill.order_id, StateName());
             return;
         }
         if (mHeld.Sign() == 0 && mEntryFilled.Sign() == 0) {
@@ -992,9 +992,9 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
     }
     const bool selling = mState == State::kLong || mState == State::kExiting;
     if (!selling) {
-        context.Log().Error("unexpected sell of {} {} ({}) while {}",
-                            fill.quantity.ToString(), mParams.symbol,
-                            fill.order_id, StateName());
+        Log(context).Error("unexpected sell of {} ({}) while {}",
+                           fill.quantity.ToString(), fill.order_id,
+                           StateName());
     }
     mHeld = std::max(mHeld - fill.quantity, Decimal());
     if (!mTargetId.empty() && fill.order_id == mTargetId) {
@@ -1049,8 +1049,8 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
 void Breakout::Reverse(Context& context, const Levels& failed) {
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
-        context.Log().Warn("cannot reverse {}: no symbol info: {}",
-                           mParams.symbol, info.error().ToString());
+        Log(context).Warn("cannot reverse: no symbol info: {}",
+                          info.error().ToString());
         return;
     }
     const Decimal buffer = types::FromBps(mParams.stop_buffer_bps);
@@ -1066,9 +1066,8 @@ void Breakout::Reverse(Context& context, const Levels& failed) {
     levels.stop = -beyond;
     levels.height = failed.height;
     mLevels = levels;
-    context.Log().Info("{} failed; reversing, {} at market, stop {}",
-                       mParams.symbol, mShort ? "short" : "long",
-                       Price(levels.stop));
+    Log(context).Info("the breakout failed; reversing, {} at market, stop {}",
+                      mShort ? "short" : "long", Price(levels.stop));
     EnterAtMarket(context);
     if (mState != State::kEntering) {
         GoFlat();  // refused: flat, looking for setups the usual way
@@ -1110,9 +1109,9 @@ void Breakout::OnOrderUpdate(Context& context,
     // whatever part of the order filled.
     if (status.order_id == mEntryId &&
         (mState == State::kArmed || mState == State::kEntering)) {
-        context.Log().Warn("entry {} closed: {}, {} of {} filled",
-                           status.order_id, types::ToString(status.state),
-                           mHeld.ToString(), mEntryQuantity.ToString());
+        Log(context).Warn("entry {} closed: {}, {} of {} filled",
+                          status.order_id, types::ToString(status.state),
+                          mHeld.ToString(), mEntryQuantity.ToString());
         if (mHeld.Sign() > 0) {
             GoLong(context);  // protect the part bought
         } else {
@@ -1144,13 +1143,13 @@ void Breakout::OnOrderUpdate(Context& context,
             Exit(context, "target, the rest");
             return;
         }
-        context.Log().Warn(
+        Log(context).Warn(
             "protective stop {} closed: {}; placing it again for {}",
             status.order_id, types::ToString(status.state), mHeld.ToString());
         PlaceStop(context);
     } else if (status.order_id == mExitId && mState == State::kExiting) {
-        context.Log().Warn("exit {} closed: {}; {} still held", status.order_id,
-                           types::ToString(status.state), mHeld.ToString());
+        Log(context).Warn("exit {} closed: {}; {} still held", status.order_id,
+                          types::ToString(status.state), mHeld.ToString());
         mExitId.clear();
         mState = State::kLong;
         PlaceStop(context);

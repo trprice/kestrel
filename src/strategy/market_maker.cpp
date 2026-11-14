@@ -137,6 +137,10 @@ MarketMaker::MarketMaker(MarketMakerParams params)
     }
 }
 
+LogContext MarketMaker::Log(Context& context) const {
+    return context.Log().WithDefault("symbol", mParams.symbol);
+}
+
 Requirements MarketMaker::Needs() const {
     Requirements needs;
     needs.symbols = {mParams.symbol};
@@ -153,8 +157,7 @@ Requirements MarketMaker::Needs() const {
 void MarketMaker::OnStart(Context& context) {
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
-        context.Log().Error("no symbol info for {}: {}", mParams.symbol,
-                            info.error().ToString());
+        Log(context).Error("no symbol info: {}", info.error().ToString());
         return;
     }
     mInfo = *info;
@@ -163,8 +166,8 @@ void MarketMaker::OnStart(Context& context) {
     const auto parts = types::SplitSymbol(mParams.symbol);
     auto balances = context.Venue().GetBalances();
     if (!parts || !balances) {
-        context.Log().Error(
-            "cannot read the {} balance: {}", mParams.symbol,
+        Log(context).Error(
+            "cannot read the balances: {}",
             parts ? balances.error().ToString() : parts.error().ToString());
         return;
     }
@@ -1140,8 +1143,8 @@ void MarketMaker::OnTimer(Context& context) {
     // Logged once per silence, when there was something to pull.
     if (AnyResting() && !mQuietLogged) {
         mQuietLogged = true;
-        context.Log().Warn(
-            "no quote for {} for {} ms; pulling the quotes", mParams.symbol,
+        Log(context).Warn(
+            "no quote for {} ms; pulling the quotes",
             std::chrono::duration_cast<std::chrono::milliseconds>(quiet)
                 .count());
     }

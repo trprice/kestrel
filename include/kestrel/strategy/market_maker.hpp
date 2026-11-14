@@ -98,6 +98,10 @@ class MarketMaker : public Strategy {
     void OnStop(Context& context) override;
 
    private:
+    // context.Log() with symbol=<symbol>, which the runner's has already;
+    // the messages leave the symbol out.
+    LogContext Log(Context& context) const;
+
     // One resting quote.
     struct Resting {
         std::string order_id;  // empty: nothing resting

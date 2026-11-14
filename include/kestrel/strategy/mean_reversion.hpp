@@ -52,6 +52,10 @@ class MeanReversion : public Strategy {
     void OnSessionClosing(Context& context, types::Timestamp close) override;
 
    private:
+    // context.Log() with symbol=<symbol>, which the runner's has already;
+    // the messages leave the symbol out.
+    LogContext Log(Context& context) const;
+
     void Trade(Context& context, types::Side side);
     void Apply(Context& context, SingleOrderPosition::Change change);
 

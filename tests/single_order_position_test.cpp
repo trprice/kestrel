@@ -29,8 +29,11 @@ class FakeContext : public strategy::Context {
         return {};
     }
 
+    const strategy::LogContext& Log() const override { return log; }
+
     RecordingVenue venue;
     types::Decimal lot;
+    strategy::LogContext log;
 };
 
 types::Fill Part(Side side, const char* quantity, const char* price = "100",
@@ -56,6 +59,31 @@ types::OrderStatus Closed(const std::string& order, OrderState state,
 
 SingleOrderPosition Position() {
     return SingleOrderPosition("BTC/USD", D("1"));
+}
+
+TEST(SingleOrderPositionTest, LogsWithTheSymbolInTheContextOnce) {
+    std::vector<std::string> lines;
+    const auto sink = [&](strategy::LogContext::Level, std::string_view line) {
+        lines.emplace_back(line);
+    };
+    FakeContext context;
+    // Added when the context lacks it, as outside a runner.
+    context.log = strategy::LogContext("ma_crossover", sink);
+    auto position = Position();
+    ASSERT_TRUE(position.Buy(context));
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_TRUE(lines[0].starts_with("ma_crossover symbol=BTC/USD: buy 1 "))
+        << lines[0];
+
+    // Kept as it is when the runner has set it.
+    lines.clear();
+    context.log = context.log.With("symbol", "BTC/USD").With("run", "7");
+    auto other = Position();
+    ASSERT_TRUE(other.Buy(context));
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_TRUE(
+        lines[0].starts_with("ma_crossover symbol=BTC/USD run=7: buy 1 "))
+        << lines[0];
 }
 
 TEST(SingleOrderPositionTest, AnOrderFilledInOnePieceEntersAndExits) {

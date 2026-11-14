@@ -46,6 +46,9 @@ class LogContext {
     // appending a new one), or removes `key` when `value` is empty.
     LogContext With(std::string_view key, std::string_view value) const;
 
+    // Sets `key` to `value` unless `key` is set already.
+    LogContext WithDefault(std::string_view key, std::string_view value) const;
+
     LogContext WithSink(Sink sink) const;
 
     std::string_view Strategy() const { return mStrategy; }
@@ -53,7 +56,10 @@ class LogContext {
     bool Has(std::string_view key) const;
 
     // The rendered context header ("<strategy> <k>=<v> ..."), without the
-    // trailing ": " separator. Empty when neither a strategy name nor any
+    // trailing ": " separator. A value with a space, '=', '"', a backslash or
+    // a control character is quoted, with '"' and backslashes escaped and
+    // control characters written \n, \r, \t or \xNN. Keys are written as
+    // they are: code gives them. Empty when neither a strategy name nor any
     // field is set.
     std::string_view Prefix() const { return mPrefix; }
 

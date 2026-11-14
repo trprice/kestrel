@@ -429,8 +429,11 @@ class FakeContext : public Context {
         return bars.back();
     }
 
+    const LogContext& Log() const override { return log; }
+
     kestrel::testing::RecordingVenue venue;
     std::vector<types::Bar> bars;
+    LogContext log;
 };
 
 // Feeds the newest bar, or `next` added first.
@@ -455,6 +458,25 @@ types::Fill FillOf(const char* order_id, Side side, const char* quantity,
 }
 
 constexpr std::array<const char*, 4> kQuietBar = {"12", "12.5", "11.5", "12"};
+
+// Arming is logged: a resting stop entry is otherwise invisible until it
+// fills.
+TEST(Breakout, LogsTheArmedEntry) {
+    std::vector<std::string> lines;
+    Breakout strategy(Params());
+    FakeContext context;
+    context.log = LogContext(
+        "breakout", [&](LogContext::Level level, std::string_view line) {
+            if (level == LogContext::Level::kInfo) {
+                lines.emplace_back(line);
+            }
+        });
+    Feed(strategy, context);
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0],
+              "breakout symbol=BTC/USD: armed: long 1 on a stop at 13.01 "
+              "(order order-1); stop 10.98, for 1 bar");
+}
 
 // The stop raised to breakeven (13.01) on a close of 15.1 is refused (as a
 // venue refuses a sell-stop above the price): sold at market instead.

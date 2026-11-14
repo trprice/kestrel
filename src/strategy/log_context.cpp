@@ -22,6 +22,49 @@ spdlog::level::level_enum ToSpdlog(LogContext::Level level) {
     return spdlog::level::info;
 }
 
+bool IsControl(char c) {
+    return static_cast<unsigned char>(c) < 0x20 || c == 0x7f;
+}
+
+// `value` as is, or quoted if it would make "k=v k=v" ambiguous or split the
+// line.
+void AppendValue(std::string& out, std::string_view value) {
+    const bool plain = std::ranges::none_of(value, [](char c) {
+        return c == ' ' || c == '=' || c == '"' || c == '\\' || IsControl(c);
+    });
+    if (plain) {
+        out += value;
+        return;
+    }
+    out += '"';
+    for (const char c : value) {
+        switch (c) {
+            case '"':
+            case '\\':
+                out += '\\';
+                out += c;
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (IsControl(c)) {
+                    out +=
+                        std::format("\\x{:02x}", static_cast<unsigned char>(c));
+                } else {
+                    out += c;
+                }
+        }
+    }
+    out += '"';
+}
+
 }  // namespace
 
 LogContext::LogContext(std::string_view strategy, Sink sink)
@@ -54,6 +97,11 @@ LogContext LogContext::With(std::string_view key,
     }
     copy.RebuildPrefix();
     return copy;
+}
+
+LogContext LogContext::WithDefault(std::string_view key,
+                                   std::string_view value) const {
+    return Has(key) ? *this : With(key, value);
 }
 
 LogContext LogContext::WithSink(Sink sink) const {
@@ -98,7 +146,7 @@ void LogContext::RebuildPrefix() {
         }
         mPrefix += field.key;
         mPrefix += '=';
-        mPrefix += field.value;
+        AppendValue(mPrefix, field.value);
     }
 }
 

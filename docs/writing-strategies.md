@@ -68,7 +68,10 @@ Every hook gets a `Context&`, valid only during that call:
   `With(key, value)` for scoped child contexts). It automatically prepends the
   strategy name and `symbol=<symbol>` (for single-symbol strategies) plus any
   fields set on `RunnerOptions::log`. Use `context.Log()` instead of calling
-  `spdlog` directly.
+  `spdlog` directly. A single-symbol strategy can log through
+  `context.Log().WithDefault("symbol", symbol)` and leave the symbol out of
+  its messages: the prefix carries it, in a runner or not. Field values with
+  a space, `=`, a quote, a backslash or a control character are quoted.
 
 ```cpp
 class MyStrategy : public strategy::Strategy {
