@@ -149,7 +149,7 @@ class MarketMaker : public Strategy {
     Pause Protect(Context& context, const types::Quote& quote,
                   const types::Decimal& mid);
     // Adds the sides the recent trades are running against to `pause`.
-    void FlowPause(types::Timestamp now, Pause& pause);
+    void FlowPause(Context& context, types::Timestamp now, Pause& pause);
     // Basis-point move of the mid over `window`; zero without that history.
     types::Decimal Move(types::Timestamp now, std::chrono::milliseconds window,
                         const types::Decimal& mid) const;
@@ -157,7 +157,7 @@ class MarketMaker : public Strategy {
     // False if it could not (a quote cannot be pulled yet, the order was
     // refused) or nothing needs doing. Does nothing while an exit is pending.
     bool ExitPosition(Context& context, const char* why);
-    void Halt(const char* why);
+    void Halt(Context& context, const char* why);
     // Kept state (MarketMakerProtection::reset_state). LoadState is false
     // when a saved state cannot be read, and the maker then does not quote.
     bool KeepsState() const;
@@ -204,7 +204,8 @@ class MarketMaker : public Strategy {
     };
     std::map<std::string, BookedUnseen> mBookedUnseen;
     // Base units on `side` still to be confirmed by OnFill.
-    types::Decimal UnconfirmedFills(types::Side side, types::Timestamp now);
+    types::Decimal UnconfirmedFills(Context& context, types::Side side,
+                                    types::Timestamp now);
 
     // The exit order in flight; empty id: none.
     struct Exit {

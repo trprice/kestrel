@@ -1,7 +1,5 @@
 #include "kestrel/strategy/market_maker.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
@@ -155,8 +153,8 @@ Requirements MarketMaker::Needs() const {
 void MarketMaker::OnStart(Context& context) {
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
-        spdlog::error("market_maker: no symbol info for {}: {}", mParams.symbol,
-                      info.error().ToString());
+        context.Log().Error("no symbol info for {}: {}", mParams.symbol,
+                            info.error().ToString());
         return;
     }
     mInfo = *info;
@@ -165,8 +163,8 @@ void MarketMaker::OnStart(Context& context) {
     const auto parts = types::SplitSymbol(mParams.symbol);
     auto balances = context.Venue().GetBalances();
     if (!parts || !balances) {
-        spdlog::error(
-            "market_maker: cannot read the {} balance: {}", mParams.symbol,
+        context.Log().Error(
+            "cannot read the {} balance: {}", mParams.symbol,
             parts ? balances.error().ToString() : parts.error().ToString());
         return;
     }
@@ -194,21 +192,20 @@ bool MarketMaker::LoadState(Context& context) {
     }
     if (mParams.protection.reset_state) {
         if (auto erased = store->Erase(StateKey()); !erased) {
-            spdlog::error("market_maker: cannot reset the saved state: {}",
-                          erased.error().ToString());
+            context.Log().Error("cannot reset the saved state: {}",
+                                erased.error().ToString());
             return false;
         }
-        spdlog::warn(
-            "market_maker: saved state reset; starting afresh, the caps from "
-            "zero (take reset_state out of the config for the next run)");
+        context.Log().Warn(
+            "saved state reset; starting afresh, the caps from zero (take "
+            "reset_state out of the config for the next run)");
         return true;
     }
     auto value = store->Load(StateKey());
     if (!value) {
         // Fail closed: without it the caps would restart from zero.
-        spdlog::error(
-            "market_maker: cannot read the saved state ({}); not quoting",
-            value.error().ToString());
+        context.Log().Error("cannot read the saved state ({}); not quoting",
+                            value.error().ToString());
         return false;
     }
     if (!*value) {
@@ -228,9 +225,9 @@ bool MarketMaker::LoadState(Context& context) {
         !(*json)["halted"].is_boolean() ||
         !(*json)["stand_until_ms"].is_number_integer() ||
         !(*json)["cooldown_until_ms"].is_number_integer()) {
-        spdlog::error(
-            "market_maker: the saved state is not readable ({}); not "
-            "quoting. reset_state = true starts afresh",
+        context.Log().Error(
+            "the saved state is not readable ({}); not quoting. reset_state = "
+            "true starts afresh",
             **value);
         return false;
     }
@@ -254,18 +251,18 @@ bool MarketMaker::LoadState(Context& context) {
             saved_mark && saved_mark->Sign() > 0 ? *saved_mark : mEntry;
         if (mark.Sign() <= 0) {
             // Only a damaged row: its position cannot be valued.
-            spdlog::error(
-                "market_maker: the saved state holds a position of {} with "
-                "no price; not quoting. reset_state = true starts afresh",
+            context.Log().Error(
+                "the saved state holds a position of {} with no price; not "
+                "quoting. reset_state = true starts afresh",
                 position.ToString());
             return false;
         }
         Decimal held = position;
         if (position.Sign() > 0 && position > mInventory) {
-            spdlog::warn(
-                "market_maker: the last run held {} more {} than it started "
-                "with, but only {} is held now; taking that on (the rest "
-                "stays in the carried P&L at its last mark)",
+            context.Log().Warn(
+                "the last run held {} more {} than it started with, but only "
+                "{} is held now; taking that on (the rest stays in the "
+                "carried P&L at its last mark)",
                 position.ToString(), mBaseAsset, mInventory.ToString());
             held = mInventory;
         }
@@ -280,15 +277,14 @@ bool MarketMaker::LoadState(Context& context) {
         types::FromEpochMillis((*json)["stand_until_ms"].get<std::int64_t>());
     mCooldownUntil = types::FromEpochMillis(
         (*json)["cooldown_until_ms"].get<std::int64_t>());
-    spdlog::info(
-        "market_maker: resumed the saved state: P&L {} (peak {}), position "
-        "{}{}",
+    context.Log().Info(
+        "resumed the saved state: P&L {} (peak {}), position {}{}",
         mCarried.Normalized().ToString(), mPeak.Normalized().ToString(),
         Position().Normalized().ToString(), mHalted ? ", halted" : "");
     if (mHalted) {
-        spdlog::error(
-            "market_maker: halted in an earlier run; not quoting{}. "
-            "reset_state = true starts afresh",
+        context.Log().Error(
+            "halted in an earlier run; not quoting{}. reset_state = true "
+            "starts afresh",
             Position().IsZero() ? "" : ", exiting its position");
     }
     return true;
@@ -322,8 +318,8 @@ void MarketMaker::SaveState(Context& context, bool now) {
         (mLastMark.Sign() > 0 ? mLastMark : mEntry).Normalized().ToString();
     if (auto saved = store->Save(StateKey(), json.dump()); !saved) {
         if (!mStateWarned) {
-            spdlog::warn("market_maker: cannot save the state: {}",
-                         saved.error().ToString());
+            context.Log().Warn("cannot save the state: {}",
+                               saved.error().ToString());
             mStateWarned = true;
         }
         // Tried again after a pause, so a database that hangs does not hold
@@ -357,7 +353,7 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     mQuietPulled = false;
     if (mQuietLogged) {
         mQuietLogged = false;
-        spdlog::info("market_maker: quotes for {} again", quote.symbol);
+        context.Log().Info("quotes for {} again", quote.symbol);
     }
     if (mParams.flow_pull_imbalance.Sign() > 0) {
         NoteTrade(quote, context.Now());
@@ -372,7 +368,7 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
                         Rounding::kNearest);
     Pause pause = Protect(context, quote, mid);
     if (mParams.flow_pull_imbalance.Sign() > 0) {
-        FlowPause(context.Now(), pause);
+        FlowPause(context, context.Now(), pause);
     }
 
     // Lean away from the side the position is heavy on.
@@ -390,10 +386,10 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     // Fills the venue reported but OnFill has not delivered yet count as done.
     const auto now = context.Now();
     const Decimal bid_room = mStart + mParams.max_inventory - mInventory -
-                             UnconfirmedFills(Side::kBuy, now);
+                             UnconfirmedFills(context, Side::kBuy, now);
     const Decimal ask_room =
         mInventory - std::max(Decimal(), mStart - mParams.max_inventory) -
-        UnconfirmedFills(Side::kSell, now);
+        UnconfirmedFills(context, Side::kSell, now);
 
     const Decimal away = std::max(Bps(mid, mParams.requote_bps), tick);
     const Decimal toward = std::max(
@@ -420,9 +416,8 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
                     const std::string id = level.order_id;
                     const std::string price = level.price.ToString();
                     if (Pull(context, level)) {
-                        spdlog::info(
-                            "market_maker: pulled {} quote {} @ {} (over the "
-                            "room left)",
+                        context.Log().Info(
+                            "pulled {} quote {} @ {} (over the room left)",
                             levels == &mBids ? "buy" : "sell", id, price);
                     }
                 }
@@ -549,7 +544,8 @@ void MarketMaker::NoteTrade(const types::Quote& quote, types::Timestamp now) {
     }
 }
 
-void MarketMaker::FlowPause(types::Timestamp now, Pause& pause) {
+void MarketMaker::FlowPause(Context& context, types::Timestamp now,
+                            Pause& pause) {
     const Decimal total = mFlowBought + mFlowSold;
     const Decimal imbalance =
         total.Sign() > 0 ? Decimal::Divide(mFlowBought - mFlowSold, total,
@@ -559,8 +555,8 @@ void MarketMaker::FlowPause(types::Timestamp now, Pause& pause) {
         if (on && !pulls.on) {
             ++pulls.count;
             pulls.since = now;
-            spdlog::debug("market_maker: pulling the {} on order flow ({})",
-                          side, imbalance.ToString());
+            context.Log().Debug("pulling the {} on order flow ({})", side,
+                                imbalance.ToString());
         } else if (!on && pulls.on) {
             pulls.total += now - pulls.since;
         }
@@ -649,10 +645,10 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
         const Decimal pnl = mLastPnl;
         mPeak = std::max(mPeak, pnl);
         if (rules.loss_cap && pnl <= -rules.loss_cap_amount) {
-            Halt("loss cap");
+            Halt(context, "loss cap");
         } else if (rules.drawdown_cap &&
                    mPeak - pnl >= rules.drawdown_cap_amount) {
-            Halt("drawdown cap");
+            Halt(context, "drawdown cap");
         }
     }
     if (mHalted) {
@@ -688,9 +684,8 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
             (m3.Abs() >= rules.spike_3m_bps || m5.Abs() >= rules.spike_5m_bps ||
              m15.Abs() >= rules.spike_15m_bps)) {
             if (now >= mStandUntil) {
-                spdlog::warn(
-                    "market_maker: spike (3m {} bps, 5m {}, 15m {}), standing "
-                    "down",
+                context.Log().Warn(
+                    "spike (3m {} bps, 5m {}, 15m {}), standing down",
                     m3.ToString(), m5.ToString(), m15.ToString());
             }
             mStandUntil = now + rules.spike_pause;
@@ -710,11 +705,10 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
     return pause;
 }
 
-void MarketMaker::Halt(const char* why) {
+void MarketMaker::Halt(Context& context, const char* why) {
     mHalted = true;
     mStateDirty = true;
-    spdlog::error("market_maker: halted ({}), position {}", why,
-                  Position().ToString());
+    context.Log().Error("halted ({}), position {}", why, Position().ToString());
 }
 
 bool MarketMaker::ExitPosition(Context& context, const char* why) {
@@ -738,12 +732,12 @@ bool MarketMaker::ExitPosition(Context& context, const char* why) {
     request.quantity = quantity;
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
-        spdlog::warn("market_maker: exit ({}) failed: {}", why,
-                     ack.error().ToString());
+        context.Log().Warn("exit ({}) failed: {}", why,
+                           ack.error().ToString());
         return false;
     }
-    spdlog::warn("market_maker: exiting {} {} at market ({})",
-                 types::ToString(request.side), quantity.ToString(), why);
+    context.Log().Warn("exiting {} {} at market ({})",
+                       types::ToString(request.side), quantity.ToString(), why);
     if (!types::IsActive(ack->state) &&
         ack->state != types::OrderState::kFilled) {
         return false;  // refused; nothing will fill
@@ -767,8 +761,8 @@ bool MarketMaker::Pull(Context& context, Resting& quote) {
         return false;
     }
     if (!outcome) {
-        spdlog::warn("market_maker: cancel of {} failed: {}", quote.order_id,
-                     outcome.error().ToString());
+        context.Log().Warn("cancel of {} failed: {}", quote.order_id,
+                           outcome.error().ToString());
         if (outcome.error().category != types::ErrorCategory::kNotFound) {
             return false;  // still resting as far as we know; try again
         }
@@ -819,8 +813,8 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
             return;
         }
         if (!wanted) {
-            spdlog::info("market_maker: pulled {} quote {} @ {} ({})",
-                         types::ToString(side), old_id, old_price, why);
+            context.Log().Info("pulled {} quote {} @ {} ({})",
+                               types::ToString(side), old_id, old_price, why);
             return;
         }
         replaced = ", replaces " + old_id + " @ " + old_price + ", " + why;
@@ -840,23 +834,24 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
     if (!ack && ack.error().category == types::ErrorCategory::kWouldTake) {
         // The book moved through the price; the next quote tries again.
         ++mWouldTake;
-        spdlog::debug("market_maker: post-only {} {} @ {} refused: {}",
-                      types::ToString(side), size.ToString(), price->ToString(),
-                      ack.error().ToString());
+        context.Log().Debug("post-only {} {} @ {} refused: {}",
+                            types::ToString(side), size.ToString(),
+                            price->ToString(), ack.error().ToString());
         return;
     }
     if (!ack) {
-        spdlog::warn("market_maker: {} {} @ {} failed: {}",
-                     types::ToString(side), size.ToString(), price->ToString(),
-                     ack.error().ToString());
+        context.Log().Warn("{} {} @ {} failed: {}", types::ToString(side),
+                           size.ToString(), price->ToString(),
+                           ack.error().ToString());
         return;
     }
     if (!types::IsActive(ack->state)) {
         // Filled or refused at once. A fill is on its way to OnFill; until it
         // arrives the inventory does not show it.
-        spdlog::info("market_maker: {} {} @ {} (order {}{}) was {} at once",
-                     types::ToString(side), size.ToString(), price->ToString(),
-                     ack->order_id, replaced, types::ToString(ack->state));
+        context.Log().Info("{} {} @ {} (order {}{}) was {} at once",
+                           types::ToString(side), size.ToString(),
+                           price->ToString(), ack->order_id, replaced,
+                           types::ToString(ack->state));
         if (ack->state == types::OrderState::kFilled) {
             ExpectFills(ack->order_id, side, size, Decimal(), context.Now(),
                         *price);
@@ -871,9 +866,9 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
     if (top) {
         (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
     }
-    spdlog::info("market_maker: quote {} {} @ {} (order {}{})",
-                 types::ToString(side), size.ToString(), price->ToString(),
-                 ack->order_id, replaced);
+    context.Log().Info("quote {} {} @ {} (order {}{})", types::ToString(side),
+                       size.ToString(), price->ToString(), ack->order_id,
+                       replaced);
 }
 
 Decimal MarketMaker::SkewBps(types::Timestamp now) const {
@@ -926,9 +921,8 @@ void MarketMaker::OnFill(Context& context, const types::Fill& fill) {
         if (it->second.quantity.Sign() <= 0) {
             mBookedUnseen.erase(it);
         }
-        spdlog::info(
-            "market_maker: fill {} of order {} ({}) was booked already; {} "
-            "of it skipped",
+        context.Log().Info(
+            "fill {} of order {} ({}) was booked already; {} of it skipped",
             fill.fill_id, fill.order_id, fill.quantity.ToString(),
             skip.ToString());
         if (skip >= fill.quantity) {
@@ -991,9 +985,9 @@ void MarketMaker::ApplyFill(Context& context, const types::Fill& fill) {
     }
     NoteHeld(context.Now());
     mStateDirty = true;  // saved with the next quote's mark
-    spdlog::info("market_maker: {} {} @ {}, inventory {}",
-                 types::ToString(fill.side), fill.quantity.ToString(),
-                 fill.price.ToString(), mInventory.ToString());
+    context.Log().Info("{} {} @ {}, inventory {}", types::ToString(fill.side),
+                       fill.quantity.ToString(), fill.price.ToString(),
+                       mInventory.ToString());
 }
 
 void MarketMaker::OnOrderUpdate(Context& context,
@@ -1052,9 +1046,9 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
             // room for it, as before.
             if (!pending.lookup_warned) {
                 pending.lookup_warned = true;
-                spdlog::warn(
-                    "market_maker: cannot check order {} with the venue ({}); "
-                    "its side keeps the room for it",
+                context.Log().Warn(
+                    "cannot check order {} with the venue ({}); its side keeps "
+                    "the room for it",
                     order_id, status.error().ToString());
             }
             ++it;
@@ -1063,9 +1057,9 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
         if (status->filled_quantity < pending.expected) {
             // The acknowledgement assumed the size asked for; the venue
             // filled less (rounded, or a partial fill).
-            spdlog::warn("market_maker: order {} filled {}, not the {} assumed",
-                         order_id, status->filled_quantity.ToString(),
-                         pending.expected.ToString());
+            context.Log().Warn("order {} filled {}, not the {} assumed",
+                               order_id, status->filled_quantity.ToString(),
+                               pending.expected.ToString());
             pending.expected = status->filled_quantity;
         }
         if (status->average_fill_price) {
@@ -1082,9 +1076,9 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
         // Long past when the runner would deliver it: book it here, and
         // skip a copy that arrives after all.
         const Decimal missing = pending.expected - pending.seen;
-        spdlog::warn(
-            "market_maker: order {} filled {} but only {} arrived in {} s; "
-            "booking the {} missing at {}",
+        context.Log().Warn(
+            "order {} filled {} but only {} arrived in {} s; booking the {} "
+            "missing at {}",
             order_id, pending.expected.ToString(), pending.seen.ToString(),
             std::chrono::duration_cast<std::chrono::seconds>(now -
                                                              pending.since)
@@ -1109,7 +1103,8 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
     }
 }
 
-Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
+Decimal MarketMaker::UnconfirmedFills(Context& context, Side side,
+                                      types::Timestamp now) {
     Decimal total;
     for (auto& [order_id, pending] : mUnconfirmed) {
         if (pending.side != side) {
@@ -1121,9 +1116,9 @@ Decimal MarketMaker::UnconfirmedFills(Side side, types::Timestamp now) {
         // rather than over the limit.
         if (!pending.warned && now - pending.since >= kUnconfirmedWarning) {
             pending.warned = true;
-            spdlog::warn(
-                "market_maker: order {} filled {} but only {} has arrived "
-                "after {} s; that side keeps the room for it",
+            context.Log().Warn(
+                "order {} filled {} but only {} has arrived after {} s; that "
+                "side keeps the room for it",
                 order_id, pending.expected.ToString(), pending.seen.ToString(),
                 std::chrono::duration_cast<std::chrono::seconds>(now -
                                                                  pending.since)
@@ -1145,9 +1140,8 @@ void MarketMaker::OnTimer(Context& context) {
     // Logged once per silence, when there was something to pull.
     if (AnyResting() && !mQuietLogged) {
         mQuietLogged = true;
-        spdlog::warn(
-            "market_maker: no quote for {} for {} ms; pulling the quotes",
-            mParams.symbol,
+        context.Log().Warn(
+            "no quote for {} for {} ms; pulling the quotes", mParams.symbol,
             std::chrono::duration_cast<std::chrono::milliseconds>(quiet)
                 .count());
     }
@@ -1159,18 +1153,18 @@ void MarketMaker::OnTimer(Context& context) {
 void MarketMaker::OnStop(Context& context) {
     SaveState(context, true);
     if (mHalfCount > 0) {
-        spdlog::info(
-            "market_maker: half-spread {:.2f} bps on average, {} at most, "
-            "widened by volatility on {:.1f}% of quotes",
+        context.Log().Info(
+            "half-spread {:.2f} bps on average, {} at most, widened by "
+            "volatility on {:.1f}% of quotes",
             mHalfSum / static_cast<double>(mHalfCount),
             mHalfMax.Normalized().ToString(),
             100.0 * static_cast<double>(mHalfWidened) /
                 static_cast<double>(mHalfCount));
     }
     if (mCentreCount > 0) {
-        spdlog::info(
-            "market_maker: the microprice moved the centre {:.2f} bps from "
-            "the mid on average",
+        context.Log().Info(
+            "the microprice moved the centre {:.2f} bps from the mid on "
+            "average",
             mCentreShiftSum / static_cast<double>(mCentreCount));
     }
     if (mParams.flow_pull_imbalance.Sign() > 0 && mFirstQuote) {
@@ -1186,17 +1180,15 @@ void MarketMaker::OnStop(Context& context) {
                              span
                        : 0.0;
         };
-        spdlog::info(
-            "market_maker: order flow pulled the bid {} time(s) ({:.1f}% of "
-            "the run) and the ask {} ({:.1f}%); {} trade(s) without a side "
-            "or size not counted",
+        context.Log().Info(
+            "order flow pulled the bid {} time(s) ({:.1f}% of the run) and the "
+            "ask {} ({:.1f}%); {} trade(s) without a side or size not counted",
             mFlowBid.count, share(mFlowBid), mFlowAsk.count, share(mFlowAsk),
             mFlowUncounted);
     }
     if (mWouldTake > 0) {
-        spdlog::info(
-            "market_maker: {} post-only quote(s) refused as they would have "
-            "taken liquidity",
+        context.Log().Info(
+            "{} post-only quote(s) refused as they would have taken liquidity",
             mWouldTake);
     }
     std::vector<Resting*> quotes;
@@ -1209,15 +1201,16 @@ void MarketMaker::OnStop(Context& context) {
         if (!quote->order_id.empty() && !quote->cancel_raced) {
             auto outcome = context.Venue().CancelOrder(quote->order_id);
             if (outcome) {
-                spdlog::info(
-                    "market_maker: stopping, {} {} @ {}",
+                context.Log().Info(
+                    "stopping, {} {} @ {}",
                     *outcome == trading::CancelOutcome::kCancelled
                         ? "cancelled"
                         : "already closed:",
                     quote->order_id, quote->price.ToString());
             } else {
-                spdlog::warn("market_maker: stopping, cancel of {} failed: {}",
-                             quote->order_id, outcome.error().ToString());
+                context.Log().Warn("stopping, cancel of {} failed: {}",
+                                   quote->order_id,
+                                   outcome.error().ToString());
             }
         }
     }

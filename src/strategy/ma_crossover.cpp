@@ -10,7 +10,7 @@ using types::Decimal;
 
 MaCrossover::MaCrossover(MaCrossoverParams params)
     : mParams(std::move(params)),
-      mPosition(mParams.symbol, mParams.quantity, "ma_crossover") {
+      mPosition(mParams.symbol, mParams.quantity) {
     if (mParams.fast_period == 0 ||
         mParams.fast_period >= mParams.slow_period) {
         throw std::invalid_argument("need 0 < fast_period < slow_period");
@@ -63,12 +63,13 @@ void MaCrossover::OnBar(Context& context, const types::Symbol& symbol,
     }
 }
 
-void MaCrossover::OnFill(Context&, const types::Fill& fill) {
-    mPosition.OnFill(fill);
+void MaCrossover::OnFill(Context& context, const types::Fill& fill) {
+    mPosition.OnFill(context, fill);
 }
 
-void MaCrossover::OnOrderUpdate(Context&, const types::OrderStatus& status) {
-    mPosition.OnOrderUpdate(status);
+void MaCrossover::OnOrderUpdate(Context& context,
+                                const types::OrderStatus& status) {
+    mPosition.OnOrderUpdate(context, status);
 }
 
 }  // namespace kestrel::strategy

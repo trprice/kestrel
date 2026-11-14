@@ -1595,4 +1595,115 @@ TEST_F(RunnerSessionTest, AMarketThatNeverClosesHasNoSessions) {
     runner->End();
 }
 
+TEST(LogContextTest, BuildsPrefixUpdatesInPlaceAndRemovesEmptyFields) {
+    const strategy::LogContext empty;
+    EXPECT_TRUE(empty.Strategy().empty());
+    EXPECT_TRUE(empty.Fields().empty());
+    EXPECT_TRUE(empty.Prefix().empty());
+
+    const auto base = empty.WithStrategy("market_maker")
+                          .With("symbol", "ZEC/USDT")
+                          .With("mode", "paper");
+    EXPECT_EQ(base.Strategy(), "market_maker");
+    EXPECT_TRUE(base.Has("symbol"));
+    EXPECT_TRUE(base.Has("mode"));
+    EXPECT_FALSE(base.Has("run"));
+    EXPECT_EQ(base.Prefix(), "market_maker symbol=ZEC/USDT mode=paper");
+
+    // Updating an existing key keeps its position; the original is unchanged.
+    const auto updated = base.With("symbol", "BTC/USDT");
+    EXPECT_EQ(base.Prefix(), "market_maker symbol=ZEC/USDT mode=paper");
+    EXPECT_EQ(updated.Prefix(), "market_maker symbol=BTC/USDT mode=paper");
+    ASSERT_EQ(updated.Fields().size(), 2u);
+    EXPECT_EQ(updated.Fields()[0],
+              (strategy::LogContext::Field{"symbol", "BTC/USDT"}));
+    EXPECT_EQ(updated.Fields()[1],
+              (strategy::LogContext::Field{"mode", "paper"}));
+
+    // An empty value removes the field; an empty strategy name leaves the
+    // fields alone.
+    const auto trimmed = updated.With("mode", "");
+    EXPECT_FALSE(trimmed.Has("mode"));
+    EXPECT_EQ(trimmed.Prefix(), "market_maker symbol=BTC/USDT");
+    EXPECT_EQ(trimmed.WithStrategy("").Prefix(), "symbol=BTC/USDT");
+}
+
+TEST(LogContextTest, RoutesMessagesToCustomSinkAndSpdlog) {
+    using Level = strategy::LogContext::Level;
+    std::vector<std::pair<Level, std::string>> captured;
+    const auto sink = [&](Level level, std::string_view line) {
+        captured.emplace_back(level, std::string(line));
+    };
+
+    const auto ctx =
+        strategy::LogContext("breakout", sink).With("symbol", "NVDA");
+    ctx.Debug("setup {} bars", 4);
+    ctx.Info("armed at {}", 120);
+    ctx.Warn("slippage {} bps", 5);
+    ctx.Error("cancel failed");
+
+    ASSERT_EQ(captured.size(), 4u);
+    EXPECT_EQ(captured[0],
+              std::pair(Level::kDebug,
+                        std::string("breakout symbol=NVDA: setup 4 bars")));
+    EXPECT_EQ(captured[1],
+              std::pair(Level::kInfo,
+                        std::string("breakout symbol=NVDA: armed at 120")));
+    EXPECT_EQ(captured[2],
+              std::pair(Level::kWarn,
+                        std::string("breakout symbol=NVDA: slippage 5 bps")));
+    EXPECT_EQ(captured[3],
+              std::pair(Level::kError,
+                        std::string("breakout symbol=NVDA: cancel failed")));
+
+    // Without a prefix, no leading ": " is added.
+    captured.clear();
+    strategy::LogContext("", sink).Info("plain {}", 1);
+    ASSERT_EQ(captured.size(), 1u);
+    EXPECT_EQ(captured[0].second, "plain 1");
+
+    // Without a custom sink, messages go to spdlog with the prefix.
+    LogCapture spd;
+    strategy::LogContext("ma_crossover")
+        .With("symbol", "ETH/USD")
+        .Info("buy {} ETH/USD", 2);
+    EXPECT_TRUE(spd.Saw("ma_crossover symbol=ETH/USD: buy 2 ETH/USD"));
+}
+
+TEST_F(RunnerTest, PopulatesPerStrategyLogContextAndExposesItToHooks) {
+    std::vector<std::string> lines;
+    options.log = strategy::LogContext("", [&](strategy::LogContext::Level,
+                                               std::string_view line) {
+                      lines.emplace_back(line);
+                  }).With("run", "7");
+    strategy->on_timer = [this] {
+        // Trigger a hook log and a runner error log in the same run.
+    };
+    strategy->throw_on_bar = true;
+    Build();
+    // Before Begin(), the strategy name is set from Strategy::Name().
+    EXPECT_EQ(runner->Log().Strategy(), "recording");
+    EXPECT_EQ(runner->Log().Prefix(), "recording run=7");
+
+    ASSERT_OK(runner->Begin());
+    // Begin() adds symbol=<symbol> for a single-symbol strategy.
+    EXPECT_EQ(runner->Log().Prefix(), "recording run=7 symbol=BTC/USD");
+
+    data->Close(5);  // throws "boom", logged by Runner::Guarded
+    EXPECT_TRUE(runner->Drain());
+    runner->End();
+
+    ASSERT_EQ(lines.size(), 1u);
+    EXPECT_EQ(lines[0], "recording run=7 symbol=BTC/USD: OnBar threw: boom");
+}
+
+TEST_F(RunnerTest, MultiSymbolStrategyLogContextOmitsSingleSymbolField) {
+    strategy->requirements.symbols = {"BTC/USD", "ETH/USD"};
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_EQ(runner->Log().Prefix(), "recording");
+    EXPECT_FALSE(runner->Log().Has("symbol"));
+    runner->End();
+}
+
 }  // namespace

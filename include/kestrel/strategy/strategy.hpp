@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "kestrel/strategy/log_context.hpp"
 #include "kestrel/strategy/state_store.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 #include "kestrel/types/error.hpp"
@@ -72,6 +73,13 @@ class Context {
     // for it and the run has a store (`run` with a [database]); null
     // otherwise, as in a backtest, where every run starts afresh.
     virtual StateStore* State() { return nullptr; }
+
+    // The strategy's structured log context (its name, symbol and any
+    // run-specific fields).
+    virtual const LogContext& Log() const {
+        static const LogContext kEmpty;
+        return kEmpty;
+    }
 };
 
 // All hooks run on the runner's single strategy thread, one at a time, so a

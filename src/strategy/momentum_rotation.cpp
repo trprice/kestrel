@@ -1,7 +1,5 @@
 #include "kestrel/strategy/momentum_rotation.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -134,9 +132,9 @@ void MomentumRotation::OnStart(Context& context) {
     for (const auto& balance : *balances) {
         for (const auto& [symbol, base] : mBase) {
             if (balance.asset == base && balance.total.Sign() > 0) {
-                spdlog::warn(
-                    "momentum_rotation: the account holds {} {}, which this "
-                    "run did not buy: it is not counted, and not sold",
+                context.Log().Warn(
+                    "the account holds {} {}, which this run did not buy: it "
+                    "is not counted, and not sold",
                     balance.total.Normalized().ToString(), base);
             }
         }
@@ -152,8 +150,7 @@ bool MomentumRotation::Reconcile(Context& context) {
                           (!status && status.error().category ==
                                           types::ErrorCategory::kNotFound);
         if (gone) {
-            spdlog::warn("momentum_rotation: order {} had closed unnoticed",
-                         it->first);
+            context.Log().Warn("order {} had closed unnoticed", it->first);
             const types::Symbol sym = status && !status->symbol.empty()
                                           ? status->symbol
                                           : it->second.symbol;
@@ -199,9 +196,8 @@ Decimal MomentumRotation::Sellable(Context& context,
 
 void MomentumRotation::Rebalance(Context& context) {
     if (!mOrders.empty() && !Reconcile(context)) {
-        spdlog::warn(
-            "momentum_rotation: {} order(s) from the last rebalance still "
-            "out; skipping this one",
+        context.Log().Warn(
+            "{} order(s) from the last rebalance still out; skipping this one",
             mOrders.size());
         return;
     }
@@ -246,9 +242,8 @@ void MomentumRotation::Rebalance(Context& context) {
     // A period ranked from a few bars (a backfill delivering one symbol's
     // bars ahead of the others) is no ranking to trade on.
     if (ranked.size() * 2 < mParams.symbols.size()) {
-        spdlog::warn(
-            "momentum_rotation: only {} of {} symbols could be ranked; no "
-            "rebalance",
+        context.Log().Warn(
+            "only {} of {} symbols could be ranked; no rebalance",
             ranked.size(), mParams.symbols.size());
         return;
     }
@@ -267,8 +262,8 @@ void MomentumRotation::Rebalance(Context& context) {
         targets.insert(symbol);
         top += (top.empty() ? "" : ", ") + symbol + " " + Percent(momentum);
     }
-    spdlog::info("momentum_rotation: {} ranked; top {}", ranked.size(),
-                 top.empty() ? std::string("nothing (cash)") : top);
+    context.Log().Info("{} ranked; top {}", ranked.size(),
+                       top.empty() ? std::string("nothing (cash)") : top);
 
     // Sell what was ranked out of the top. What could not be ranked is kept
     // (and keeps its slot) until it can be.
@@ -327,7 +322,7 @@ void MomentumRotation::Enter(Context& context) {
     const auto equity = Equity(context);
     auto balances = context.Venue().GetBalances();
     if (!equity || !balances) {
-        spdlog::warn("momentum_rotation: cannot value the account; no buys");
+        context.Log().Warn("cannot value the account; no buys");
         return;
     }
     Decimal cash;
@@ -353,9 +348,9 @@ void MomentumRotation::Enter(Context& context) {
                 .RoundToIncrement(info->lot_size, Rounding::kDown);
         if (quantity.Sign() <= 0 || quantity < info->min_order_size ||
             quantity * *price < info->min_notional) {
-            spdlog::info("momentum_rotation: {} {} of {} is too small to buy",
-                         notional.Rescale(2, Rounding::kDown).ToString(),
-                         mQuote, symbol);
+            context.Log().Info("{} {} of {} is too small to buy",
+                               notional.Rescale(2, Rounding::kDown).ToString(),
+                               mQuote, symbol);
             continue;
         }
         if (Place(context, symbol, Side::kBuy, quantity)) {
@@ -406,14 +401,14 @@ std::optional<std::string> MomentumRotation::Place(Context& context,
     request.type = types::OrderType::kMarket;
     request.quantity = quantity;
     const auto ack =
-        Submit(context, request, "momentum_rotation",
+        Submit(context, request,
                std::string(types::ToString(side)) + " " + quantity.ToString());
     if (!ack) {
         return std::nullopt;
     }
-    spdlog::info("momentum_rotation: {} {} {} (order {}, {})",
-                 types::ToString(side), quantity.ToString(), symbol,
-                 ack->order_id, types::ToString(ack->state));
+    context.Log().Info("{} {} {} (order {}, {})", types::ToString(side),
+                       quantity.ToString(), symbol, ack->order_id,
+                       types::ToString(ack->state));
     if (!Closed(ack->state)) {
         mOrders[ack->order_id] = OrderInfo{side == Side::kSell, symbol, {}};
     }
@@ -471,8 +466,8 @@ void MomentumRotation::OnOrderUpdate(Context& context,
         !status.symbol.empty() ? status.symbol : it->second.symbol;
     mOrders.erase(it);
     if (status.state != OrderState::kFilled) {
-        spdlog::warn("momentum_rotation: order {} for {} closed: {}",
-                     status.order_id, sym, types::ToString(status.state));
+        context.Log().Warn("order {} for {} closed: {}", status.order_id, sym,
+                           types::ToString(status.state));
         if (sell) {
             mSelling.erase(sym);  // no more of it will sell
         }

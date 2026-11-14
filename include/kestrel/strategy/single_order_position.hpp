@@ -27,9 +27,7 @@ class SingleOrderPosition {
     // What a fill or an update did to the position.
     enum class Change { kNone, kEntered, kExited };
 
-    // `tag` starts the log lines (the strategy's name).
-    SingleOrderPosition(types::Symbol symbol, types::Decimal quantity,
-                        std::string tag);
+    SingleOrderPosition(types::Symbol symbol, types::Decimal quantity);
 
     bool Busy() const { return mOrder.has_value(); }  // an order is working
     bool Long() const { return mLong; }
@@ -46,8 +44,8 @@ class SingleOrderPosition {
     // position counts as flat at once (false, and Long() is false).
     bool Sell(Context& context);
 
-    Change OnFill(const types::Fill& fill);
-    Change OnOrderUpdate(const types::OrderStatus& status);
+    Change OnFill(Context& context, const types::Fill& fill);
+    Change OnOrderUpdate(Context& context, const types::OrderStatus& status);
 
    private:
     struct Order {
@@ -61,14 +59,13 @@ class SingleOrderPosition {
 
     bool Place(Context& context, types::Side side,
                const types::Decimal& quantity);
-    Change Finish();
+    Change Finish(Context& context);
     Change Exit();
     void NoteEntryFill(const types::Decimal& quantity,
                        const types::Decimal& price);
 
     types::Symbol mSymbol;
     types::Decimal mQuantity;
-    std::string mTag;
     std::string mBaseAsset;
     types::Decimal mHeld;
     bool mLong = false;

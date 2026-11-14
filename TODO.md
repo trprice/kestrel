@@ -156,7 +156,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
       stays down
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
-- [ ] Structured logging, with a per-strategy log context
 - [ ] Run several strategies in one process, sharing data subscriptions
 - [ ] Quote `seq` is numbered per process: two recorders of one symbol
       interleave. Check the stored maximum at each flush, or number in SQL.
@@ -814,6 +813,10 @@ the header of the code concerned.
       stopped while its market is open, until they return
 - [x] `breakout` `risk_per_trade`: entries sized from the distance to the
       stop, capped at `quantity`
+- [x] Per-strategy structured log context (`strategy::LogContext`,
+      `Context::Log()`, `RunnerOptions::log`): prepends the strategy name and
+      `key=value` fields (including `symbol=<symbol>` for single-symbol
+      strategies) to every runner, recorder and strategy log line
 
 ### Venues
 - [x] HTTP response-time recording: `TimedHttpClient` on every factory HTTP

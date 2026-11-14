@@ -100,6 +100,7 @@ add_library(kestrel
   src/backtest/replay_data_source.cpp
   src/backtest/backtest.cpp
   src/backtest/summary.cpp
+  src/strategy/log_context.cpp
   src/strategy/runner.cpp
   src/strategy/run_recorder.cpp
   src/strategy/ma_crossover.cpp

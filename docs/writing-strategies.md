@@ -64,6 +64,11 @@ Every hook gets a `Context&`, valid only during that call:
 - `MarketOpen()`: whether the market can be traded now, and
   `CurrentOrNextSession()`: the session open now, or the next one. Always open
   (and no session) on a crypto venue.
+- `Log()`: the strategy's `LogContext` (`Debug`, `Info`, `Warn`, `Error`, plus
+  `With(key, value)` for scoped child contexts). It automatically prepends the
+  strategy name and `symbol=<symbol>` (for single-symbol strategies) plus any
+  fields set on `RunnerOptions::log`. Use `context.Log()` instead of calling
+  `spdlog` directly.
 
 ```cpp
 class MyStrategy : public strategy::Strategy {

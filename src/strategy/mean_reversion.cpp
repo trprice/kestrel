@@ -1,7 +1,5 @@
 #include "kestrel/strategy/mean_reversion.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -15,7 +13,7 @@ using types::Side;
 
 MeanReversion::MeanReversion(MeanReversionParams params)
     : mParams(std::move(params)),
-      mPosition(mParams.symbol, mParams.quantity, "mean_reversion") {
+      mPosition(mParams.symbol, mParams.quantity) {
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -103,9 +101,8 @@ void MeanReversion::OnBar(Context& context, const types::Symbol& symbol,
             }
             const Decimal stop = bar.close - mParams.atr_stop * *atr;
             if (stop.Sign() <= 0) {
-                spdlog::warn(
-                    "mean_reversion: {} ATRs of {} under {} is no price for a "
-                    "stop; no entry",
+                context.Log().Warn(
+                    "{} ATRs of {} under {} is no price for a stop; no entry",
                     mParams.atr_stop.ToString(), atr->ToString(),
                     bar.close.ToString());
                 return;
@@ -142,15 +139,17 @@ void MeanReversion::OnBar(Context& context, const types::Symbol& symbol,
     }
 }
 
-void MeanReversion::OnFill(Context&, const types::Fill& fill) {
-    Apply(mPosition.OnFill(fill));
+void MeanReversion::OnFill(Context& context, const types::Fill& fill) {
+    Apply(context, mPosition.OnFill(context, fill));
 }
 
-void MeanReversion::OnOrderUpdate(Context&, const types::OrderStatus& status) {
-    Apply(mPosition.OnOrderUpdate(status));
+void MeanReversion::OnOrderUpdate(Context& context,
+                                  const types::OrderStatus& status) {
+    Apply(context, mPosition.OnOrderUpdate(context, status));
 }
 
-void MeanReversion::Apply(SingleOrderPosition::Change change) {
+void MeanReversion::Apply(Context& context,
+                          SingleOrderPosition::Change change) {
     if (change == SingleOrderPosition::Change::kEntered) {
         mBarsHeld = 0;
         // The stop is set from the price paid, not the signal's close.
@@ -161,9 +160,9 @@ void MeanReversion::Apply(SingleOrderPosition::Change change) {
             if (stop.Sign() > 0) {
                 mStopPrice = stop;
             } else {
-                spdlog::warn(
-                    "mean_reversion: paid {} for {}, too little for a stop {} "
-                    "ATRs under; the signal's stop {} stands",
+                context.Log().Warn(
+                    "paid {} for {}, too little for a stop {} ATRs under; the "
+                    "signal's stop {} stands",
                     mPosition.EntryPrice().ToString(), mParams.symbol,
                     mParams.atr_stop.ToString(), mStopPrice.ToString());
             }
@@ -198,7 +197,8 @@ void MeanReversion::Trade(Context& context, Side side) {
     if (side == Side::kBuy) {
         mPosition.Buy(context);
     } else if (!mPosition.Sell(context) && !mPosition.Long()) {
-        Apply(SingleOrderPosition::Change::kExited);  // dust: flat at once
+        Apply(context,
+              SingleOrderPosition::Change::kExited);  // dust: flat at once
     }
 }
 

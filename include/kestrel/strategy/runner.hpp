@@ -80,6 +80,10 @@ struct RunnerOptions {
     // nor its price by the risk gate; one dropped just before a stop is
     // lost, as is one the backfill cannot fetch. A backtest sets zero.
     std::size_t max_queued_bars = 1000;
+    // Starting log context for the strategy and the runner. When its strategy
+    // name is empty, the runner sets it to Strategy::Name(); when the strategy
+    // trades one symbol and `symbol` is not set, Begin() adds symbol=<symbol>.
+    LogContext log;
 };
 
 // Which of `open` (the orders open on the venue) are entries, to cancel when a
@@ -184,6 +188,9 @@ class Runner : private Context {
     // The risk gate the strategy trades through, if options.risk was set; use
     // it to halt trading from outside the strategy.
     std::shared_ptr<trading::RiskGatedVenue> RiskGate() const { return mGate; }
+
+    // The strategy's structured log context.
+    const LogContext& Log() const override { return mLog; }
 
     // Run() in pieces, for a driver that supplies events itself on one thread
     // and wants deterministic processing (see backtest::RunBacktest).
@@ -346,8 +353,11 @@ class Runner : private Context {
     std::unique_ptr<Strategy> mStrategy;
     const RunnerOptions mOptions;
     std::function<types::Timestamp()> mClock;
-    // For the poller's log lines, which must not call into the strategy.
-    const std::string mName;
+    // Set in the constructor (and in Begin() before any stream or poller
+    // starts), so the poller and stream threads can log with it without
+    // calling into the strategy or taking a lock.
+    LogContext mLog;
+    std::vector<types::Symbol> mSymbols;
 
     mutable std::mutex mMutex;  // guards the members below
     std::condition_variable mWake;

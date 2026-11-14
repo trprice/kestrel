@@ -175,10 +175,10 @@ include/kestrel/   public headers, one directory per area:
                      market-trade and strategy-state stores
   trading/           TradingVenue, paper and live venues, Binance.US API,
                      order rules, PnlTracker, RiskGatedVenue
-  strategy/          Strategy, Runner, RunRecorder, the strategies
-                     (MaCrossover, MarketMaker, Breakout, MomentumRotation)
-                     and bar patterns and indicators (patterns.hpp: SMA,
-                     EMA, RSI, ATR, Bollinger, MACD)
+  strategy/          Strategy, Runner, LogContext, RunRecorder, the strategies
+                     (MaCrossover, MeanReversion, MarketMaker, Breakout,
+                     MomentumRotation) and bar patterns and indicators
+                     (patterns.hpp: SMA, EMA, RSI, ATR, Bollinger, MACD)
   backtest/          ReplayDataSource, LoadReplayData, RunBacktest,
                      SummaryBuilder (the P&L summary and markouts)
   factory.hpp        builds a provider's data source and venue, a strategy by

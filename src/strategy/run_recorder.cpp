@@ -1,8 +1,7 @@
 #include "kestrel/strategy/run_recorder.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <set>
+#include <utility>
 
 #include "kestrel/net/timed_http_client.hpp"
 
@@ -11,8 +10,11 @@ namespace kestrel::strategy {
 using types::Decimal;
 
 RunRecorder::RunRecorder(std::shared_ptr<trading::TradeLog> log,
-                         std::chrono::milliseconds interval)
-    : mLog(std::move(log)), mInterval(interval) {}
+                         std::chrono::milliseconds interval,
+                         LogContext log_context)
+    : mLog(std::move(log)),
+      mInterval(interval),
+      mLogContext(std::move(log_context)) {}
 
 void RunRecorder::RecordLatency(std::chrono::milliseconds interval,
                                 LatencySource source) {
@@ -39,7 +41,7 @@ void RunRecorder::NotePrice(const types::Symbol& symbol, const Decimal& price) {
 void RunRecorder::NoteFill(const types::Fill& fill) {
     mPnl.Apply(fill);
     if (mQueue.size() >= kMaxQueued) {
-        spdlog::error("run recorder: dropping the oldest unwritten fill");
+        mLogContext.Error("dropping the oldest unwritten fill");
         mQueue.pop_front();
     }
     mQueue.push_back(fill);
@@ -53,14 +55,14 @@ void RunRecorder::Flush() {
     auto written = mLog->WriteFills(batch);
     if (!written) {
         if (!mFillsFailing) {
-            spdlog::error("run recorder: cannot write fills, will retry: {}",
-                          written.error().ToString());
+            mLogContext.Error("cannot write fills, will retry: {}",
+                              written.error().ToString());
         }
         mFillsFailing = true;
         return;
     }
     if (mFillsFailing) {
-        spdlog::info("run recorder: fills are being written again");
+        mLogContext.Info("fills are being written again");
     }
     mFillsFailing = false;
     mQueue.clear();
@@ -88,8 +90,8 @@ void RunRecorder::WriteLatencyWindow(types::Timestamp now) {
     auto written = mLog->WriteLatency(start, now, rows);
     if (!written) {
         if (!mLatencyFailing) {
-            spdlog::error("run recorder: cannot write latency figures: {}",
-                          written.error().ToString());
+            mLogContext.Error("cannot write latency figures: {}",
+                              written.error().ToString());
         }
         mLatencyFailing = true;
         return;
@@ -130,8 +132,8 @@ void RunRecorder::Snapshot(types::Timestamp now) {
     auto written = mLog->WritePnl(now, rows);
     if (!written) {
         if (!mPnlFailing) {
-            spdlog::error("run recorder: cannot write a P&L snapshot: {}",
-                          written.error().ToString());
+            mLogContext.Error("cannot write a P&L snapshot: {}",
+                              written.error().ToString());
         }
         mPnlFailing = true;
         return;
@@ -147,8 +149,8 @@ void RunRecorder::Finish(types::Timestamp now) {
         WriteLatencyWindow(now);
     }
     if (auto done = mLog->Finish(now); !done) {
-        spdlog::error("run recorder: cannot mark the run finished: {}",
-                      done.error().ToString());
+        mLogContext.Error("cannot mark the run finished: {}",
+                          done.error().ToString());
     }
 }
 

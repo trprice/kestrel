@@ -53,7 +53,7 @@ class MeanReversion : public Strategy {
 
    private:
     void Trade(Context& context, types::Side side);
-    void Apply(SingleOrderPosition::Change change);
+    void Apply(Context& context, SingleOrderPosition::Change change);
 
     MeanReversionParams mParams;
     SingleOrderPosition mPosition;

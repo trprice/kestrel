@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 
+#include "kestrel/strategy/log_context.hpp"
 #include "kestrel/trading/pnl_tracker.hpp"
 #include "kestrel/trading/trade_log.hpp"
 
@@ -40,7 +41,12 @@ class RunRecorder {
     using LatencySource = std::function<std::vector<types::EndpointLatency>()>;
 
     RunRecorder(std::shared_ptr<trading::TradeLog> log,
-                std::chrono::milliseconds interval);
+                std::chrono::milliseconds interval,
+                LogContext log_context = LogContext("run_recorder"));
+
+    void SetLog(LogContext log_context) {
+        mLogContext = std::move(log_context);
+    }
 
     // Turns on latency windows of `interval` (zero keeps them off). A null
     // `source` means the process-wide HTTP statistics.
@@ -67,6 +73,7 @@ class RunRecorder {
 
     std::shared_ptr<trading::TradeLog> mLog;
     std::chrono::milliseconds mInterval;
+    LogContext mLogContext;
     trading::PnlTracker mPnl;
     std::map<types::Symbol, types::Decimal> mMarks;
     std::deque<types::Fill> mQueue;

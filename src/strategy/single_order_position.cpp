@@ -1,7 +1,5 @@
 #include "kestrel/strategy/single_order_position.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 #include <utility>
 
@@ -12,11 +10,9 @@ namespace kestrel::strategy {
 using types::Decimal;
 using types::Side;
 
-SingleOrderPosition::SingleOrderPosition(types::Symbol symbol, Decimal quantity,
-                                         std::string tag)
+SingleOrderPosition::SingleOrderPosition(types::Symbol symbol, Decimal quantity)
     : mSymbol(std::move(symbol)),
       mQuantity(quantity),
-      mTag(std::move(tag)),
       mBaseAsset(BaseAsset(mSymbol)) {}
 
 bool SingleOrderPosition::Buy(Context& context) {
@@ -25,8 +21,8 @@ bool SingleOrderPosition::Buy(Context& context) {
     }
     const Decimal quantity = RoundDownToLot(context, mSymbol, mQuantity);
     if (quantity.Sign() <= 0) {
-        spdlog::warn("{}: quantity {} {} is under one lot; no buy", mTag,
-                     mQuantity.ToString(), mSymbol);
+        context.Log().Warn("quantity {} {} is under one lot; no buy",
+                           mQuantity.ToString(), mSymbol);
         return false;
     }
     return Place(context, Side::kBuy, quantity);
@@ -41,8 +37,8 @@ bool SingleOrderPosition::Sell(Context& context) {
     const Decimal quantity =
         RoundDownToLot(context, mSymbol, mHeld.Sign() > 0 ? mHeld : mQuantity);
     if (quantity.Sign() <= 0) {
-        spdlog::warn("{}: {} {} is under one lot and cannot be sold; flat",
-                     mTag, mHeld.ToString(), mSymbol);
+        context.Log().Warn("{} {} is under one lot and cannot be sold; flat",
+                           mHeld.ToString(), mSymbol);
         Exit();
         return false;
     }
@@ -56,7 +52,7 @@ bool SingleOrderPosition::Place(Context& context, Side side,
     request.side = side;
     request.type = types::OrderType::kMarket;
     request.quantity = quantity;
-    const auto ack = Submit(context, request, mTag, types::ToString(side));
+    const auto ack = Submit(context, request, types::ToString(side));
     if (!ack) {
         return false;
     }
@@ -64,13 +60,13 @@ bool SingleOrderPosition::Place(Context& context, Side side,
         mEntryCost = mEntryFilled = mEntryPrice = Decimal();
     }
     mOrder = Order{ack->order_id, side, quantity, quantity, Decimal(), false};
-    spdlog::info("{}: {} {} {} (order {})", mTag, types::ToString(side),
-                 quantity.ToString(), mSymbol, ack->order_id);
+    context.Log().Info("{} {} {} (order {})", types::ToString(side),
+                       quantity.ToString(), mSymbol, ack->order_id);
     return true;
 }
 
 SingleOrderPosition::Change SingleOrderPosition::OnFill(
-    const types::Fill& fill) {
+    Context& context, const types::Fill& fill) {
     if (fill.symbol != mSymbol) {
         return Change::kNone;
     }
@@ -107,11 +103,11 @@ SingleOrderPosition::Change SingleOrderPosition::OnFill(
         return Exit();
     }
     mOrder->filled += quantity;
-    return mOrder->filled >= mOrder->expected ? Finish() : Change::kNone;
+    return mOrder->filled >= mOrder->expected ? Finish(context) : Change::kNone;
 }
 
 SingleOrderPosition::Change SingleOrderPosition::OnOrderUpdate(
-    const types::OrderStatus& status) {
+    Context& context, const types::OrderStatus& status) {
     if (!mOrder || status.order_id != mOrder->id) {
         return Change::kNone;
     }
@@ -121,7 +117,8 @@ SingleOrderPosition::Change SingleOrderPosition::OnOrderUpdate(
         if (status.filled_quantity.Sign() > 0) {
             mOrder->expected = status.filled_quantity;
         }
-        return mOrder->filled >= mOrder->expected ? Finish() : Change::kNone;
+        return mOrder->filled >= mOrder->expected ? Finish(context)
+                                                  : Change::kNone;
     }
     if (!ClosedUnfilled(status.state)) {
         return Change::kNone;
@@ -131,32 +128,31 @@ SingleOrderPosition::Change SingleOrderPosition::OnOrderUpdate(
     // (some report nothing filled on a cancel) is behind: go by the fills.
     const Decimal filled = std::max(status.filled_quantity, mOrder->filled);
     if (filled.Sign() == 0) {
-        spdlog::warn("{}: order {} closed without a fill: {}", mTag,
-                     status.order_id, types::ToString(status.state));
+        context.Log().Warn("order {} closed without a fill: {}",
+                           status.order_id, types::ToString(status.state));
     }
     mOrder->closed = true;
     mOrder->expected = filled;
-    return mOrder->filled >= mOrder->expected ? Finish() : Change::kNone;
+    return mOrder->filled >= mOrder->expected ? Finish(context) : Change::kNone;
 }
 
-SingleOrderPosition::Change SingleOrderPosition::Finish() {
+SingleOrderPosition::Change SingleOrderPosition::Finish(Context& context) {
     const Order order = *std::exchange(mOrder, std::nullopt);
     if (order.side == Side::kBuy) {
         if (order.filled.Sign() <= 0 || mLong) {
             return Change::kNone;
         }
         if (order.closed) {
-            spdlog::warn("{}: bought {} of {} {}", mTag,
-                         order.filled.ToString(), order.requested.ToString(),
-                         mSymbol);
+            context.Log().Warn("bought {} of {} {}", order.filled.ToString(),
+                               order.requested.ToString(), mSymbol);
         }
         mLong = true;
         return Change::kEntered;
     }
     if (order.closed && order.filled < order.requested && mHeld.Sign() > 0) {
-        spdlog::warn("{}: sold {} of {} {}; still holds {}", mTag,
-                     order.filled.ToString(), order.requested.ToString(),
-                     mSymbol, mHeld.ToString());
+        context.Log().Warn("sold {} of {} {}; still holds {}",
+                           order.filled.ToString(), order.requested.ToString(),
+                           mSymbol, mHeld.ToString());
         return Change::kNone;  // still long: the strategy sells again
     }
     return Exit();

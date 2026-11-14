@@ -37,10 +37,10 @@ types::Decimal RoundDownToLot(Context& context, const types::Symbol& symbol,
                               const types::Decimal& quantity);
 
 // Places the order. If the venue refuses it, or acknowledges it already
-// closed without a fill (no fill will come), logs a warning as
-// "<tag>: <what> <symbol> ..." and returns nothing.
+// closed without a fill (no fill will come), logs a warning through
+// context.Log() and returns nothing.
 std::optional<types::OrderAcknowledgement> Submit(
-    Context& context, const types::OrderRequest& request, std::string_view tag,
+    Context& context, const types::OrderRequest& request,
     std::string_view what);
 
 }  // namespace kestrel::strategy

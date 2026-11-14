@@ -1,7 +1,5 @@
 #include "kestrel/strategy/runner.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 
 #include "kestrel/data/recent_bars.hpp"
@@ -159,7 +157,9 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
       mStrategy(std::move(strategy)),
       mOptions(std::move(options)),
       mClock(std::move(clock)),
-      mName(mStrategy->Name()) {
+      mLog(mOptions.log.Strategy().empty()
+               ? mOptions.log.WithStrategy(mStrategy->Name())
+               : mOptions.log) {
     if (mOptions.risk) {
         mGate = std::make_shared<trading::RiskGatedVenue>(
             mVenue, *mOptions.risk, mClock);
@@ -175,8 +175,8 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     mTracker = std::make_shared<OrderTracker>(mVenue);
     mVenue = mTracker;
     if (mOptions.trade_log) {
-        mRecorder = std::make_unique<RunRecorder>(mOptions.trade_log,
-                                                  mOptions.pnl_interval);
+        mRecorder = std::make_unique<RunRecorder>(
+            mOptions.trade_log, mOptions.pnl_interval, mLog);
         mRecorder->RecordLatency(mOptions.latency_interval,
                                  mOptions.latency_source);
     }
@@ -226,16 +226,15 @@ void Runner::PushBar(BarEvent event) {
     // Logged outside the lock, which the strategy thread waits on.
     if (dropped) {
         if (first_drop) {
-            spdlog::warn(
-                "strategy {}: {} bars queued, the limit: dropping new ones "
-                "until it catches up (the gap is backfilled)",
-                mName, mOptions.max_queued_bars);
+            mLog.Warn(
+                "{} bars queued, the limit: dropping new ones until it "
+                "catches up (the gap is backfilled)",
+                mOptions.max_queued_bars);
         }
         return;
     }
     if (recovered > 0) {
-        spdlog::info("strategy {}: bar queue has room again after dropping {}",
-                     mName, recovered);
+        mLog.Info("bar queue has room again after dropping {}", recovered);
     }
     mWake.notify_one();
 }
@@ -300,16 +299,21 @@ void Runner::Guarded(const char* hook, const std::function<void()>& call) {
     try {
         call();
     } catch (const std::exception& e) {
-        spdlog::error("strategy {}: {} threw: {}", mStrategy->Name(), hook,
-                      e.what());
+        mLog.Error("{} threw: {}", hook, e.what());
     } catch (...) {
-        spdlog::error("strategy {}: {} threw a non-standard exception",
-                      mStrategy->Name(), hook);
+        mLog.Error("{} threw a non-standard exception", hook);
     }
 }
 
 types::Result<void> Runner::Begin() {
     const Requirements requirements = mStrategy->Needs();
+    mSymbols = requirements.symbols;
+    if (mSymbols.size() == 1 && !mLog.Has("symbol")) {
+        mLog = mLog.With("symbol", mSymbols.front());
+    }
+    if (mRecorder) {
+        mRecorder->SetLog(mLog);
+    }
     if (requirements.state) {
         mState = mOptions.state_store;
     }
@@ -343,8 +347,8 @@ types::Result<void> Runner::Begin() {
             return std::unexpected(std::move(error));
         }
         if (!info) {
-            spdlog::warn("strategy {}: no symbol info for {} yet: {}",
-                         mStrategy->Name(), symbol, info.error().ToString());
+            mLog.Warn("no symbol info for {} yet: {}", symbol,
+                      info.error().ToString());
         }
     }
 
@@ -363,8 +367,8 @@ types::Result<void> Runner::Begin() {
         for (const auto& id : *cancelled) {
             ids += ' ' + id;
         }
-        spdlog::warn("strategy {}: cancelled {} order(s) already open:{}",
-                     mStrategy->Name(), cancelled->size(), ids);
+        mLog.Warn("cancelled {} order(s) already open:{}", cancelled->size(),
+                  ids);
     }
 
     // Subscribe before the warmup fetch so a bar that closes in between is
@@ -413,9 +417,8 @@ types::Result<void> Runner::Begin() {
         // what was held at the start would realize nothing.
         auto positions = mVenue->GetPositions();
         if (!positions) {
-            spdlog::warn(
-                "strategy {}: recording P&L without the starting positions: {}",
-                mStrategy->Name(), positions.error().ToString());
+            mLog.Warn("recording P&L without the starting positions: {}",
+                      positions.error().ToString());
         }
         mRecorder->Start(
             positions ? *positions : std::vector<types::Position>{}, mClock());
@@ -509,16 +512,13 @@ void Runner::NoteQuote(const types::Symbol& symbol, types::Timestamp now) {
     }
     if (mGateStale.erase(symbol) > 0) {
         mGate->SetQuotesStale(symbol, false);
-        spdlog::info("strategy {}: quotes for {} again; entries allowed", mName,
-                     symbol);
+        mLog.Info("quotes for {} again; entries allowed", symbol);
     }
     if (mStaleQuotes.erase(symbol) > 0) {
-        spdlog::info(
-            "strategy {}: quotes for {} again, after {} s of open market",
-            mName, symbol,
-            std::chrono::duration_cast<std::chrono::seconds>(
-                mHours->OpenDuration(it->second, now))
-                .count());
+        mLog.Info("quotes for {} again, after {} s of open market", symbol,
+                  std::chrono::duration_cast<std::chrono::seconds>(
+                      mHours->OpenDuration(it->second, now))
+                      .count());
     }
     it->second = now;
 }
@@ -535,19 +535,19 @@ void Runner::CheckQuoteFeeds(types::Timestamp now) {
         const auto quiet = mHours->OpenDuration(last, now);
         if (pause && quiet >= *pause && mGateStale.insert(symbol).second) {
             mGate->SetQuotesStale(symbol, true);
-            spdlog::warn(
-                "strategy {}: no quote for {} for {} s of open market; the "
-                "risk gate refuses new positions in it until quotes return",
-                mName, symbol,
+            mLog.Warn(
+                "no quote for {} for {} s of open market; the risk gate "
+                "refuses new positions in it until quotes return",
+                symbol,
                 std::chrono::duration_cast<std::chrono::seconds>(quiet)
                     .count());
         }
         if (warn && quiet >= mOptions.stale_quote_warning &&
             mStaleQuotes.insert(symbol).second) {
-            spdlog::warn(
-                "strategy {}: no quote for {} for {} s of open market; the "
-                "feed may be stale",
-                mName, symbol,
+            mLog.Warn(
+                "no quote for {} for {} s of open market; the feed may be "
+                "stale",
+                symbol,
                 std::chrono::duration_cast<std::chrono::seconds>(quiet)
                     .count());
         }
@@ -646,13 +646,12 @@ EntryCancels EntriesToCancel(
 }
 
 void Runner::CancelEntries() {
-    const auto symbols = mStrategy->Needs().symbols;
     auto open = mVenue->GetOpenOrders();
     if (!open) {
-        spdlog::error(
-            "strategy {}: could not read open orders to cancel entries on "
-            "stop; any left open stay open: {}",
-            mName, open.error().ToString());
+        mLog.Error(
+            "could not read open orders to cancel entries on stop; any left "
+            "open stay open: {}",
+            open.error().ToString());
         return;
     }
     std::optional<std::vector<types::Position>> positions;
@@ -663,51 +662,48 @@ void Runner::CancelEntries() {
         positions = std::move(*fetched_positions);
         balances = std::move(*fetched_balances);
     } else {
-        spdlog::warn(
-            "strategy {}: could not read holdings on stop; keeping open sells "
-            "and cancelling open buys: {}",
-            mName,
+        mLog.Warn(
+            "could not read holdings on stop; keeping open sells and "
+            "cancelling open buys: {}",
             (fetched_positions ? fetched_balances.error()
                                : fetched_positions.error())
                 .ToString());
     }
-    const auto plan = EntriesToCancel(*open, symbols, positions, balances);
+    const auto plan = EntriesToCancel(*open, mSymbols, positions, balances);
     const auto& ids = plan.ids;
     std::size_t kept = 0;
     for (const auto& order : *open) {
-        if (std::ranges::find(symbols, order.symbol) != symbols.end() &&
+        if (std::ranges::find(mSymbols, order.symbol) != mSymbols.end() &&
             std::ranges::find(ids, order.order_id) == ids.end()) {
             ++kept;
-            spdlog::info("strategy {}: left open on stop: {} {} {} {}", mName,
-                         order.order_id, order.symbol,
-                         order.side == types::Side::kBuy ? "buy" : "sell",
-                         (order.quantity - order.filled_quantity).ToString());
+            mLog.Info("left open on stop: {} {} {} {}", order.order_id,
+                      order.symbol,
+                      order.side == types::Side::kBuy ? "buy" : "sell",
+                      (order.quantity - order.filled_quantity).ToString());
         }
     }
     std::size_t cancelled = 0;
     for (const auto& id : ids) {
         if (auto outcome = mVenue->CancelOrder(id); !outcome) {
-            spdlog::error("strategy {}: could not cancel order {} on stop: {}",
-                          mName, id, outcome.error().ToString());
+            mLog.Error("could not cancel order {} on stop: {}", id,
+                       outcome.error().ToString());
         } else if (*outcome == trading::CancelOutcome::kCancelled) {
             ++cancelled;
         } else if (*outcome == trading::CancelOutcome::kAlreadyFilled) {
-            spdlog::warn(
-                "strategy {}: order {} filled before it could be cancelled on "
-                "stop; the strategy hears of the fill before it stops",
-                mName, id);
+            mLog.Warn(
+                "order {} filled before it could be cancelled on stop; the "
+                "strategy hears of the fill before it stops",
+                id);
         }
     }
     for (const auto& symbol : plan.unprotected) {
-        spdlog::warn(
-            "strategy {}: {} is held with no order left open to close it",
-            mName, symbol);
+        mLog.Warn("{} is held with no order left open to close it", symbol);
     }
     if (cancelled > 0 || kept > 0) {
-        spdlog::info(
-            "strategy {}: on stop, cancelled {} entry order(s), left {} "
-            "closing order(s) open",
-            mName, cancelled, kept);
+        mLog.Info(
+            "on stop, cancelled {} entry order(s), left {} closing order(s) "
+            "open",
+            cancelled, kept);
     }
 }
 
@@ -823,8 +819,8 @@ void Runner::SubscribeExecutions() {
         });
     if (!sub) {
         if (sub.error().category != ErrorCategory::kNotImplemented) {
-            spdlog::warn("strategy {}: no pushed executions, polling: {}",
-                         mStrategy->Name(), sub.error().ToString());
+            mLog.Warn("no pushed executions, polling: {}",
+                      sub.error().ToString());
         }
         return;
     }
@@ -889,10 +885,9 @@ types::Result<void> Runner::Warmup(const Requirements& requirements) {
             if (window.size() < requirements.warmup_bars) {
                 // Not an error (a young market, a gap in stored bars), but the
                 // strategy starts on a shorter history than it asked for.
-                spdlog::warn(
-                    "runner: warmup for {} {} has {} of the {} bars asked for",
-                    symbol, types::ToString(timeframe), window.size(),
-                    requirements.warmup_bars);
+                mLog.Warn("warmup for {} {} has {} of the {} bars asked for",
+                          symbol, types::ToString(timeframe), window.size(),
+                          requirements.warmup_bars);
             }
             if (!window.empty()) {
                 if (mGate) {
@@ -924,10 +919,9 @@ void Runner::HandleBar(const BarEvent& event) {
                     DeliverBar(event.symbol, event.timeframe, bar);
                 }
             } else {
-                spdlog::warn("strategy {}: could not backfill {} {} bars: {}",
-                             mStrategy->Name(), event.symbol,
-                             types::ToString(event.timeframe),
-                             gap.error().ToString());
+                mLog.Warn("could not backfill {} {} bars: {}", event.symbol,
+                          types::ToString(event.timeframe),
+                          gap.error().ToString());
             }
         }
     }
@@ -980,10 +974,9 @@ void Runner::StartPoller(std::chrono::milliseconds interval) {
                     Push(std::move(polled));
                 }
             } catch (const std::exception& e) {
-                spdlog::error("strategy {}: poll threw: {}", mName, e.what());
+                mLog.Error("poll threw: {}", e.what());
             } catch (...) {
-                spdlog::error("strategy {}: poll threw a non-standard exception",
-                              mName);
+                mLog.Error("poll threw a non-standard exception");
             }
             lock.lock();
         }
@@ -1009,8 +1002,7 @@ std::vector<types::OrderStatus> Runner::FetchOrders() {
     }
     auto open = mVenue->GetOpenOrders();
     if (!open) {
-        spdlog::warn("strategy {}: could not read open orders: {}", mName,
-                     open.error().ToString());
+        mLog.Warn("could not read open orders: {}", open.error().ToString());
         return {};
     }
     std::map<std::string, const types::OrderStatus*> open_by_id;
@@ -1028,8 +1020,8 @@ std::vector<types::OrderStatus> Runner::FetchOrders() {
             // Not open any more: ask what became of it.
             auto closed = mVenue->GetOrder(order_id);
             if (!closed) {
-                spdlog::warn("strategy {}: could not look up order {}: {}",
-                             mName, order_id, closed.error().ToString());
+                mLog.Warn("could not look up order {}: {}", order_id,
+                          closed.error().ToString());
                 if (closed.error().category == ErrorCategory::kNotFound) {
                     mTracker->Forget(order_id);  // it will never be found
                 }
@@ -1055,8 +1047,7 @@ std::vector<types::Fill> Runner::FetchFills() {
         mPushed ? std::max(mRunStart, cursor - kSeenFillHorizon) : cursor;
     auto fills = mVenue->GetFills(since);
     if (!fills) {
-        spdlog::warn("strategy {}: could not read fills: {}", mName,
-                     fills.error().ToString());
+        mLog.Warn("could not read fills: {}", fills.error().ToString());
         return {};
     }
     const auto by_time = [](const types::Fill& a, const types::Fill& b) {
@@ -1095,10 +1086,9 @@ std::size_t Runner::DeliverPolled(const PolledEvent& polled) {
 bool Runner::DeliverFill(const types::Fill& fill) {
     const types::Timestamp horizon = mFillCursor - kSeenFillHorizon;
     if (fill.time < horizon) {
-        spdlog::warn(
-            "strategy {}: dropping fill {} from {}, older than the "
-            "duplicate check reaches",
-            mStrategy->Name(), fill.fill_id, types::FormatIso8601(fill.time));
+        mLog.Warn(
+            "dropping fill {} from {}, older than the duplicate check reaches",
+            fill.fill_id, types::FormatIso8601(fill.time));
         return false;
     }
     if (!mSeenFills.emplace(fill.fill_id, fill.time).second) {

@@ -1,7 +1,5 @@
 #include "kestrel/strategy/orders.hpp"
 
-#include <spdlog/spdlog.h>
-
 #include <algorithm>
 
 namespace kestrel::strategy {
@@ -49,17 +47,17 @@ Decimal RoundDownToLot(Context& context, const types::Symbol& symbol,
 }
 
 std::optional<types::OrderAcknowledgement> Submit(
-    Context& context, const types::OrderRequest& request, std::string_view tag,
+    Context& context, const types::OrderRequest& request,
     std::string_view what) {
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
-        spdlog::warn("{}: {} {} failed: {}", tag, what, request.symbol,
-                     ack.error().ToString());
+        context.Log().Warn("{} {} failed: {}", what, request.symbol,
+                           ack.error().ToString());
         return std::nullopt;
     }
     if (ClosedUnfilled(ack->state)) {
-        spdlog::warn("{}: {} {} closed without a fill: {}", tag, what,
-                     request.symbol, types::ToString(ack->state));
+        context.Log().Warn("{} {} closed without a fill: {}", what,
+                           request.symbol, types::ToString(ack->state));
         return std::nullopt;
     }
     return *std::move(ack);
