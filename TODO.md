@@ -18,32 +18,9 @@ Empty for now: the next work is being decided. The code review's items
 
 ### Schwab data source
 
-Authorization is done: `kestrel_app authorize` saves the tokens, `SchwabAuth`
-renews them and `SchwabApi` sends requests within the market-data rate limit.
-`GetBars`, `GetSymbolInfo`, `StreamQuotes` and `StreamBars` work (see
-`SchwabDataSource` in `include/kestrel/data/schwab_data_source.hpp` and
-`SchwabStreamer` in `schwab_streamer.hpp`).
-
-What the live API showed (Nov 2026, SPY), beyond Schwab's docs:
-`/pricehistory` answers in whole days, whatever times are asked for; one
-request took 30 days of 1-minute bars and 33 years of daily ones; 1-minute
-bars go back about 48 days, 5-minute about 200, 30-minute about 260 (older
-days come back empty, not as an error, as does an unknown symbol);
-`needExtendedHoursData` defaults to true, and extended hours include the
-overnight session (20:00 to 04:00 ET); daily, weekly and monthly bars are
-stamped midnight US Central; share classes are `BRK/B` (`BRK.B` comes back
-empty). The streamer: `userPreference` works for a Market Data app and gives
-`wss://streamer-api.schwab.com/ws`; LEVELONE_EQUITIES sends a symbol's changes
-about once a second; field 12 is the previous close, as the field table says
-(the document's example is off); bid and ask sizes are in shares, as in REST
-`/quotes`, not lots of 100 as the document says; an unknown symbol comes back
-as zeros with status `Unknown`; a second LOGIN for the user disconnects the
-first with notify code 12. CHART_EQUITY's fields are numbered one higher than
-its table says (1 is the minute's sequence, 2 to 6 open, high, low, close and
-volume, 7 the minute's start); it sends each closed minute once, about 2 s
-after it closes, and the last closed minute again on subscribe, never the
-forming one; the volume can be fractional (REST truncates it); the bars match
-`/pricehistory`'s; an unknown symbol gets no data and no error.
+Market data, authorization and the trading venue are written; how they work,
+and what the live API showed beyond Schwab's documents, is in
+[docs/venues/schwab.md](docs/venues/schwab.md).
 
 #### Next steps
 - [ ] When it happens, note Schwab's error body for an expired or revoked
@@ -567,20 +544,9 @@ the header of the code concerned.
 - `backtest` records nothing.
 
 ### Venues and data
+- Schwab's limitations are in
+  [docs/venues/schwab.md](docs/venues/schwab.md#known-limitations).
 - The Kraken trading venue is a stub that returns `kNotImplemented`.
-- Schwab orders are for the regular session, even with `extended_hours`.
-  There is no post-only order (refused), so an OCO's limit leg is a plain
-  limit, and no client order ID: `client_order_id` is known only for orders
-  the running process placed. A placement lost to a timeout is found by its
-  symbol, side, type, duration, quantity, price and time, and not guessed at
-  when two orders fit.
-- Schwab executions give no fee (the SEC and TAF fees on sales) or
-  liquidity: fills say 0 USD and taker.
-- Schwab: one malformed order anywhere on the account (on any symbol) fails
-  the whole read of open orders or fills, and so `run`'s startup.
-- Schwab margin accounts: cash is read from the non-marginable fields, so
-  that borrowing power does not count; a margin loan makes the USD total
-  negative and nothing available.
 - The Binance.US venue runs live under `run`, polled for fills (no user-data
   stream yet). Its `GetPositions` returns nothing, so the risk gate counts
   only what filled since the run started (see Risk gate above).
@@ -593,31 +559,6 @@ the header of the code concerned.
   request, not that it can be paid for.
 - The latency rollups cover HTTP round trips only, and a window that fails to
   write is dropped, not retried.
-- Schwab streams 1-minute bars only, so `StreamBars` builds 5, 10, 15 and
-  30 minutes from them: such a bar whose last minute had no trades closes
-  with the next trade, and the first one after a (re)connect is skipped when
-  minutes of it were missed (the runner backfills it). Without
-  `extended_hours` the regular session is taken as 09:30 to 16:00 New York
-  time, so after-hours bars on an early-close day get through. Schwab has no
-  hourly bars at all, and daily and longer ones from `GetBars` only.
-- Market hours (US stocks on Schwab): the calendar is Kestrel's rules
-  (holidays, early closes, the unscheduled closures since 2001), checked
-  against Schwab's `/markets` for the days it answers (from a week back to a
-  year ahead), asked in the background: until a date's answer is in (a
-  moment after its first use), the rules hold. Schwab can only restrict a
-  day (close it, open it later, close it earlier), never open one the rules
-  close, since it fills in the next year's holidays late. A closure announced
-  at short notice is known only once Schwab has it. Schwab's overnight session
-  (20:00 to 07:00) does not count as open: with `extended_hours` its bars
-  come, but orders are refused, and a gap in its bars is not backfilled. A bar
-  closing at the session's close arrives after it, so an order on it is
-  refused.
-- Schwab allows one streamer connection per user, so only one process can
-  stream from Schwab at a time: when a second one logs in (another
-  `kestrel_app`, or thinkorswim), the first stops streaming, logs an error and
-  its subscriptions go quiet. With `[schwab] takeover_reconnect_ms` set it
-  reconnects after that wait instead, taking the connection back; two
-  processes that both set it take it from each other at every wait.
 - `PaperTradingVenue` has no leverage, and its shorts (`allow_short`) pay no
   borrow fee and are never called.
 - `run` refuses live mode on a provider whose venue is a stub
@@ -630,9 +571,6 @@ the header of the code concerned.
   quiet for 2 minutes of open market time, and with `[risk]
   max_quote_age_ms` the gate refuses new positions in it until quotes
   return. A bar strategy's feed is not checked.
-- Schwab's `GetSymbolInfo` sets the tick from the price when first asked
-  (0.0001 under $1). The trading venue takes the tick from each order's
-  price; paper mode keeps the first until the next run.
 
 ## Done
 
