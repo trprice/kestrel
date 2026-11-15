@@ -112,6 +112,7 @@ class RecordingVenue : public trading::TradingVenue {
     types::Result<std::vector<types::Fill>> GetFills(
         types::Timestamp since) override {
         ++get_fills_calls;
+        last_fills_since = since;
         if (before_get_fills) {
             before_get_fills();
         }
@@ -179,6 +180,7 @@ class RecordingVenue : public trading::TradingVenue {
     int cancel_all_calls = 0;
     int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
+    types::Timestamp last_fills_since{};
     std::vector<types::OrderRequest> orders;
     std::vector<types::OcoRequest> ocos;
     trading::ExecutionCallback pushed;

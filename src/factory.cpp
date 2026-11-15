@@ -738,7 +738,8 @@ constexpr std::chrono::milliseconds kSchwabFillPollInterval{5000};
 // The risk gate reads the fills each time it measures the losses at a new
 // price (RiskLimits::watch_interval). Live that is a request or two against
 // the provider's limit (Binance.US: weight 20 a symbol of the 2400 a minute
-// kept to; Schwab: two of 120), so not every second as on the paper venue.
+// kept to, the read reaching back at most an hour; Schwab: two of 120), so
+// not every second as on the paper venue.
 constexpr std::chrono::milliseconds kLiveRiskWatchInterval{10'000};
 
 }  // namespace

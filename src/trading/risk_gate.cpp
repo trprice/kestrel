@@ -25,6 +25,11 @@ std::chrono::sys_days DayOf(types::Timestamp t) {
 
 // How often one symbol may be closed.
 constexpr std::chrono::minutes kCloseInterval{1};
+// How far back a fill read reaches when no fill has come for a while: the
+// cursor follows the clock to this far behind it, allowing for a fill
+// reported late. Otherwise each read reaches back to the last fill, which on
+// Binance.US is one request a day of history.
+constexpr std::chrono::hours kFillLookback{1};
 
 // What `side` would hold of `symbol` if every open order of that side and
 // `extra` filled: a buy's side is the long, held plus open buys; with
@@ -230,6 +235,7 @@ types::Result<void> RiskGatedVenue::CatchUpFills(types::Timestamp now) {
         }
         mFillCursor = std::max(mFillCursor, fill.time);
     }
+    mFillCursor = std::max(mFillCursor, now - kFillLookback);
     std::erase_if(mSeenFills, [this](const auto& seen) {
         return seen.second < mFillCursor;
     });

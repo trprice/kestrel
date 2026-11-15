@@ -337,6 +337,12 @@ the header of the code concerned.
   the oldest kept returns what is kept, and `GetOrder` of a forgotten order
   is kNotFound. Backtests keep everything, so their memory grows with the
   orders placed.
+- In `run` the venue's quotes come from the Runner's stream, opened in
+  `Begin`, for the strategy's symbols only. A market order before a symbol's
+  first quote fails ("no quote available yet"), and a coin in
+  `initial_balances` outside the strategy's symbols has no book. No strategy
+  trades at `OnStart` today; one that did would need the runner to wait for a
+  first quote per symbol.
 - Market orders fill the whole remaining quantity against a single quote with
   fixed-bps slippage: no book depth and no size-aware slippage, so paper
   results flatter anything above retail size. Limit fills can be capped at

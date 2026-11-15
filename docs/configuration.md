@@ -166,10 +166,13 @@ trend follower like `ma_crossover`.
 
 The prices are the quotes' midpoints and the bar closes. `run` streams quotes
 for the gate even when the strategy takes only bars, so a loss limit follows
-the market between a bar strategy's closes; the strategy does not see those
-quotes, and `run` does not start if they cannot be streamed. A backtest of a
-bar strategy has no quotes: there the gate sees each bar's close only, so a
-limit acts up to a bar later than it would in `run`.
+the market between a bar strategy's closes. The strategy does not see those
+quotes; on a market that closes, the gate takes them only in the hours the
+strategy's bars cover (regular, or extended when configured), so with the
+regular session alone a pre-market print does not pause or halt it. `run` does not start if the subscription is
+refused, but a stream that goes quiet is not warned of. A backtest of a bar
+strategy has no quotes: there the gate sees each bar's close only, so a limit
+acts up to a bar later than it would in `run`.
 
 ## `[strategy]`
 

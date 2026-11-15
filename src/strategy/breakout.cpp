@@ -636,6 +636,7 @@ void Breakout::GoFlat() {
     mStopId.clear();
     mExitId.clear();
     mTargetId.clear();
+    mClosers.clear();
     mTargetHit = false;
     mTargetRefused = false;
 }
@@ -713,6 +714,8 @@ void Breakout::PlaceStop(Context& context) {
             types::IsActive(ack->stop.state)) {
             mStopId = ack->stop.order_id;
             mTargetId = ack->limit.order_id;
+            mClosers[mStopId] = "the protective stop";
+            mClosers[mTargetId] = "the target";
             return;
         }
         if (ack) {
@@ -769,6 +772,7 @@ void Breakout::PlaceStop(Context& context) {
     request.stop_price = mLevels->stop;
     if (auto id = Place(context, request, "protective stop")) {
         mStopId = *id;
+        mClosers[mStopId] = "the protective stop";
     } else {
         // Unprotected until the next bar, which tries again.
         Log(context).Error("held without a protective stop");
@@ -910,6 +914,7 @@ void Breakout::Exit(Context& context, const char* why) {
     Log(context).Info("exit ({})", why);
     if (auto id = Place(context, request, "exit")) {
         mExitId = *id;
+        mClosers[mExitId] = "the exit";
         mState = State::kExiting;
     } else if (mState == State::kLong) {
         PlaceStop(context);  // still long: protect it again
@@ -1044,15 +1049,11 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
     if (selling && mHeld.Sign() == 0) {
         // Said here, for every way out: a stop or target resting on the
         // venue fills without the strategy having done anything to log.
-        const auto is = [&fill](const std::string& id) {
-            return !id.empty() && fill.order_id == id;
-        };
+        const auto closer = mClosers.find(fill.order_id);
         Log(context).Info("{} closed by {} at {}; entered at {}",
                           mShort ? "short" : "long",
-                          is(mStopId)     ? "the protective stop"
-                          : is(mTargetId) ? "the target"
-                          : is(mExitId)   ? "the exit"
-                                          : "order " + fill.order_id,
+                          closer != mClosers.end() ? std::string(closer->second)
+                                                   : "order " + fill.order_id,
                           Price(fill.price), Price(mEntryPrice));
         // A failed breakout: the stop, never moved, closed all of it.
         const bool reverse = mParams.reverse && !mReversal &&

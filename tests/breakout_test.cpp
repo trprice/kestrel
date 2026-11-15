@@ -547,6 +547,57 @@ TEST(Breakout, LogsWhichOrderClosedTheTrade) {
               "entered at 13.01");
 }
 
+TEST(Breakout, LogsAnExitAndATargetFilledAfterItsStopExpired) {
+    std::vector<std::string> lines;
+    const LogContext log("breakout",
+                         [&](LogContext::Level level, std::string_view line) {
+                             if (level == LogContext::Level::kInfo) {
+                                 lines.emplace_back(line);
+                             }
+                         });
+    // Held past max_hold_bars: sold at market, named as the exit.
+    auto params = Params();
+    params.target_multiple = D("0");
+    params.max_hold_bars = 1;
+    Breakout strategy(params);
+    FakeContext context;
+    context.log = log;
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context);  // armed: order-1
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    Feed(strategy, context, {"13", "13.5", "12.5", "13.2"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);  // entry, stop, exit
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+    strategy.OnFill(context, FillOf("order-3", Side::kSell, "1", "13.2"));
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(),
+              "breakout symbol=BTC/USD: long closed by the exit at 13.2; "
+              "entered at 13.01");
+
+    // The pair's stop (order-3) reported expired before the target's
+    // (order-2) fill: still named as the target.
+    lines.clear();
+    auto resting = Params();
+    resting.resting_target = true;
+    Breakout with_target(resting);
+    FakeContext oco_context;
+    oco_context.venue.oco = true;
+    oco_context.log = log;
+    Feed(with_target, oco_context);
+    with_target.OnFill(oco_context,
+                       FillOf("order-1", Side::kBuy, "1", "13.01"));
+    types::OrderStatus stop;
+    stop.order_id = "order-3";
+    stop.state = types::OrderState::kExpired;
+    with_target.OnOrderUpdate(oco_context, stop);
+    with_target.OnFill(oco_context,
+                       FillOf("order-2", Side::kSell, "1", "15.01"));
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(),
+              "breakout symbol=BTC/USD: long closed by the target at 15.01; "
+              "entered at 13.01");
+}
+
 // The stop raised to breakeven (13.01) on a close of 15.1 is refused (as a
 // venue refuses a sell-stop above the price): sold at market instead.
 TEST(Breakout, ARefusedRaisedStopSellsAtMarket) {

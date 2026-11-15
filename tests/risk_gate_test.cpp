@@ -798,6 +798,21 @@ TEST_F(RiskGateTest, TheWatchIntervalSetsHowOftenPricesMeasureTheLosses) {
     EXPECT_EQ(venue->get_fills_calls, before + 2);
 }
 
+// With no fill for hours, a read still reaches back only an hour, not to the
+// last fill (on Binance.US, a request for each day of history).
+TEST_F(RiskGateTest, AFillReadReachesBackAnHourWhenNoFillHasCome) {
+    limits.max_drawdown = D("50");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    const types::Timestamp start = now;
+    now += std::chrono::hours(3);
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    EXPECT_EQ(venue->last_fills_since, start);
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("101"));
+    EXPECT_EQ(venue->last_fills_since, start + std::chrono::hours(2));
+}
+
 TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {
     limits.max_drawdown_close = D("50");
     venue->positions = {HoldingOf("2", "100")};

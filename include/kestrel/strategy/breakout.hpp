@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -242,6 +243,10 @@ class Breakout : public Strategy {
     std::string mExitId;
     // resting_target: the target's limit, paired with mStopId.
     std::string mTargetId;
+    // Every order placed to close this trade, by id, with what it was ("the
+    // target"), for the line that says which one closed it: the ids above
+    // can be cleared before an order's last fill comes in.
+    std::map<std::string, const char*> mClosers;
     bool mTargetHit = false;      // the target has sold some of the position
     bool mTargetRefused = false;  // refused this trade: the close checks it
     bool mNoOco = false;          // the venue has no one-cancels-other

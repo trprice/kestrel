@@ -1048,6 +1048,19 @@ TEST_F(RunnerTest, FailsWhenTheGatesQuotesCannotBeStreamed) {
     EXPECT_EQ(begun.error().message, "quotes for the risk gate: no quotes");
     EXPECT_EQ(data->stops.load(), 1);  // the bar stream, closed again
 
+    // A recorder alone is named as the reason.
+    auto recorded = std::make_unique<RecordingStrategy>();
+    recorded->requirements = strategy->requirements;
+    strategy = recorded.get();
+    strategy_owner = std::move(recorded);
+    options.risk.reset();
+    options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    Build();
+    begun = runner->Begin();
+    ASSERT_FALSE(begun);
+    EXPECT_EQ(begun.error().message, "quotes for the recorded P&L: no quotes");
+    options.trade_log.reset();
+
     // A bar strategy with neither a gate nor a recorder asks for none.
     auto owner = std::make_unique<RecordingStrategy>();
     owner->requirements = strategy->requirements;
@@ -1324,7 +1337,10 @@ class SessionStrategy : public strategy::Strategy {
     Requirements Needs() const override {
         Requirements r;
         r.symbols = {kSymbol};
-        r.quotes = true;
+        r.quotes = quotes;
+        if (!quotes) {
+            r.bar_timeframes = {types::Timeframe::kH1};
+        }
         return r;
     }
     void OnStart(strategy::Context& context) override {
@@ -1351,6 +1367,7 @@ class SessionStrategy : public strategy::Strategy {
         closes.push_back(close);
     }
 
+    bool quotes = true;              // false: a bar strategy
     std::function<void()> on_open;   // after an open is recorded
     std::function<void()> on_start;  // first thing in OnStart
     std::vector<std::string> hooks;
@@ -1760,6 +1777,35 @@ TEST_F(RunnerSessionTest, TheRiskGateClosesAPositionOnlyAtAnOpenMarketPrice) {
     EXPECT_EQ(venue->orders[0].side, types::Side::kSell);
     EXPECT_EQ(venue->orders[0].type, types::OrderType::kMarket);
     EXPECT_EQ(venue->orders[0].quantity, kestrel::testing::D("1"));
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, ABarStrategysGateHearsTheRunnersQuotesOnlyInHours) {
+    strategy->quotes = false;
+    options.risk = trading::RiskLimits{};
+    options.risk->max_drawdown_close = kestrel::testing::D("10");
+    venue->positions = {types::Position{
+        kSymbol, kestrel::testing::D("1"), kestrel::testing::D("100"), {}}};
+    Build();
+    ASSERT_OK(runner->Begin());
+    const int cancels_at_start = venue->cancel_all_calls;
+    now = Hour(0) + std::chrono::seconds(1);
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.last = kestrel::testing::D("4");  // down 96 while the market is shut
+    data->quote_callback(quote);
+    runner->Drain();
+    EXPECT_EQ(venue->cancel_all_calls, cancels_at_start);  // not heard
+
+    EXPECT_EQ(Advance(), Hour(1));
+    EXPECT_TRUE(strategy->order_at_open.has_value());  // not halted
+    now += std::chrono::seconds(1);
+    data->quote_callback(quote);  // still down 96 with the market open
+    runner->Drain();
+    EXPECT_EQ(venue->cancel_all_calls, cancels_at_start + 1);  // halted
+    ASSERT_FALSE(venue->orders.empty());
+    EXPECT_EQ(venue->orders.back().side, types::Side::kSell);
+    EXPECT_EQ(venue->orders.back().type, types::OrderType::kMarket);
     runner->End();
 }
 

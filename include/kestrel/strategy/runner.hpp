@@ -36,7 +36,9 @@ struct RunnerOptions {
     // of the venue itself, fed with prices from the bars and quotes. The
     // quotes are streamed for it even when the strategy takes only bars (and
     // likewise for a trade_log's marks): bar closes alone would leave a loss
-    // limit up to a bar behind the market. The strategy does not see them.
+    // limit up to a bar behind the market. The strategy does not see them,
+    // and the gate takes them only while the data source's hours are open:
+    // the hours the strategy's bars cover.
     std::optional<trading::RiskLimits> risk;
     // How often Run() asks the venue for new fills and for changes to the
     // strategy's orders; zero turns polling off.

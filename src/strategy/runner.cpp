@@ -879,7 +879,11 @@ bool Runner::Handle(const Event& event) {
         NoteQuote(quote->quote.symbol, mClock());
         if (mGate || mRecorder) {
             if (auto price = QuotePrice(quote->quote)) {
-                if (mGate) {
+                // The runner's own quotes reach the gate only in the hours
+                // the strategy's bars cover: a pre-market or after-hours
+                // print would otherwise pause or halt on a price the
+                // strategy never trades at.
+                if (mGate && (mStrategyQuotes || mHours->IsOpen(mClock()))) {
                     mGate->NoteReferencePrice(quote->quote.symbol, *price);
                 }
                 if (mRecorder) {

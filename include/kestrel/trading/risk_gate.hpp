@@ -64,8 +64,9 @@ struct RiskLimits {
     // asset. Equity is realized P&L (net of fees) since ResetDailyBaseline
     // plus the unrealized P&L of what is held, valued at the last reference
     // price. It is measured when an order is attempted and at each reference
-    // price (at most once a second), so the peak follows the market between
-    // orders. Once reached, only orders that reduce a position are allowed.
+    // price (at most once per watch_interval), so the peak follows the market
+    // between orders. Once reached, only orders that reduce a position are
+    // allowed.
     // Does not reset at midnight.
     std::optional<types::Decimal> max_drawdown;
     // The same fall, measured the same way, at which the gate closes every
@@ -82,8 +83,8 @@ struct RiskLimits {
     // One position's unrealized loss: its quantity times the fall of the
     // reference price from its average cost (net of the fees it paid), for
     // the cost basis the loss count keeps. Measured at each reference price
-    // (at most once a second) and at each order. Once reached, the gate
-    // cancels the symbol's open orders, closes the position at market, and
+    // (at most once per watch_interval) and at each order. Once reached, the
+    // gate cancels the symbol's open orders, closes the position at market, and
     // refuses new positions in the symbol until the next UTC day. A price
     // noted while the market is closed only pauses the symbol: the cancel and
     // the close need the loss to stand at a price from the session that is
@@ -335,9 +336,9 @@ class RiskGatedVenue : public TradingVenue {
 
     std::mutex mMutex;  // serializes checking and placing orders
     std::deque<types::Timestamp> mRecentOrders;
-    // The daily loss count. mFillCursor is the newest fill time seen; fills
-    // at that time come back on every poll, so mSeenFills (pruned to the
-    // cursor) filters them out.
+    // The daily loss count. mFillCursor is the newest fill time seen, or an
+    // hour before the last read if later; fills at or after it come back on
+    // every poll, so mSeenFills (pruned to the cursor) filters them out.
     bool mCounting = false;
     PnlTracker mPnl;
     std::chrono::sys_days mDay{};
