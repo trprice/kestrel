@@ -81,6 +81,20 @@ struct FailedBreakdown {
 std::optional<FailedBreakdown> FailedBreakdownOf(
     std::span<const types::Bar> bars, std::size_t n, std::size_t within);
 
+// A fair value gap (three-bar imbalance) at the newest three bars: the third
+// bar's low is above the first bar's high, leaving a zone the first and third
+// bars' ranges do not cover (only the middle bar traded there). `gap` is that
+// zone (the third bar's low down to the first bar's high); `range` is the
+// high and low of the three bars. Nullopt when there is no gap (or it is
+// narrower than `min_gap`), with a negative `min_gap`, or with fewer than 3
+// bars.
+struct FairValueGap {
+    PriceRange gap;    // the third bar's low and the first bar's high
+    PriceRange range;  // the highest high and lowest low of the three bars
+};
+std::optional<FairValueGap> FairValueGapOf(std::span<const types::Bar> bars,
+                                           const types::Decimal& min_gap = {});
+
 // The swing points (pivots) of a window of bars, oldest first: a bar whose low
 // is below the lows of the `strength` bars before it and no higher than those
 // of the `strength` after it is a swing low, and likewise a swing high with

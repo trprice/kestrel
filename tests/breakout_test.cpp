@@ -1551,6 +1551,186 @@ TEST(Breakout, ACupAndHandleBuysAboveItsRightRim) {
     EXPECT_EQ(context.venue.orders[1].stop_price, D("13.58"));
 }
 
+TEST(Breakout, AFairValueGapBuysAboveTheThirdBarAndStopsUnderTheGap) {
+    auto params = Params();
+    params.setup = BreakoutParams::Setup::kFairValueGap;
+    Breakout strategy(params);
+    EXPECT_EQ(strategy.Needs().warmup_bars, 3u);
+    FakeContext context;
+    context.bars.clear();
+    // Middle bar's high (17) exceeds the third bar's high (16): the stop-entry
+    // still triggers one tick above the third bar's high (16.01), while the
+    // height spans the full 3-bar range (17 - 10 = 7).
+    context.Add({"10.5", "12", "10", "11.5"});  // first bar: high 12, low 10
+    context.Add({"11.5", "17", "11", "15"});    // impulse bar: high 17
+    Feed(strategy, context, {"15", "16", "13", "15.5"});  // low 13 > 12
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[0].stop_price, D("16.01"));
+    // Filled at 16.01: the stop is under the gap's bottom (12 less 10 bps =
+    // 11.98), and the target is 16.01 + 7 = 23.01.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "16.01"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("11.98"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, {"16.5", "23.1", "16.5", "23.01"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[2].side, Side::kSell);
+}
+
+TEST(Breakout, AFairValueGapThrowbackRestsAtTheTopOfTheGapOnTheThirdBar) {
+    auto params = Throwback();
+    params.setup = BreakoutParams::Setup::kFairValueGap;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    context.Add({"10.5", "12", "10", "11.5"});
+    context.Add({"11.5", "15", "11", "14.5"});
+    Feed(strategy, context, {"14.5", "16", "13", "15.5"});
+    // The third bar's close (15.5) already cleared the gap's top (13): the
+    // post-only limit buy at 13 rests at once, without waiting a fourth bar.
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kLimit);
+    EXPECT_EQ(context.venue.orders[0].limit_price, D("13"));
+    EXPECT_TRUE(context.venue.orders[0].post_only);
+    // Filled on a pullback to 13: stop at 11.98 (under 12), target at 13 + 6
+    // = 19.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13"));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("11.98"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, {"14", "19.2", "14", "19"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[2].side, Side::kSell);
+}
+
+TEST(Breakout, AFairValueGapNarrowerThanMinGapBpsIsNoSetup) {
+    // The gap is 12 to 13: 1 / 13 of its top, about 769 bps.
+    for (const auto& [bps, armed] : std::vector<std::pair<const char*, bool>>{
+             {"760", true}, {"780", false}}) {
+        auto params = Throwback();
+        params.setup = BreakoutParams::Setup::kFairValueGap;
+        params.min_gap_bps = D(bps);
+        Breakout strategy(params);
+        FakeContext context;
+        context.bars.clear();
+        context.Add({"10.5", "12", "10", "11.5"});
+        context.Add({"11.5", "15", "11", "14.5"});
+        Feed(strategy, context, {"14.5", "16", "13", "15.5"});
+        EXPECT_EQ(context.venue.orders.size(), armed ? 1u : 0u) << bps;
+    }
+    auto bad = Throwback();
+    bad.setup = BreakoutParams::Setup::kFairValueGap;
+    bad.min_gap_bps = D("-1");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+}
+
+TEST(Breakout,
+     AFairValueGapThrowbackKeepsArmBarsWhenTheThirdBarDoesNotConfirm) {
+    // Third bar closes on its low (13, not above trigger 13.01): with the
+    // default arm_bars = 1, the fourth bar still gets its bar to confirm.
+    auto params = Throwback();
+    params.setup = BreakoutParams::Setup::kFairValueGap;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    context.Add({"10.5", "12", "10", "11.5"});
+    context.Add({"11.5", "15", "11", "14.5"});
+    Feed(strategy, context, {"14.5", "16", "13", "13"});
+    EXPECT_TRUE(context.venue.orders.empty());
+    // Fourth bar closes above 13.01 (and has low 12.5, so not a new FVG):
+    // confirms and arms the throwback limit at 13.
+    Feed(strategy, context, {"13", "14", "12.5", "13.5"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].type, types::OrderType::kLimit);
+    EXPECT_EQ(context.venue.orders[0].limit_price, D("13"));
+
+    // confirm = percent (0.5% above 13 -> trigger 13.07): a third close at
+    // 13.05 does not confirm yet, and the fourth bar's close at 13.2 does.
+    auto pct_params = params;
+    pct_params.confirm = BreakoutParams::Confirm::kPercent;
+    Breakout pct_strategy(pct_params);
+    FakeContext pct_ctx;
+    pct_ctx.bars.clear();
+    pct_ctx.Add({"10.5", "12", "10", "11.5"});
+    pct_ctx.Add({"11.5", "15", "11", "14.5"});
+    Feed(pct_strategy, pct_ctx, {"14.5", "16", "13", "13.05"});
+    EXPECT_TRUE(pct_ctx.venue.orders.empty());
+    Feed(pct_strategy, pct_ctx, {"13.05", "13.5", "12.5", "13.2"});
+    ASSERT_EQ(pct_ctx.venue.orders.size(), 1u);
+    EXPECT_EQ(pct_ctx.venue.orders[0].limit_price, D("13"));
+}
+
+TEST(Breakout,
+     AFairValueGapThrowbackCountsConfirmingClosesAndVolumeFromTheThirdBar) {
+    // confirm = closes (2 closes): the third bar is close 1, the fourth is
+    // close 2, and the throwback limit rests on the fourth bar.
+    auto params = Throwback();
+    params.setup = BreakoutParams::Setup::kFairValueGap;
+    params.confirm = BreakoutParams::Confirm::kCloses;
+    params.confirm_closes = 2;
+    Breakout strategy(params);
+    FakeContext context;
+    context.bars.clear();
+    context.Add({"10.5", "12", "10", "11.5"});
+    context.Add({"11.5", "15", "11", "14.5"});
+    Feed(strategy, context, {"14.5", "16", "13", "15.5"});
+    EXPECT_TRUE(context.venue.orders.empty());
+    Feed(strategy, context, {"15.5", "15.8", "13.5", "14"});
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].limit_price, D("13"));
+
+    // volume_ratio: judged on the third bar when it confirms.
+    auto vol_params = Throwback();
+    vol_params.setup = BreakoutParams::Setup::kFairValueGap;
+    vol_params.volume_ratio = D("2");
+    vol_params.volume_bars = 2;
+    FakeContext low_vol;
+    low_vol.bars.clear();
+    auto add_vol = [](FakeContext& ctx, std::array<const char*, 4> b,
+                      const char* v) {
+        ctx.Add(b);
+        ctx.bars.back().volume = D(v);
+        return ctx.bars.back();
+    };
+    add_vol(low_vol, {"10.5", "12", "10", "11.5"}, "100");
+    add_vol(low_vol, {"11.5", "15", "11", "14.5"}, "100");
+    Breakout low_strategy(vol_params);
+    low_strategy.OnBar(
+        low_vol, kSymbol, Timeframe::kH1,
+        add_vol(low_vol, {"14.5", "16", "13", "15.5"}, "150"));  // < 2x 100
+    EXPECT_TRUE(low_vol.venue.orders.empty());
+
+    FakeContext high_vol;
+    high_vol.bars.clear();
+    add_vol(high_vol, {"10.5", "12", "10", "11.5"}, "100");
+    add_vol(high_vol, {"11.5", "15", "11", "14.5"}, "100");
+    Breakout high_strategy(vol_params);
+    high_strategy.OnBar(
+        high_vol, kSymbol, Timeframe::kH1,
+        add_vol(high_vol, {"14.5", "16", "13", "15.5"}, "200"));  // >= 2x 100
+    ASSERT_EQ(high_vol.venue.orders.size(), 1u);
+    EXPECT_EQ(high_vol.venue.orders[0].limit_price, D("13"));
+}
+
+TEST(Breakout, ADailyFairValueGapThrowbackRestsFromTheNextOpen) {
+    // Days 3, 4, 5 form a fair value gap (day 3 high 14, day 5 low 14.5, close
+    // 15.5): the throwback limit at 14.5 pends at day 5's midnight close,
+    // goes in at day 6's open (15, above 14.5), and fills as a maker on day
+    // 6's dip to 14.2.
+    auto params = Throwback();
+    params.setup = BreakoutParams::Setup::kFairValueGap;
+    const auto result =
+        Daily({{"14.5", "16", "14.5", "15.5"}, {"15", "15.2", "14.2", "14.8"}},
+              7, params);
+    ASSERT_EQ(result.fills.size(), 1u);
+    EXPECT_EQ(result.fills[0].side, Side::kBuy);
+    EXPECT_EQ(result.fills[0].price, D("14.5"));
+    EXPECT_EQ(result.fills[0].liquidity, types::Liquidity::kMaker);
+}
+
 TEST(Breakout, RefusesBadParameters) {
     auto bad = Params();
     bad.quantity = D("0");
@@ -1774,6 +1954,76 @@ TEST(BreakoutShort, ATargetOrARaisedStopDoesNotReverse) {
                                  params);
     ASSERT_EQ(raised.size(), 2u);
     EXPECT_EQ(raised[1].price, D("13.01"));
+}
+
+TEST(BreakoutShort, AFairValueGapShortsTheBounceAndReversesAnInversionGap) {
+    AllowShort shorts;
+    // Bearish FVG on hours 2..4 (mirrored about 25 from a bullish FVG: hour 2
+    // low 13, hour 4 high 12, close 9.5): throwback rests a post-only sell
+    // limit at 12 (the bottom of the bearish gap), with the protective stop
+    // above 13 (13.02). Hour 5 bounces to 12.2 (fills at 12 as a maker), and
+    // hour 6 drops to 5.8, closing at 6 (the target: 12 - 6 = 6), covered at
+    // hour 7's open.
+    auto short_fvg = ShortParams();
+    short_fvg.setup = BreakoutParams::Setup::kFairValueGap;
+    short_fvg.entry = BreakoutParams::Entry::kThrowback;
+    const auto trades = Backtest(Mirrored({{"12", "14", "10", "12"},
+                                           {"12", "13", "10", "12"},
+                                           {"10.5", "12", "10", "11.5"},
+                                           {"11.5", "15", "11", "14.5"},
+                                           {"14.5", "16", "13", "15.5"},
+                                           {"15.5", "15.8", "12.8", "14.5"},
+                                           {"14.5", "19.2", "14.5", "19"},
+                                           {"19", "19", "19", "19"}}),
+                                 short_fvg);
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[0].side, Side::kSell);
+    EXPECT_EQ(trades[0].price, D("12"));
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("6"));
+    // min_gap_bps on the negated prices: the gap is 12 to 13, 1 / 12 of its
+    // bottom (the mirrored top), about 833 bps.
+    for (const auto& [bps, count] :
+         std::vector<std::pair<const char*, std::size_t>>{{"820", 2},
+                                                          {"840", 0}}) {
+        auto gapped = short_fvg;
+        gapped.min_gap_bps = D(bps);
+        EXPECT_EQ(Backtest(Mirrored({{"12", "14", "10", "12"},
+                                     {"12", "13", "10", "12"},
+                                     {"10.5", "12", "10", "11.5"},
+                                     {"11.5", "15", "11", "14.5"},
+                                     {"14.5", "16", "13", "15.5"},
+                                     {"15.5", "15.8", "12.8", "14.5"},
+                                     {"14.5", "19.2", "14.5", "19"},
+                                     {"19", "19", "19", "19"}}),
+                           gapped)
+                      .size(),
+                  count)
+            << bps;
+    }
+
+    // Inversion FVG (long throwback with reverse = true): hours 3..5 form a
+    // gap from 14 to 15; hour 6 fills the limit buy at 15 and falls through
+    // the protective stop under 14 (13.98), reversing into a short at 13.98
+    // with its protective stop above the gap's top (15 + 10 bps = 15.02),
+    // which hour 7 hits.
+    auto inv = Throwback();
+    inv.setup = BreakoutParams::Setup::kFairValueGap;
+    inv.reverse = true;
+    const auto reversed = Backtest(Nr4Then({{"12.5", "17", "15", "16.5"},
+                                            {"16", "16.2", "13.5", "13.8"},
+                                            {"13.8", "15.5", "13.8", "15.2"},
+                                            {"15.2", "15.2", "15.2", "15.2"}}),
+                                   inv, 9);
+    ASSERT_EQ(reversed.size(), 4u);
+    EXPECT_EQ(reversed[0].side, Side::kBuy);
+    EXPECT_EQ(reversed[0].price, D("15"));
+    EXPECT_EQ(reversed[1].side, Side::kSell);
+    EXPECT_EQ(reversed[1].price, D("13.98"));
+    EXPECT_EQ(reversed[2].side, Side::kSell);
+    EXPECT_EQ(reversed[2].price, D("13.98"));
+    EXPECT_EQ(reversed[3].side, Side::kBuy);
+    EXPECT_EQ(reversed[3].price, D("15.02"));
 }
 
 }  // namespace kestrel::strategy

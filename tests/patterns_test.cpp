@@ -200,6 +200,50 @@ TEST(Patterns, FailedBreakdownNeedsACloseBelowThenAbove) {
     EXPECT_FALSE(FailedBreakdownOf(Failed(), 4, 1).has_value());
 }
 
+TEST(Patterns, FairValueGap) {
+    // First bar high 12 (low 10), middle bar 11..15, third bar low 13 (high
+    // 16).
+    const std::vector<types::Bar> bars = {B("20", "5"), B("12", "10", "11"),
+                                          B("15", "11", "14.5"),
+                                          B("16", "13", "15.5")};
+    const auto fvg = FairValueGapOf(bars);
+    ASSERT_TRUE(fvg.has_value());
+    EXPECT_EQ(fvg->gap.high, D("13"));
+    EXPECT_EQ(fvg->gap.low, D("12"));
+    EXPECT_EQ(fvg->gap.Height(), D("1"));
+    EXPECT_EQ(fvg->range.high, D("16"));  // not the earlier bar's 20 and 5
+    EXPECT_EQ(fvg->range.low, D("10"));
+    EXPECT_EQ(fvg->range.Height(), D("6"));
+    // Minimum gap threshold.
+    EXPECT_TRUE(FairValueGapOf(bars, D("1")).has_value());
+    EXPECT_FALSE(FairValueGapOf(bars, D("1.01")).has_value());
+    EXPECT_FALSE(FairValueGapOf(bars, D("-0.1")).has_value());
+    // Mirrored bars (as Breakout negates a bearish FVG: first 15..13, middle
+    // 14..9.5, third 12..9, leaving a bearish gap 12..13).
+    const std::vector<types::Bar> mirrored = {B("-13", "-15"), B("-9.5", "-14"),
+                                              B("-9", "-12")};
+    const auto short_fvg = FairValueGapOf(mirrored);
+    ASSERT_TRUE(short_fvg.has_value());
+    EXPECT_EQ(short_fvg->gap.high, D("-12"));
+    EXPECT_EQ(short_fvg->gap.low, D("-13"));
+    EXPECT_EQ(short_fvg->range.high, D("-9"));
+    EXPECT_EQ(short_fvg->range.low, D("-15"));
+}
+
+TEST(Patterns, FairValueGapNeedsAGap) {
+    // Touching wicks (third low == first high) or overlapping wicks: no gap.
+    EXPECT_FALSE(
+        FairValueGapOf(std::vector{B("12", "10"), B("15", "11"), B("16", "12")})
+            .has_value());
+    EXPECT_FALSE(FairValueGapOf(
+                     std::vector{B("12", "10"), B("15", "11"), B("16", "11.5")})
+                     .has_value());
+    // Fewer than 3 bars.
+    EXPECT_FALSE(
+        FairValueGapOf(std::vector{B("12", "10"), B("16", "13")}).has_value());
+    EXPECT_FALSE(FairValueGapOf({}).has_value());
+}
+
 TEST(Patterns, SwingPoints) {
     // Lows 12, 10, 11, 13, 12, 10.2, 11; highs 14, 12, 13, 15, 14, 11.5, 12.5.
     const std::vector<types::Bar> bars = {

@@ -882,6 +882,11 @@ the header of the code concerned.
 - [x] `setup = "opening_range"`: the session's first `opening_bars` bars
       (`OpeningRangeOf` in `patterns.hpp`), a setup once a session on the
       close of the last of them; the UTC day on a market that never closes.
+- [x] `setup = "fvg"` (`"fair_value_gap"`): three-bar fair value gap
+      (`FairValueGapOf` in `patterns.hpp`), at least `min_gap_bps` high,
+      stopped below the first bar's high. `entry = "throwback"` rests its
+      post-only limit at the top of the gap (the third bar's low), and
+      `entry = "stop"` triggers above the third bar's high.
 - [x] `backtest` keeps the equity curve only for `--equity-csv`, sampled
       every `--equity-interval` (default 1m): it had sampled every minute
       regardless, 2.9 GB for 11 pairs over five years; now 156 MB. What is

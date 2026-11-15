@@ -73,10 +73,12 @@ Breakout::Breakout(BreakoutParams params)
         mParams.confirm_percent.IsNegative() ||
         mParams.target_multiple.IsNegative() ||
         mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative() ||
-        mParams.atr_stop.IsNegative() || mParams.risk_per_trade.IsNegative()) {
+        mParams.atr_stop.IsNegative() || mParams.risk_per_trade.IsNegative() ||
+        mParams.min_gap_bps.IsNegative()) {
         throw std::invalid_argument(
             "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio, "
-            "breakeven_r, atr_stop and risk_per_trade cannot be negative");
+            "breakeven_r, atr_stop, risk_per_trade and min_gap_bps cannot be "
+            "negative");
     }
     if (mParams.volume_bars == 0 || mParams.atr_bars == 0) {
         throw std::invalid_argument(
@@ -115,6 +117,8 @@ Requirements Breakout::Needs() const {
         setup_bars = mParams.range_bars + mParams.reclaim_bars + 1;
     } else if (mParams.setup == BreakoutParams::Setup::kOpeningRange) {
         setup_bars = mParams.opening_bars + 1;  // and the bar before the open
+    } else if (mParams.setup == BreakoutParams::Setup::kFairValueGap) {
+        setup_bars = 3;
     }
     needs.warmup_bars =
         std::max({setup_bars, mParams.trend_sma, mParams.trail_bars,
@@ -200,6 +204,21 @@ std::optional<Breakout::Levels> Breakout::FindSetup(
                                 mParams.touch_zone)) {
                 range = cup->range;
                 floor = cup->handle_low;
+            }
+            break;
+        case BreakoutParams::Setup::kFairValueGap:
+            // A gap of a tick or two would put the stop within the noise
+            // under the entry: min_gap_bps of the price sets the least.
+            if (const auto fvg = FairValueGapOf(
+                    bars, bars.empty()
+                              ? Decimal()
+                              : bars.back().low.Abs() *
+                                    types::FromBps(mParams.min_gap_bps))) {
+                range = fvg->range;
+                breakout = mParams.entry == BreakoutParams::Entry::kThrowback
+                               ? fvg->gap.high
+                               : bars.back().high;
+                floor = fvg->gap.low;
             }
             break;
         case BreakoutParams::Setup::kOpeningRange: {
@@ -412,7 +431,8 @@ void Breakout::LookForSetup(Context& context) {
     if (!open && !CarriesOver()) {
         return;
     }
-    const auto levels = FindSetup(context, Bars(context));
+    const auto bars = Bars(context);
+    const auto levels = FindSetup(context, bars);
     if (!levels) {
         return;
     }
@@ -423,6 +443,14 @@ void Breakout::LookForSetup(Context& context) {
         mCloses = 0;
         // The closes must start within arm_bars bars.
         mBarsLeft = mParams.arm_bars + ClosesNeeded() - 1;
+        if (mParams.setup == BreakoutParams::Setup::kFairValueGap &&
+            mParams.entry == BreakoutParams::Entry::kThrowback) {
+            // The third bar's close may already be the first close above the
+            // trigger: count it now, without spending one of the arm_bars.
+            ++mBarsLeft;
+            const types::Bar newest = bars.back();
+            WatchingBar(context, newest);
+        }
         return;
     }
     if (open) {

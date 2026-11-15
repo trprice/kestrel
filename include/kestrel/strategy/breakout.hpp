@@ -26,6 +26,7 @@ struct BreakoutParams {
         kInverseHeadShoulders,
         kTriangle,  // ascending or symmetrical: `triangle`
         kCupHandle,
+        kFairValueGap,
     };
     enum class Confirm { kNone, kCloses, kPercent };
     enum class Entry { kStop, kThrowback };
@@ -48,6 +49,8 @@ struct BreakoutParams {
     std::size_t swing_bars = 2;
     TriangleKind triangle = TriangleKind::kAscending;
     std::size_t opening_bars = 6;
+    // `fvg`: the least gap, in bps of the price at its top. Zero: any gap.
+    types::Decimal min_gap_bps;
     Confirm confirm = Confirm::kNone;
     std::size_t confirm_closes = 2;
     types::Decimal confirm_percent{5, 1};  // 0.5 (%)

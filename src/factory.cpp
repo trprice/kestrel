@@ -545,12 +545,13 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Quantity("quantity"), params.quantity, error);
     Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
     std::string setup = "nr";
-    Take(p.Word("setup", setup,
-                {"nr", "inside", "range", "rectangle", "pipe",
-                 "failed_breakdown", "double_bottom", "triple_bottom",
-                 "opening_range", "inverse_head_shoulders",
-                 "ascending_triangle", "symmetrical_triangle", "cup_handle"}),
-         setup, error);
+    Take(
+        p.Word("setup", setup,
+               {"nr", "inside", "range", "rectangle", "pipe",
+                "failed_breakdown", "double_bottom", "triple_bottom",
+                "opening_range", "inverse_head_shoulders", "ascending_triangle",
+                "symmetrical_triangle", "cup_handle", "fvg", "fair_value_gap"}),
+        setup, error);
     params.setup =
         setup == "inside"             ? Params::Setup::kInsideBar
         : setup == "range"            ? Params::Setup::kRange
@@ -565,7 +566,9 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
         : setup == "ascending_triangle" || setup == "symmetrical_triangle"
             ? Params::Setup::kTriangle
         : setup == "cup_handle" ? Params::Setup::kCupHandle
-                                : Params::Setup::kNarrowRange;
+        : setup == "fvg" || setup == "fair_value_gap"
+            ? Params::Setup::kFairValueGap
+            : Params::Setup::kNarrowRange;
     params.bottoms = setup == "triple_bottom" ? 3 : 2;
     params.triangle = setup == "symmetrical_triangle"
                           ? strategy::TriangleKind::kSymmetrical
@@ -573,6 +576,8 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Count("nr_bars", params.nr_bars), params.nr_bars, error);
     Take(p.Count("range_bars", params.range_bars), params.range_bars, error);
     Take(p.Number("touch_zone", params.touch_zone), params.touch_zone, error);
+    Take(p.Number("min_gap_bps", params.min_gap_bps), params.min_gap_bps,
+         error);
     Take(p.Count("min_touches", params.min_touches), params.min_touches, error);
     Take(p.Flag("shortfall", params.shortfall), params.shortfall, error);
     Take(p.Count("decline_bars", params.decline_bars), params.decline_bars,

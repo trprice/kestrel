@@ -150,6 +150,20 @@ std::optional<FailedBreakdown> FailedBreakdownOf(
     return FailedBreakdown{*range, false_low, newest.high};
 }
 
+std::optional<FairValueGap> FairValueGapOf(std::span<const types::Bar> bars,
+                                           const Decimal& min_gap) {
+    if (bars.size() < 3 || min_gap.IsNegative()) {
+        return std::nullopt;
+    }
+    const types::Bar& first = bars[bars.size() - 3];
+    const types::Bar& third = bars.back();
+    const PriceRange gap{third.low, first.high};
+    if (gap.Height().Sign() <= 0 || gap.Height() < min_gap) {
+        return std::nullopt;
+    }
+    return FairValueGap{gap, *RangeOf(bars, 3)};
+}
+
 std::vector<Swing> SwingPoints(std::span<const types::Bar> bars,
                                std::size_t strength) {
     std::vector<Swing> swings;
