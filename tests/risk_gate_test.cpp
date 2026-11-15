@@ -52,6 +52,14 @@ class RiskGateTest : public ::testing::Test {
         gate = std::make_unique<RiskGatedVenue>(venue, limits,
                                                 [this] { return now; });
     }
+    // With the US equity market's hours: the regular session alone, or the
+    // extended hours around it too.
+    void BuildWithHours(bool extended = false) {
+        gate = std::make_unique<RiskGatedVenue>(
+            venue, limits, [this] { return now; },
+            std::make_shared<types::MarketHours>(
+                std::make_shared<types::UsEquityCalendar>(), extended));
+    }
     // Expects a rejection by the gate: kRejected, "risk:", venue untouched.
     void ExpectRejected(const OrderRequest& request) {
         const int before = venue->attempts;
@@ -490,6 +498,25 @@ TEST_F(RiskGateTest, PositionNotionalCountsWhatFilledOnAVenueWithoutPositions) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "0.5")));
 }
 
+TEST_F(RiskGateTest, ABuyFeeInTheBaseAssetIsTakenOffWhatIsHeld) {
+    limits.max_position_notional = D("150");
+    Build();
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    types::Fill fill = FillOf("f1", Side::kBuy, "1", "100", now);
+    fill.fee = D("0.01");
+    fill.fee_asset = "BTC";
+    venue->fills = {fill};  // 0.99 BTC held, worth 99
+
+    ExpectRejected(Market(Side::kBuy, "0.52"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "0.51")));  // 150
+
+    ASSERT_OK(gate->Halt("test"));
+    ExpectRejected(Market(Side::kSell, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "0.99")));
+}
+
 TEST_F(RiskGateTest, WithoutFillsAHaltStillLetsTheVenuesPositionOut) {
     venue->positions = {PositionOf("3")};
     Build();
@@ -908,15 +935,40 @@ TEST_F(RiskGateTest, ACloseIsRoundedDownToTheLot) {
     });
     ASSERT_OK(gate->ResetDailyBaseline());
     now += std::chrono::seconds(1);
-    // Bought 1, less a fee of 0.005 in the coin.
+    // Bought 1, less a fee of 0.005 in the coin; no positions or balances.
     types::Fill fill = FillOf("f1", Side::kBuy, "1", "100", now);
     fill.fee = D("0.005");
     fill.fee_asset = "BTC";
     venue->fills = {fill};
-    venue->balances = {BalanceOf("BTC", "0.995")};
     gate->NoteReferencePrice(kSymbol, D("90"));
     ASSERT_EQ(venue->orders.size(), 1u);
     EXPECT_EQ(venue->orders[0].quantity, D("0.99"));
+}
+
+TEST_F(RiskGateTest, ACloseSubtractsABaseAssetFeeWithoutBalancesOrLotSize) {
+    limits.max_loss_per_position = D("1");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    types::Fill fill = FillOf("f1", Side::kBuy, "1", "100", now);
+    fill.fee = D("0.01");
+    fill.fee_asset = "BTC";
+    venue->fills = {fill};
+    gate->NoteReferencePrice(kSymbol, D("50"));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].quantity, D("0.99"));
+}
+
+TEST_F(RiskGateTest, ACloseIsCappedAtTheCoinsBalance) {
+    limits.max_loss_per_position = D("1");
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    now += std::chrono::seconds(1);
+    venue->fills = {FillOf("f1", Side::kBuy, "1", "100", now)};
+    venue->balances = {BalanceOf("BTC", "0.9")};
+    gate->NoteReferencePrice(kSymbol, D("50"));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].quantity, D("0.9"));
 }
 
 TEST_F(RiskGateTest, WithShortsAPositionLossBuysTheShortBack) {
@@ -990,6 +1042,212 @@ TEST_F(RiskGateTest, HaltedExitSubtractsOpenReducingOrders) {
     // 2 held, 1.5 already working to sell -> at most 0.5 more can pass.
     ExpectRejected(Market(Side::kSell, "1"));
     ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "0.5")));
+}
+
+// Monday 2026-11-02: the US equity pre-market runs from 12:00 UTC and the
+// regular session from 14:30 UTC.
+types::Timestamp At(const char* iso) {
+    return types::ParseIso8601(iso).value();
+}
+const types::Timestamp kPreMarket = At("2026-11-02T13:00:00Z");
+const types::Timestamp kOpen = At("2026-11-02T14:30:00Z");
+const types::Timestamp kClose = At("2026-11-02T21:00:00Z");
+const types::Timestamp kNextOpen = At("2026-11-03T14:30:00Z");
+
+TEST_F(RiskGateTest, DrawdownCloseWaitsForTheMarketToOpen) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    now = kPreMarket;
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("74"));  // -52 while shut
+    EXPECT_TRUE(gate->IsHalted());
+    EXPECT_EQ(venue->cancel_all_calls, 1);
+    ExpectRejected(Market(Side::kBuy, "1"));
+    gate->SendPendingClose();  // still shut
+    EXPECT_TRUE(venue->orders.empty());
+
+    now = kOpen;
+    gate->SendPendingClose();
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("2"));
+
+    // Another price within a minute sends nothing more.
+    now += std::chrono::seconds(30);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_EQ(venue->orders.size(), 1u);
+    // After it, what is still held is closed again.
+    now += std::chrono::seconds(30);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_EQ(venue->orders.size(), 2u);
+}
+
+TEST_F(RiskGateTest, DrawdownCloseStillRunsAtTheOpenAfterTheFallEases) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    now = kPreMarket;
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("74"));  // -52 while shut
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("95"));  // eased, still shut
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("74"));  // and back
+    EXPECT_EQ(venue->cancel_all_calls, 1);       // cancelled once
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("95"));
+    EXPECT_TRUE(venue->orders.empty());
+
+    // The open orders are gone, so the close is still sent: here by the
+    // watch an order runs. The order itself is refused, the gate halted.
+    now = kOpen;
+    EXPECT_FALSE(gate->PlaceOrder(Market(Side::kBuy, "1")));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("2"));
+    EXPECT_TRUE(gate->IsHalted());
+
+    // Once: the fall has eased, so nothing more is closed a minute later.
+    now += std::chrono::minutes(1);
+    gate->NoteReferencePrice(kSymbol, D("95"));
+    EXPECT_EQ(venue->orders.size(), 1u);
+}
+
+TEST_F(RiskGateTest, DrawdownCloseAtTheOpenDoesNotWaitForTheFills) {
+    limits.max_drawdown_close = D("50");
+    venue->positions = {HoldingOf("2", "100")};
+    now = kPreMarket;
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("74"));  // -52 while shut
+    EXPECT_EQ(venue->cancel_all_calls, 1);
+
+    // The orders are cancelled, so the close goes though the watch fails.
+    venue->fail_fills = true;
+    now = kOpen;
+    gate->SendPendingClose();
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("2"));
+}
+
+TEST_F(RiskGateTest, PositionLossWhileTheMarketIsShutOnlyPausesTheSymbol) {
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->open_orders = {OpenOrder("stop", kSymbol, Side::kSell, "1")};
+    now = kPreMarket;
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("70"));  // -30 while shut
+    EXPECT_TRUE(venue->cancels.empty());
+    EXPECT_TRUE(venue->orders.empty());
+    ExpectRejected(Market(Side::kBuy, "1"));
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    venue->orders.clear();
+
+    // The open alone closes nothing, here at the watch an order runs: the
+    // price is from the shut market.
+    now = kOpen;
+    gate->SendPendingClose();
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    EXPECT_TRUE(venue->cancels.empty());
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].symbol, "ETH/USD");
+    venue->orders.clear();
+
+    // The loss stands at a price from the open market: closed.
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("69"));
+    EXPECT_EQ(venue->cancels, std::vector<std::string>{"stop"});
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("1"));
+
+    // Another price within a minute sends nothing more.
+    now += std::chrono::seconds(30);
+    gate->NoteReferencePrice(kSymbol, D("65"));
+    EXPECT_EQ(venue->orders.size(), 1u);
+}
+
+TEST_F(RiskGateTest, PositionLossThatEasesByTheOpenIsNotClosed) {
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->open_orders = {OpenOrder("stop", kSymbol, Side::kSell, "1")};
+    now = kPreMarket;
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("70"));  // -30 while shut
+    now = kOpen;
+    gate->NoteReferencePrice(kSymbol, D("95"));  // opens down 5
+    EXPECT_TRUE(venue->cancels.empty());
+    EXPECT_TRUE(venue->orders.empty());
+
+    // The symbol stays paused for the UTC day.
+    ExpectRejected(Market(Side::kBuy, "1"));
+    now += std::chrono::hours(24);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+TEST_F(RiskGateTest, PositionLossAtTheLastSessionsPriceIsNotClosed) {
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->open_orders = {OpenOrder("stop", kSymbol, Side::kSell, "1")};
+    now = kClose - std::chrono::seconds(2);
+    BuildWithHours();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    gate->NoteReferencePrice(kSymbol, D("71"));  // -29
+    // The session's last price reaches the limit, too soon after the last
+    // watch to be measured.
+    now += std::chrono::milliseconds(500);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_TRUE(venue->orders.empty());
+
+    // Measured once the market has shut, at the watch an order runs: paused.
+    now = kClose + std::chrono::seconds(30);
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    ExpectRejected(Market(Side::kBuy, "1"));
+    // Nor at the next open, at a price that is the last session's.
+    now = kNextOpen;
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
+    EXPECT_TRUE(venue->cancels.empty());
+    ASSERT_EQ(venue->orders.size(), 2u);
+    EXPECT_EQ(venue->orders[1].symbol, "ETH/USD");
+
+    // Closed when the loss stands at a price from this session.
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_EQ(venue->cancels, std::vector<std::string>{"stop"});
+    ASSERT_EQ(venue->orders.size(), 3u);
+    EXPECT_EQ(venue->orders[2].symbol, kSymbol);
+    EXPECT_EQ(venue->orders[2].side, Side::kSell);
+}
+
+TEST_F(RiskGateTest, ClosesWaitForTheRegularSessionWithExtendedHoursToo) {
+    // A market order waits for the regular session, so a thin pre-market
+    // price must not cancel the stop and queue a sale for the open.
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    venue->open_orders = {OpenOrder("stop", kSymbol, Side::kSell, "1")};
+    now = kPreMarket;
+    BuildWithHours(true);
+    ASSERT_OK(gate->ResetDailyBaseline());
+
+    gate->NoteReferencePrice(kSymbol, D("70"));  // -30 in the pre-market
+    EXPECT_TRUE(venue->cancels.empty());
+    EXPECT_TRUE(venue->orders.empty());
+    ExpectRejected(Market(Side::kBuy, "1"));
+
+    now = kOpen;
+    gate->NoteReferencePrice(kSymbol, D("70"));
+    EXPECT_EQ(venue->cancels, std::vector<std::string>{"stop"});
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("1"));
 }
 
 }  // namespace

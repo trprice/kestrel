@@ -44,8 +44,8 @@ void PnlTracker::ResetRealized() {
 }
 
 void PnlTracker::Apply(const types::Fill& fill) {
-    if (const auto parts = types::SplitSymbol(fill.symbol);
-        parts && parts->quote && !fill.fee_asset.empty() &&
+    const auto parts = types::SplitSymbol(fill.symbol);
+    if (parts && parts->quote && !fill.fee_asset.empty() &&
         fill.fee_asset != parts->base && fill.fee_asset != *parts->quote &&
         mOtherFeeAssets.insert(fill.fee_asset).second) {
         // Valued 1:1 with the quote asset, which is wrong (a BNB fee on
@@ -59,11 +59,20 @@ void PnlTracker::Apply(const types::Fill& fill) {
     const Decimal fee = FeeInQuote(fill);
 
     // Signed: what the fill adds to the position, and what of the position it
-    // closes first (a buy closes a short, a sell a long).
+    // closes first (a buy closes a short, a sell a long). A fee paid in the
+    // base asset reduces what a buy adds, and adds to what a sell takes from
+    // the holding (realizing the fee coins against the average cost, or adding
+    // them to a short at the fill price).
     const bool buy = fill.side == Side::kBuy;
+    Decimal quantity = fill.quantity;
+    if (parts && !fill.fee_asset.empty() && fill.fee_asset == parts->base &&
+        fill.fee.Sign() > 0) {
+        quantity = buy ? std::max(fill.quantity - fill.fee, Decimal())
+                       : fill.quantity + fill.fee;
+    }
     const Decimal open = buy ? -holding.quantity : holding.quantity;
-    Decimal closed = std::min(fill.quantity, std::max(open, Decimal()));
-    Decimal opened = fill.quantity - closed;
+    Decimal closed = std::min(quantity, std::max(open, Decimal()));
+    Decimal opened = quantity - closed;
     if (!buy && !mShorts && holding.quantity.Sign() >= 0) {
         opened = Decimal();  // spot: an excess sale has no cost basis
     }

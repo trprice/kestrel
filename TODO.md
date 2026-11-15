@@ -44,12 +44,6 @@ Sections in priority order: safety first, then what is in use.
 ### Risk
 - [ ] FIFO and specific-lot P&L options in `PnlTracker`, for venues and tax
       reports that use them
-- [ ] Closes from the risk gate during market hours only: it has no
-      `MarketHours`, so a stock's close is sent while the market is shut
-- [ ] The gate's count of what is held does not take off a fee paid in the
-      coin (PnlTracker adds it to the cost instead); a close is capped at
-      the coin's balance for that reason, but `max_position_notional` still
-      counts the fee as held
 
 ### Venues
 Each stub's header has a TODO comment listing the endpoints and auth it needs.
@@ -276,6 +270,16 @@ the header of the code concerned.
 - A close cancels the symbol's orders and sells at market straight away, so
   a cancel still on its way (venue latency) can let the strategy's stop sell
   too; on a spot venue the second sale is refused for want of the coin.
+- While the market is closed (`MarketHours`), `max_drawdown_close` halts and
+  calls `CancelAll` at once, and its close is sent at the open even if the
+  price has recovered meanwhile. `max_loss_per_position` pauses the symbol
+  at once, and cancels and closes only if the loss stands at a price from
+  the session that is open. The regular session is meant, with
+  `extended_hours` too: a live market order waits for it (Schwab queues one
+  sent as session `NORMAL` until 09:30), so in the extended hours the gate
+  blocks entries but closes nothing, in paper mode as well. With
+  `extended_hours`, a drawdown close that waited is sent within a minute of
+  09:30 (at the next quote or order, or the Runner's next pass).
 - The strategy can hear of its stop's cancel before the close's fill (and
   run a bar in between): `breakout` then places the stop again, or its time
   exit, which the venue refuses for want of the coin, and logs that it is
@@ -750,6 +754,14 @@ the header of the code concerned.
       `max_drawdown_close`, which halts and closes every position at market
 - [x] `max_loss_per_position`: a position's unrealized loss from its cost;
       the gate closes it at market and pauses the symbol for the UTC day
+- [x] Risk gate closes (`max_drawdown_close` and `max_loss_per_position`)
+      wait for the market to open (`MarketHours`): halting and `CancelAll`,
+      or pausing the symbol, happen at once. The drawdown close is sent at
+      the regular session's open; a position's, only if its loss stands at
+      a price from that session
+- [x] `PnlTracker` takes a fee paid in the base asset off what is held, so
+      the risk gate's holdings count (and `RunRecorder`'s `pnl_snapshots`)
+      are net of coin fees
 - [x] `max_quote_age_ms`: no new positions in a symbol whose quotes have
       stopped while its market is open, until they return
 - [x] `breakout` `risk_per_trade`: entries sized from the distance to the

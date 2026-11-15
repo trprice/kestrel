@@ -96,6 +96,11 @@ TEST(MarketHours, RegularOrExtendedSessions) {
     // 13:00 on the early close.
     EXPECT_FALSE(regular.IsOpen(At("2026-11-27T18:00:00Z")));
     EXPECT_TRUE(extended.IsOpen(At("2026-11-27T18:00:00Z")));
+    // The regular session of the extended hours' calendar.
+    EXPECT_FALSE(extended.Regular().Extended());
+    EXPECT_FALSE(extended.Regular().IsOpen(At("2026-11-05T12:00:00Z")));
+    EXPECT_TRUE(extended.Regular().IsOpen(At("2026-11-05T14:30:00Z")));
+    EXPECT_TRUE(MarketHours::AlwaysOpen()->Regular().IsAlwaysOpen());
 }
 
 TEST(MarketHours, CurrentOrNextSessionAndOpenTimeInARange) {

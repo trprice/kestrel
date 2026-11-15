@@ -16,6 +16,7 @@
 #include "kestrel/trading/trading_venue.hpp"
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/market.hpp"
+#include "kestrel/types/market_hours.hpp"
 #include "kestrel/types/symbol.hpp"
 #include "kestrel/types/time.hpp"
 
@@ -71,16 +72,24 @@ struct RiskLimits {
     // position itself: it halts (as Halt does, cancelling every open order)
     // and sells what is held, or buys back a short, at market. Trading stays
     // halted, exits aside, until a new run: Resume halts again while the fall
-    // stands, and what is still held is closed again each minute. Set it alone
-    // or above max_drawdown, which then blocks entries first.
+    // stands, and what is still held is closed again each minute while the
+    // market is open. If reached while the market is closed, the halt and
+    // CancelAll happen at once and the close is sent when the market opens,
+    // even if the fall has eased by then: the orders that protected the
+    // positions are gone. Set it alone or above max_drawdown, which then
+    // blocks entries first.
     std::optional<types::Decimal> max_drawdown_close;
     // One position's unrealized loss: its quantity times the fall of the
     // reference price from its average cost (net of the fees it paid), for
     // the cost basis the loss count keeps. Measured at each reference price
     // (at most once a second) and at each order. Once reached, the gate
     // cancels the symbol's open orders, closes the position at market, and
-    // refuses new positions in the symbol until the next UTC day. A backstop
-    // for a strategy's own stop (a gap past it, a stop the venue lost).
+    // refuses new positions in the symbol until the next UTC day. A price
+    // noted while the market is closed only pauses the symbol: the cancel and
+    // the close need the loss to stand at a price from the session that is
+    // open, as a thin after-hours quote (or the last session's close) can be
+    // far from where the market opens. A backstop for a strategy's own stop
+    // (a gap past it, a stop the venue lost).
     std::optional<types::Decimal> max_loss_per_position;
     // Empty means any symbol.
     std::set<types::Symbol> allowed_symbols;
@@ -123,9 +132,10 @@ struct RiskLimits {
 // An order that reduces a position (a sell of no more than is held) is the
 // only kind allowed while trading is halted or a loss, drawdown, order-count
 // or stale-quote limit is hit. What is held is the venue's position, or what
-// the gate has seen fill since its loss count started if that is more: a venue
-// that reports no positions (Binance.US spot) still has its exits let through,
-// and max_position_notional counts what was bought since then.
+// the gate has seen fill (net of a fee paid in the coin) since its loss count
+// started if that is more: a venue that reports no positions (Binance.US spot)
+// still has its exits let through, and max_position_notional counts what was
+// bought since then.
 //
 // Closing: max_drawdown_close and max_loss_per_position close positions by
 // themselves, with market orders the gate places on the venue directly (not
@@ -133,16 +143,27 @@ struct RiskLimits {
 // size when SetSymbolInfo gives it one. The strategy sees their fills like
 // any other, and an order of its own the gate cancelled as closed. A symbol
 // is closed at most once a minute, so a close the venue refuses is tried
-// again then. The gate does not know the market's hours: a close while the
-// market is shut is sent anyway.
+// again then. Nothing is closed while the market is closed (MarketHours):
+// outside the regular session, even when the strategy trades the extended
+// hours, as a live market order waits for the regular session anyway (Schwab
+// queues it; the paper venue would fill it, so there the gate does the
+// waiting).
+// max_drawdown_close still halts and calls CancelAll at once, and its close
+// is sent when the market opens, whatever the price then. max_loss_per_position
+// still pauses the symbol at once, but cancels and closes only if the loss
+// stands at a price noted in the session that is open.
 //
 // Thread-safe. Orders are checked and placed one at a time, so two concurrent
 // orders cannot together exceed a limit; that means the venue call is made
 // while holding the gate's order lock.
 class RiskGatedVenue : public TradingVenue {
    public:
+    // `hours` tells when the market is open for closes (null = always open;
+    // the Runner passes its data source's). Only its regular session counts.
     RiskGatedVenue(std::shared_ptr<TradingVenue> venue, RiskLimits limits,
-                   std::function<types::Timestamp()> clock = types::Now);
+                   std::function<types::Timestamp()> clock = types::Now,
+                   std::shared_ptr<const types::MarketHours> hours =
+                       types::MarketHours::AlwaysOpen());
 
     // Latest price for valuing market orders, stamped with the clock. With
     // max_drawdown, max_drawdown_close or max_loss_per_position, also
@@ -153,6 +174,12 @@ class RiskGatedVenue : public TradingVenue {
     // lock, so a slow venue delays the caller and any order meanwhile.
     void NoteReferencePrice(const types::Symbol& symbol,
                             const types::Decimal& price);
+
+    // Sends the max_drawdown_close close that waited for the market to open,
+    // once it has. The Runner calls this as time passes (at each session
+    // event and at least once a minute), so the close does not wait for the
+    // next price or order. Cheap when nothing waits.
+    void SendPendingClose();
 
     // Whether `symbol`'s quotes have stopped (max_quote_age); the Runner
     // calls this when they stop and when they come back.
@@ -244,9 +271,20 @@ class RiskGatedVenue : public TradingVenue {
     // a held symbol has no usable reference price.
     std::optional<types::Decimal> Drawdown(types::Timestamp now);
     // Catches up on fills, then applies max_drawdown_close and
-    // max_loss_per_position: closes what they say to close. Measures the
-    // drawdown (raising its peak) whenever max_drawdown is set.
+    // max_loss_per_position: closes what they say to close, while the market
+    // is open. Measures the drawdown (raising its peak) whenever max_drawdown
+    // is set.
     types::Result<void> Watch(types::Timestamp now);
+    // Watch, logging a failure (once) instead of returning or throwing it.
+    void WatchSafely(types::Timestamp now);
+    // The reason of the max_drawdown_close close that waited for the open,
+    // if the market is open now; it no longer waits.
+    std::optional<std::string> TakePendingClose(types::Timestamp now);
+    // Closes what is held of the symbols in `closing` (symbol -> reason), or
+    // with `everything` (a reason) all that is held.
+    void CloseHeld(const std::map<types::Symbol, std::string>& closing,
+                   const std::optional<std::string>& everything,
+                   types::Timestamp now);
     // Cancels `symbol`'s open orders and closes `held` of it at market.
     void Close(const types::Symbol& symbol, const types::Decimal& held,
                const std::string& reason, types::Timestamp now);
@@ -269,12 +307,17 @@ class RiskGatedVenue : public TradingVenue {
     void NewDay(std::chrono::sys_days day);
     std::optional<types::Decimal> ReferencePriceFor(const types::Symbol& symbol,
                                                     types::Timestamp now) const;
+    // Whether `symbol`'s reference price was noted in the session that is
+    // open now (false while the market is shut).
+    bool HasOpenMarketPrice(const types::Symbol& symbol,
+                            types::Timestamp now) const;
     std::optional<types::Decimal> PriceFor(const types::OrderRequest& request,
                                            types::Timestamp now) const;
 
     const std::shared_ptr<TradingVenue> mVenue;
     const RiskLimits mLimits;
     const std::function<types::Timestamp()> mClock;
+    const types::MarketHours mHours;  // the regular session
 
     std::atomic<bool> mHalted{false};
 
@@ -302,11 +345,14 @@ class RiskGatedVenue : public TradingVenue {
     types::Timestamp mLastWatch;
     bool mWatchFailing = false;     // warned that Watch could not read fills
     bool mDrawdownUnknown = false;  // warned that it could not be measured
-    // Symbols closed at max_loss_per_position, and the UTC day of it.
+    // Symbols that reached max_loss_per_position, and the UTC day of it.
     std::map<types::Symbol, std::chrono::sys_days> mStopped;
     std::map<types::Symbol, types::Timestamp> mLastClose;
     bool mDrawdownClosed = false;  // max_drawdown_close has halted the gate
     std::optional<types::Timestamp> mLastDrawdownClose;
+    // Why max_drawdown_close closes everything, while that waits for the
+    // market to open.
+    std::optional<std::string> mPendingDrawdownClose;
     std::set<std::string> mUnpricedAssets;  // warned about once
 };
 

@@ -56,6 +56,23 @@ TEST(PnlTrackerTest, AFeeInTheBaseAssetIsConvertedAtTheFillPrice) {
     PnlTracker t;
     t.Apply(F(Side::kBuy, "1", "100", "0.001", "BTC"));  // 0.001 BTC = 0.1 USD
     EXPECT_EQ(t.Realized(), D("-0.1"));
+    EXPECT_EQ(t.Held("BTC/USD"), D("0.999"));
+    t.Apply(F(Side::kSell, "0.999", "100"));
+    EXPECT_EQ(t.Realized(), D("-0.1"));
+    EXPECT_TRUE(t.Held("BTC/USD").IsZero());
+
+    // A buy whose base fee is at least the quantity adds nothing.
+    t.Apply(F(Side::kBuy, "0.001", "100", "0.002", "BTC"));
+    EXPECT_TRUE(t.Held("BTC/USD").IsZero());
+}
+
+TEST(PnlTrackerTest, ASellFeeInTheBaseAssetLeavesAtTheAverageCost) {
+    PnlTracker t;
+    t.Apply(F(Side::kBuy, "1", "100"));
+    // 0.51 BTC leaves at 120 (+10.2 over cost 100), less 0.01 * 120 = 1.2 fee.
+    t.Apply(F(Side::kSell, "0.5", "120", "0.01", "BTC"));
+    EXPECT_EQ(t.Realized(), D("9"));
+    EXPECT_EQ(t.Held("BTC/USD"), D("0.49"));
 }
 
 TEST(PnlTrackerTest, SellingMoreThanHeldRealizesNothingOnTheExcess) {
@@ -218,6 +235,16 @@ TEST(PnlTrackerTest, WithoutShortsAnExcessSaleIsNotAShort) {
     EXPECT_EQ(t.Realized(), D("10"));
 }
 
+TEST(PnlTrackerTest, WithoutShortsASaleAndItsBaseFeeTakeNoMoreThanIsHeld) {
+    PnlTracker t;
+    t.Apply(F(Side::kBuy, "1", "100"));
+    // 1 sold and 0.01 BTC of fee, of the 1 held: all of it leaves at 110
+    // (+10), less 0.01 * 110 = 1.1 fee.
+    t.Apply(F(Side::kSell, "1", "110", "0.01", "BTC"));
+    EXPECT_TRUE(t.Held("BTC/USD").IsZero());
+    EXPECT_EQ(t.Realized(), D("8.9"));
+}
+
 TEST(PnlTrackerTest, WithShortsASaleBeyondTheHoldingGoesShort) {
     PnlTracker t(/*shorts=*/true);
     t.Apply(F(Side::kBuy, "1", "100"));
@@ -233,6 +260,20 @@ TEST(PnlTrackerTest, WithShortsASaleBeyondTheHoldingGoesShort) {
     EXPECT_EQ(t.Held("BTC/USD"), D("1"));
     EXPECT_EQ(t.Positions().front().average_price, D("125"));
     EXPECT_EQ(t.Realized(), D("-11"));
+}
+
+TEST(PnlTrackerTest, WithShortsBaseAssetFeesApplyToShortSalesAndCovers) {
+    PnlTracker t(/*shorts=*/true);
+    t.Apply(F(Side::kSell, "1", "100", "0.01", "BTC"));
+    EXPECT_EQ(t.Held("BTC/USD"), D("-1.01"));
+    EXPECT_EQ(t.Positions().front().average_price, D("100"));
+    EXPECT_EQ(t.Realized(), D("-1"));
+
+    // Buying 1 with a 0.01 BTC fee covers 0.99 of the short at 90 (+9.9, less
+    // 0.9 fee).
+    t.Apply(F(Side::kBuy, "1", "90", "0.01", "BTC"));
+    EXPECT_EQ(t.Held("BTC/USD"), D("-0.02"));
+    EXPECT_EQ(t.Realized(), D("8"));
 }
 
 }  // namespace

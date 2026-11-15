@@ -29,8 +29,9 @@ namespace kestrel::trading {
 // realizing (average - price) on the quantity covered, and a buy of more than
 // is short goes long with the rest.
 // Fees are valued in the quote asset: a fee in the symbol's base asset is
-// converted at the fill price, and any other fee asset is taken as quote
-// (logged the first time it is seen).
+// converted at the fill price and taken off the coin held (on a buy, off what
+// was bought; on a sell, off what remains, or added to the short), and any
+// other fee asset is taken as quote (logged the first time it is seen).
 // Amounts are kept to 8 decimal places. Not thread-safe.
 class PnlTracker {
    public:

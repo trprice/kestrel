@@ -47,10 +47,14 @@ Decimal SideExposure(const types::Symbol& symbol, const Decimal& held,
 
 RiskGatedVenue::RiskGatedVenue(std::shared_ptr<TradingVenue> venue,
                                RiskLimits limits,
-                               std::function<types::Timestamp()> clock)
+                               std::function<types::Timestamp()> clock,
+                               std::shared_ptr<const types::MarketHours> hours)
     : mVenue(std::move(venue)),
       mLimits(std::move(limits)),
       mClock(std::move(clock)),
+      // The closes are market orders, which a live venue holds for the
+      // regular session.
+      mHours((hours ? hours : types::MarketHours::AlwaysOpen())->Regular()),
       mPnl(mLimits.shorts) {}
 
 void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
@@ -70,8 +74,29 @@ void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
     if (!lock || now - mLastWatch < kWatchInterval) {
         return;
     }
+    WatchSafely(now);
+}
+
+void RiskGatedVenue::SendPendingClose() {
+    if (!mLimits.max_drawdown_close) {
+        return;
+    }
+    // A watch or an order that holds the lock sends it; failing that, the
+    // next call does.
+    std::unique_lock lock(mMutex, std::try_to_lock);
+    if (!lock) {
+        return;
+    }
+    const types::Timestamp now = mClock();
+    if (mPendingDrawdownClose && mHours.IsOpen(now)) {
+        WatchSafely(now);
+    }
+}
+
+void RiskGatedVenue::WatchSafely(types::Timestamp now) {
     mLastWatch = now;
-    // On the quote thread: a Decimal overflow must not unwind into the feed.
+    // On the quote thread or the Runner's: a Decimal overflow must not
+    // unwind into the feed or the run.
     types::Result<void> watched;
     try {
         watched = Watch(now);
@@ -271,8 +296,8 @@ void RiskGatedVenue::Close(const types::Symbol& symbol, const Decimal& held,
 
     Decimal quantity = held.Abs();
     if (held.Sign() > 0) {
-        // No more than the account has: a fee taken in the coin is not
-        // taken off what the loss count holds.
+        // No more than the account has: the loss count knows this run's
+        // fills, not coins sold or withdrawn outside it.
         auto parts = types::SplitSymbol(symbol);
         auto balances = mVenue->GetBalances();
         if (parts && balances) {
@@ -318,6 +343,11 @@ void RiskGatedVenue::Close(const types::Symbol& symbol, const Decimal& held,
 
 types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
     if (auto caught = CatchUpFills(now); !caught) {
+        // The close that waited for the open goes without the latest fills:
+        // the orders that protected the positions are cancelled already.
+        if (const auto everything = TakePendingClose(now)) {
+            CloseHeld({}, everything, now);
+        }
         return caught;
     }
     std::optional<Decimal> drawdown;
@@ -332,26 +362,27 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
         mDrawdownUnknown = !drawdown.has_value();
     }
 
-    // The symbols to close, and why; with `everything`, all that is held.
+    // The symbols max_loss_per_position closes now, and why.
     std::map<types::Symbol, std::string> closing;
-    std::optional<std::string> everything;
     if (mLimits.max_drawdown_close && drawdown &&
-        *drawdown < *mLimits.max_drawdown_close) {
-        mDrawdownClosed = false;  // a later fall cancels afresh
+        *drawdown < *mLimits.max_drawdown_close && !mPendingDrawdownClose) {
+        // A later fall cancels afresh. Not while a close waits for the open:
+        // a fall that eases and returns overnight has cancelled already.
+        mDrawdownClosed = false;
     }
     if (mLimits.max_drawdown_close && drawdown &&
         *drawdown >= *mLimits.max_drawdown_close) {
         // Halts and cancels at each breach; closes what is still held at most
         // once a minute, however often the fall crosses the limit (a close
-        // still on its way shows as held).
+        // still on its way shows as held). The close waits here while the
+        // market is shut.
         const std::string reason = "drawdown close limit reached (down " +
                                    drawdown->ToString() +
                                    " from the peak, limit " +
                                    mLimits.max_drawdown_close->ToString() + ")";
         if (!mLastDrawdownClose ||
             now - *mLastDrawdownClose >= kCloseInterval) {
-            everything = reason;
-            mLastDrawdownClose = now;
+            mPendingDrawdownClose = reason;
         }
         mHalted = true;  // again after a Resume, while the fall stands
         if (!mDrawdownClosed) {
@@ -382,16 +413,47 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
                 now - last->second < kCloseInterval) {
                 continue;  // closing already
             }
-            mStopped[position.symbol] = DayOf(now);
-            closing[position.symbol] =
+            const std::string reason =
                 "position loss limit reached (down " + loss.ToString() +
                 ", limit " + mLimits.max_loss_per_position->ToString() + ")";
+            const auto day = DayOf(now);
+            const auto stopped = mStopped.find(position.symbol);
+            const bool paused =
+                stopped != mStopped.end() && stopped->second == day;
+            mStopped[position.symbol] = day;
+            if (HasOpenMarketPrice(position.symbol, now)) {
+                closing[position.symbol] = reason;
+            } else if (!paused) {
+                // A quote from a shut market can be far from where it opens:
+                // it pauses the symbol, and only a loss that stands at a
+                // price from the open session sells.
+                spdlog::warn(
+                    "risk: no new positions in {} today: {}; that is not at "
+                    "a price from the open market, so the position is closed "
+                    "only if the loss stands at one",
+                    position.symbol, reason);
+            }
         }
     }
-    if (closing.empty() && !everything) {
-        return {};
+    const auto everything = TakePendingClose(now);
+    if (!closing.empty() || everything) {
+        CloseHeld(closing, everything, now);
     }
+    return {};
+}
 
+std::optional<std::string> RiskGatedVenue::TakePendingClose(
+    types::Timestamp now) {
+    if (!mPendingDrawdownClose || !mHours.IsOpen(now)) {
+        return std::nullopt;
+    }
+    mLastDrawdownClose = now;
+    return std::exchange(mPendingDrawdownClose, std::nullopt);
+}
+
+void RiskGatedVenue::CloseHeld(
+    const std::map<types::Symbol, std::string>& closing,
+    const std::optional<std::string>& everything, types::Timestamp now) {
     // What to close is what is held, as the gate counts it: the venue's
     // position too, if it reports more.
     auto positions = mVenue->GetPositions();
@@ -412,7 +474,6 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
             Close(symbol, quantity, why->second, now);
         }
     }
-    return {};
 }
 
 std::optional<std::string> RiskGatedVenue::Losses(types::Timestamp now) {
@@ -497,6 +558,18 @@ std::optional<Decimal> RiskGatedVenue::ReferencePriceFor(
         return std::nullopt;
     }
     return it->second.price;
+}
+
+bool RiskGatedVenue::HasOpenMarketPrice(const types::Symbol& symbol,
+                                        types::Timestamp now) const {
+    // The session open now, or else the next one, which no price is from
+    // yet (none on a market that never closes). The last session's closing
+    // price is no nearer this open than a quote between them.
+    const auto session = mHours.CurrentOrNext(now);
+    std::lock_guard lock(mPriceMutex);
+    const auto it = mPrices.find(symbol);
+    return it != mPrices.end() &&
+           (!session || it->second.time >= session->start);
 }
 
 std::optional<Decimal> RiskGatedVenue::PriceFor(
@@ -663,7 +736,7 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
         if (const auto stopped = mStopped.find(request.symbol);
             stopped != mStopped.end() && stopped->second == DayOf(now)) {
             blocked = "the position in " + request.symbol +
-                      " was closed at its loss limit today";
+                      " reached its loss limit today";
         }
     }
     if (!blocked && mLimits.max_quote_age) {

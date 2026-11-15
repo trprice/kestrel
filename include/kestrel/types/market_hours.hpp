@@ -73,6 +73,8 @@ class MarketHours {
 
     bool IsAlwaysOpen() const { return !mCalendar; }
     bool Extended() const { return mExtended; }
+    // The same calendar, counting the regular session alone.
+    MarketHours Regular() const { return MarketHours(mCalendar, false); }
     bool IsOpen(Timestamp t) const;
 
     // The session open at `t`, or else the next one to open after it, as

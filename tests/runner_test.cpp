@@ -1595,6 +1595,62 @@ TEST_F(RunnerSessionTest, AMarketThatNeverClosesHasNoSessions) {
     runner->End();
 }
 
+TEST_F(RunnerSessionTest, TheRiskGateClosesOnADrawdownOnlyOnceTheMarketOpens) {
+    options.risk = trading::RiskLimits{};
+    options.risk->max_drawdown_close = kestrel::testing::D("10");
+    venue->positions = {types::Position{
+        kSymbol, kestrel::testing::D("1"), kestrel::testing::D("100"), {}}};
+    Build();
+    ASSERT_OK(runner->Begin());
+    const int cancels_at_start = venue->cancel_all_calls;
+    now = Hour(0) + std::chrono::seconds(1);
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.last = kestrel::testing::D("4");  // down 96 while the market is shut
+    data->quote_callback(quote);
+    runner->Drain();
+    EXPECT_EQ(venue->cancel_all_calls, cancels_at_start + 1);  // halted
+    EXPECT_TRUE(venue->orders.empty());
+
+    // The gate hears of the open before the strategy does, with no new quote.
+    EXPECT_EQ(Advance(), Hour(1));
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, types::Side::kSell);
+    EXPECT_EQ(venue->orders[0].type, types::OrderType::kMarket);
+    EXPECT_EQ(venue->orders[0].quantity, kestrel::testing::D("1"));
+    EXPECT_FALSE(strategy->order_at_open.has_value());  // halted
+    runner->End();
+}
+
+TEST_F(RunnerSessionTest, TheRiskGateClosesAPositionOnlyAtAnOpenMarketPrice) {
+    options.risk = trading::RiskLimits{};
+    options.risk->max_loss_per_position = kestrel::testing::D("10");
+    venue->positions = {types::Position{
+        kSymbol, kestrel::testing::D("1"), kestrel::testing::D("100"), {}}};
+    Build();
+    ASSERT_OK(runner->Begin());
+    now = Hour(0) + std::chrono::seconds(1);
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.last = kestrel::testing::D("4");  // down 96 while the market is shut
+    data->quote_callback(quote);
+    runner->Drain();
+    EXPECT_TRUE(venue->orders.empty());
+
+    EXPECT_EQ(Advance(), Hour(1));
+    EXPECT_TRUE(venue->orders.empty());
+    EXPECT_FALSE(strategy->order_at_open.has_value());  // paused for the day
+
+    now += std::chrono::seconds(1);
+    data->quote_callback(quote);  // still down 96 with the market open
+    runner->Drain();
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, types::Side::kSell);
+    EXPECT_EQ(venue->orders[0].type, types::OrderType::kMarket);
+    EXPECT_EQ(venue->orders[0].quantity, kestrel::testing::D("1"));
+    runner->End();
+}
+
 TEST(LogContextTest, BuildsPrefixUpdatesInPlaceAndRemovesEmptyFields) {
     const strategy::LogContext empty;
     EXPECT_TRUE(empty.Strategy().empty());

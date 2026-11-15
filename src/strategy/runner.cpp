@@ -162,7 +162,7 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
                : mOptions.log) {
     if (mOptions.risk) {
         mGate = std::make_shared<trading::RiskGatedVenue>(
-            mVenue, *mOptions.risk, mClock);
+            mVenue, *mOptions.risk, mClock, mHours);
         mGate->SetSymbolInfo([data = mData](const types::Symbol& symbol) {
             return data->GetSymbolInfo(symbol);
         });
@@ -480,6 +480,12 @@ void Runner::RefreshSession(types::Timestamp now) {
 }
 
 void Runner::CheckSession(types::Timestamp now) {
+    if (mGate) {
+        // Before the strategy hears of an open. Asked each time, not only at
+        // the open: with extended hours the gate's market orders wait for
+        // the regular session, which opens after this one.
+        mGate->SendPendingClose();
+    }
     RefreshSession(now);
     while (mSession) {
         if (now >= mSession->end) {

@@ -152,10 +152,17 @@ market orders the gate sends itself, outside the other limits, rounded down to
 the lot and to the coin's balance. The strategy sees their fills as it sees
 any other (`breakout` goes flat when its holding is sold, though it may first
 log that its stop was cancelled and could not be placed again), and a symbol
-is closed at most once a minute. The gate does not know market hours, so a close
-of a stock is sent even when the market is shut. `max_orders_per_day`,
-`max_consecutive_losses` and `max_drawdown` suit a trend follower like
-`ma_crossover`.
+is closed at most once a minute. Nothing is closed while the market is shut:
+outside the regular session, even with `extended_hours`, as a live market
+order waits for the regular session anyway (in paper mode the close waits
+the same way). `max_drawdown_close` still halts and cancels open orders at
+once, and sends its close when the market opens, even if the price has
+recovered by then. `max_loss_per_position` still pauses the symbol at once,
+but cancels the symbol's orders and closes it only if the loss stands at a
+price from the session that is open (an after-hours quote, or the last
+session's close, can be far from where the market opens).
+`max_orders_per_day`, `max_consecutive_losses` and `max_drawdown` suit a
+trend follower like `ma_crossover`.
 
 ## `[strategy]`
 
