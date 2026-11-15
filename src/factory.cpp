@@ -34,18 +34,13 @@ namespace {
 
 using VenuePtr = std::unique_ptr<trading::TradingVenue>;
 
-Result<VenuePtr> MakePaper(const config::Configuration& cfg,
-                           std::shared_ptr<data::DataSource> ds) {
+VenuePtr MakePaper(const config::Configuration& cfg,
+                   std::shared_ptr<data::DataSource> ds) {
     // A paper run can last for days: keep its history bounded.
     trading::PaperOptions options = cfg.GetPaperOptions();
     options.max_fills = 100'000;
     options.max_closed_orders = 100'000;
-    auto venue =
-        std::make_unique<trading::PaperTradingVenue>(std::move(ds), options);
-    if (auto started = venue->Start(cfg.GetSymbols()); !started) {
-        return std::unexpected(started.error());
-    }
-    return VenuePtr(std::move(venue));
+    return std::make_unique<trading::PaperTradingVenue>(std::move(ds), options);
 }
 
 types::Error MissingCredentials(std::string_view provider,
@@ -64,11 +59,7 @@ Result<Components> BuildKraken(const config::KrakenConfiguration& cfg) {
     auto ds = std::make_shared<data::KrakenDataSource>(
         net::MakeTimedHttpClient(cfg.GetHttp().slow_request), options);
     if (cfg.GetMode() == config::Mode::kPaper) {
-        auto venue = MakePaper(cfg, ds);
-        if (!venue) {
-            return std::unexpected(venue.error());
-        }
-        return Components{ds, std::move(*venue)};
+        return Components{ds, MakePaper(cfg, ds)};
     }
     if (!cfg.Credentials()) {
         return std::unexpected(MissingCredentials(
@@ -82,11 +73,7 @@ Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
     auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
     auto ds = std::make_shared<data::BinanceUSDataSource>(http);
     if (cfg.GetMode() == config::Mode::kPaper) {
-        auto venue = MakePaper(cfg, ds);
-        if (!venue) {
-            return std::unexpected(venue.error());
-        }
-        return Components{ds, std::move(*venue)};
+        return Components{ds, MakePaper(cfg, ds)};
     }
     if (!cfg.Credentials()) {
         return std::unexpected(MissingCredentials(
@@ -151,11 +138,7 @@ Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
     }
     auto ds = MakeSchwabDataSourceFromAuth(cfg, *auth, http);
     if (cfg.GetMode() == config::Mode::kPaper) {
-        auto venue = MakePaper(cfg, ds);
-        if (!venue) {
-            return std::unexpected(venue.error());
-        }
-        return Components{ds, std::move(*venue)};
+        return Components{ds, MakePaper(cfg, ds)};
     }
     trading::SchwabTradingVenue::Options venue_options;
     venue_options.account_number = cfg.AccountNumber();
@@ -752,6 +735,12 @@ std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
 // source shares.
 constexpr std::chrono::milliseconds kSchwabFillPollInterval{5000};
 
+// The risk gate reads the fills each time it measures the losses at a new
+// price (RiskLimits::watch_interval). Live that is a request or two against
+// the provider's limit (Binance.US: weight 20 a symbol of the 2400 a minute
+// kept to; Schwab: two of 120), so not every second as on the paper venue.
+constexpr std::chrono::milliseconds kLiveRiskWatchInterval{10'000};
+
 }  // namespace
 
 Result<std::shared_ptr<data::DataSource>> CreateDataSource(
@@ -937,6 +926,9 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
         options.risk->shorts = cfg.GetPaperOptions().allow_short;
         options.risk->default_quote_asset =
             cfg.GetPaperOptions().default_quote_asset;
+    }
+    if (options.risk && cfg.GetMode() == config::Mode::kLive) {
+        options.risk->watch_interval = kLiveRiskWatchInterval;
     }
     options.cancel_entries_on_stop = true;
     if (cfg.GetProvider() == config::Provider::kSchwab &&

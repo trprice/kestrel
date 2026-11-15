@@ -139,7 +139,7 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 | `max_price_age_ms` | refuse orders valued at a reference price older than this |
 | `max_orders_per_day` | then only position-reducing orders |
 | `max_consecutive_losses` | losing sells in a row; resets on a win or a new UTC day |
-| `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second); then only position-reducing orders. Does not reset at midnight |
+| `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second; every 10 seconds in live mode, where each measurement reads the venue's fills); then only position-reducing orders. Does not reset at midnight |
 | `max_drawdown_close` | the same fall, at which the gate halts, cancels every open order and closes every position at market; trading stays halted until the next run, and what is still held is closed again each minute while the fall stands. Set it above `max_drawdown`, or alone |
 | `max_loss_per_position` | one position's unrealized loss from its average cost, measured the same way; the gate cancels that symbol's orders, closes the position at market, and refuses new positions in the symbol for the rest of the UTC day. A backstop for the strategy's own stop |
 | `max_quote_age_ms` | refuse new positions in a symbol whose quotes have stopped this long while its market is open, until they return (checked every 10 s; strategies that take quotes) |
@@ -163,6 +163,13 @@ price from the session that is open (an after-hours quote, or the last
 session's close, can be far from where the market opens).
 `max_orders_per_day`, `max_consecutive_losses` and `max_drawdown` suit a
 trend follower like `ma_crossover`.
+
+The prices are the quotes' midpoints and the bar closes. `run` streams quotes
+for the gate even when the strategy takes only bars, so a loss limit follows
+the market between a bar strategy's closes; the strategy does not see those
+quotes, and `run` does not start if they cannot be streamed. A backtest of a
+bar strategy has no quotes: there the gate sees each bar's close only, so a
+limit acts up to a bar later than it would in `run`.
 
 ## `[strategy]`
 

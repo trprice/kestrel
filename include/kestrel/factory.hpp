@@ -24,9 +24,9 @@ struct Components {
 };
 
 // Builds the provider's DataSource and a TradingVenue chosen by
-// configuration.GetMode(): a PaperTradingVenue (already streaming quotes for
-// the configured symbols) in paper mode, the provider's live venue in live
-// mode. Callers use only the abstract interfaces.
+// configuration.GetMode(): a PaperTradingVenue in paper mode, the provider's
+// live venue in live mode. Starts no streams (the Runner streams the quotes a
+// paper venue needs). Callers use only the abstract interfaces.
 //
 // Live mode fails with kAuth if the provider's credentials are not configured.
 // Schwab needs them in paper mode too, with a token file from `kestrel_app
@@ -35,8 +35,7 @@ types::Result<Components> CreateComponents(
     const config::Configuration& configuration);
 
 // Just the provider's DataSource, for work that needs no venue (backtests).
-// Unlike CreateComponents it starts no streams. Schwab's needs its credentials
-// and tokens, as above.
+// Schwab's needs its credentials and tokens, as above.
 types::Result<std::shared_ptr<data::DataSource>> CreateDataSource(
     const config::Configuration& configuration);
 

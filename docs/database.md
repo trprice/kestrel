@@ -132,7 +132,8 @@ ORDER BY snapshot_time DESC LIMIT 10;
 
 P&L is the same average-cost figure the risk gate uses, realized net of fees,
 starting from the positions the venue reported at startup; the mark is the
-last quote mid or bar close. A failed write is logged and retried, never fatal
+last quote mid or bar close (`run` streams quotes for the marks even when the
+strategy takes only bars). A failed write is logged and retried, never fatal
 to the run; if the database cannot be reached at startup, `run` refuses to
 start.
 

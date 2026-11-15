@@ -10,6 +10,7 @@
 #include <thread>
 #include <tuple>
 
+#include "kestrel/trading/paper_trading_venue.hpp"
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
@@ -69,6 +70,9 @@ class FakeDataSource : public data::DataSource {
     }
     types::Result<std::unique_ptr<data::Subscription>> StreamQuotes(
         const std::vector<std::string>&, data::QuoteCallback cb) override {
+        if (fail_stream_quotes) {
+            return types::MakeError(ErrorCategory::kNetwork, "no quotes");
+        }
         quote_callback = std::move(cb);
         return std::unique_ptr<data::Subscription>(new Sub(stops));
     }
@@ -100,6 +104,7 @@ class FakeDataSource : public data::DataSource {
 
     bool fail_get_bars = false;
     bool fail_stream_bars = false;
+    bool fail_stream_quotes = false;
     bool unknown_symbol = false;
     std::vector<types::Bar> history;
     std::shared_ptr<const types::MarketHours> hours =
@@ -980,6 +985,112 @@ TEST_F(RunnerTest, FeedsTheGatePricesFromBars) {
     runner->End();
 }
 
+// A bar strategy's gate gets quotes of its own: its limits would otherwise
+// see a price only at each bar's close. The strategy does not see them.
+TEST_F(RunnerTest, FeedsTheGateQuotesABarStrategyDidNotAskFor) {
+    options.risk = trading::RiskLimits{};
+    options.risk->max_order_notional = types::Decimal::FromInt(100);
+    Build();
+    ASSERT_OK(runner->Begin());  // warmup leaves hour 4's close (4) as price
+    ASSERT_TRUE(data->quote_callback);
+    auto gate = runner->RiskGate();
+
+    types::OrderRequest order;
+    order.symbol = kSymbol;
+    order.quantity = types::Decimal::FromInt(20);  // 80 at price 4: allowed
+    EXPECT_TRUE(gate->PlaceOrder(order));
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.bid = types::Decimal::FromInt(5);
+    quote.ask = types::Decimal::FromInt(7);
+    data->quote_callback(quote);
+    ASSERT_TRUE(runner->Drain());  // the mid is 6: 120 exceeds the limit
+    EXPECT_FALSE(gate->PlaceOrder(order));
+    EXPECT_TRUE(strategy->quotes.empty());
+    runner->End();
+}
+
+// So are the marks of the recorded P&L.
+TEST_F(RunnerTest, MarksTheRecordedPnlAtQuotesABarStrategyDidNotAskFor) {
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    auto buy = FillAt("f1", 6);
+    buy.quantity = types::Decimal::FromInt(2);
+    buy.price = types::Decimal::FromInt(100);
+    venue->fills = {buy};
+    Build();
+    ASSERT_OK(runner->Begin());
+    data->Close(5);  // a bar closes at 5, then a quote of 90 comes
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.last = types::Decimal::FromInt(90);
+    ASSERT_TRUE(data->quote_callback);
+    data->quote_callback(quote);
+    EXPECT_TRUE(runner->Drain());
+    runner->End();
+
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.mark_price, types::Decimal::FromInt(90));
+    EXPECT_EQ(row.unrealized, types::Decimal::FromInt(-20));
+    EXPECT_TRUE(strategy->quotes.empty());
+}
+
+// Without those quotes a loss limit would lag by up to a bar: the run does
+// not start.
+TEST_F(RunnerTest, FailsWhenTheGatesQuotesCannotBeStreamed) {
+    options.risk = trading::RiskLimits{};
+    data->fail_stream_quotes = true;
+    Build();
+    auto begun = runner->Begin();
+    ASSERT_FALSE(begun);
+    EXPECT_EQ(begun.error().message, "quotes for the risk gate: no quotes");
+    EXPECT_EQ(data->stops.load(), 1);  // the bar stream, closed again
+
+    // A bar strategy with neither a gate nor a recorder asks for none.
+    auto owner = std::make_unique<RecordingStrategy>();
+    owner->requirements = strategy->requirements;
+    strategy = owner.get();
+    strategy_owner = std::move(owner);
+    options.risk.reset();
+    Build();
+    ASSERT_OK(runner->Begin());
+    runner->End();
+}
+
+// A paper venue is fed from the runner's own quote stream, so a paper run
+// opens one quote stream rather than two, even for a bar strategy with no
+// gate or recorder.
+TEST_F(RunnerTest, FeedsThePaperVenueFromItsQuoteStream) {
+    auto paper = std::make_shared<trading::PaperTradingVenue>(
+        data, trading::PaperOptions{});
+    auto owner = std::make_unique<RecordingStrategy>();
+    owner->requirements = strategy->requirements;
+    auto* bar_strategy = owner.get();
+    strategy::Runner paper_runner(data, paper, std::move(owner), options,
+                                  [] { return Hour(5); });
+    ASSERT_OK(paper_runner.Begin());
+    ASSERT_TRUE(data->quote_callback);
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    quote.bid = types::Decimal::FromInt(99);
+    quote.ask = types::Decimal::FromInt(101);
+    data->quote_callback(quote);
+
+    types::OrderRequest buy;
+    buy.symbol = kSymbol;
+    buy.side = types::Side::kBuy;
+    buy.type = types::OrderType::kMarket;
+    buy.quantity = types::Decimal::FromInt(1);
+    auto ack = paper->PlaceOrder(buy);
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->state, types::OrderState::kFilled);
+    EXPECT_TRUE(bar_strategy->quotes.empty());
+    paper_runner.End();
+}
+
 TEST_F(RunnerTest, FailsWhenTheGateCannotReadPositions) {
     options.risk = trading::RiskLimits{};
     venue->fail_reads = true;
@@ -987,7 +1098,8 @@ TEST_F(RunnerTest, FailsWhenTheGateCannotReadPositions) {
     auto r = runner->Begin();
     ASSERT_FALSE(r);
     EXPECT_EQ(r.error().category, ErrorCategory::kNetwork);
-    EXPECT_EQ(data->stops.load(), 1);  // streams closed again
+    // The streams closed again: the bars, and the gate's quotes.
+    EXPECT_EQ(data->stops.load(), 2);
 }
 
 TEST_F(RunnerTest, CancelsOrdersAlreadyOpenBeforeOnStart) {

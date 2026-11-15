@@ -23,9 +23,7 @@ std::chrono::sys_days DayOf(types::Timestamp t) {
     return std::chrono::floor<std::chrono::days>(t);
 }
 
-// How often a reference price may measure the losses, and how often one
-// symbol may be closed.
-constexpr std::chrono::seconds kWatchInterval{1};
+// How often one symbol may be closed.
 constexpr std::chrono::minutes kCloseInterval{1};
 
 // What `side` would hold of `symbol` if every open order of that side and
@@ -71,7 +69,7 @@ void RiskGatedVenue::NoteReferencePrice(const types::Symbol& symbol,
     }
     // An order being placed measures the losses itself; prices keep coming.
     std::unique_lock lock(mMutex, std::try_to_lock);
-    if (!lock || now - mLastWatch < kWatchInterval) {
+    if (!lock || now - mLastWatch < mLimits.watch_interval) {
         return;
     }
     WatchSafely(now);

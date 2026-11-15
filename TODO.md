@@ -194,10 +194,6 @@ four recorded days. Check a change's markouts, not only "vs hold".
     through.
   - `RunBacktest`: build the timeline in a function of its own.
   - Tests: `types/time.cpp` round trips, `Migrate()` failures.
-- [ ] Building components in the factory starts the paper venue's quote
-      stream as a side effect, so `bars` and `run` open a WebSocket whether or
-      not they need it (`stream`, `stream-bars` and `backtest` already avoid
-      this by building only the data source); make starting the venue explicit
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.
@@ -264,9 +260,17 @@ the header of the code concerned.
   quote asset.
 - `max_drawdown`, `max_drawdown_close` and `max_loss_per_position` are
   measured at each order and at each reference price, at most once a second
-  and not while an order is being placed: a peak or trough shorter than that
-  can be missed. Only the last two close positions; the other loss limits
-  block entries.
+  (every 10 s live: `kLiveRiskWatchInterval`, as each measurement reads the
+  venue's fills) and not while an order is being placed: a peak or trough
+  shorter than that can be missed. Only the last two close positions; the
+  other loss limits block entries.
+- The Runner streams quotes for the gate and the recorder when the strategy
+  takes only bars; those quotes get no stale-feed warning and no
+  `max_quote_age` check. A backtest of a bar strategy still feeds the gate
+  bar closes only: the prices the venue walks inside a bar do not reach it,
+  so a limit acts up to a bar late there. Feeding it the walked prices
+  would need the walk to stop at the limit's own price, as it does for a
+  resting order, or the close would be taken at the bar's extreme.
 - A close cancels the symbol's orders and sells at market straight away, so
   a cancel still on its way (venue latency) can let the strategy's stop sell
   too; on a spot venue the second sale is refused for want of the coin.
@@ -1014,6 +1018,10 @@ the header of the code concerned.
 ### Engineering
 - [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
       the whole suite passes under both
+- [x] `CreateComponents` no longer starts the paper venue's quote stream as a
+      side effect; the `Runner` feeds a `PaperTradingVenue` from its own quote
+      stream, so `bars` and `account` open no WebSocket and a paper run opens
+      one quote stream rather than two
 
 ### Documentation
 - [x] A document for each strategy in `docs/strategies/` (how it works,

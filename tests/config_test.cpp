@@ -392,6 +392,15 @@ TEST(Factory, LiveModeBuildsTheProviderVenue) {
     // tested against a fake HTTP client in binanceus_trading_venue_test.cpp.
 }
 
+TEST(Factory, PaperModeBuildsThePaperVenueWithoutStartingStreams) {
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        "[general]\nmode='paper'\nsymbols=['BTC/USD']", NoEnv());
+    ASSERT_OK(cfg);
+    auto components = CreateComponents(*cfg);
+    ASSERT_OK(components);
+    EXPECT_EQ(components->venue->Name(), "paper");
+}
+
 std::string WithTables(const std::string& tables, const char* mode = "paper") {
     return std::string("[general]\nmode='") + mode +
            "'\nsymbols=['BTC/USD','ETH/USD']\n" + tables;

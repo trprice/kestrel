@@ -127,7 +127,8 @@ Every WebSocket is pinged every 20 seconds and reconnected when the answer
 does not come back by the next ping. `run` logs a quote stream that has been
 quiet for 2 minutes of open market time, and with `[risk] max_quote_age_ms`
 the risk gate refuses new positions until quotes return. A bar strategy's
-feed is not checked.
+feed is not checked, nor are the quotes `run` streams for its risk gate and
+its recorded P&L.
 
 ## Orders
 

@@ -179,7 +179,9 @@ before then (`authorize --status` shows when).
 - `run <strategy>` trades on live data through the paper or live venue until
   Ctrl-C or SIGTERM (a second signal exits immediately), and logs each HTTP
   endpoint's response times when it stops. If `[risk]` sets any limit, orders
-  go through the risk gate, and the daily-loss count starts at startup.
+  go through the risk gate, and the daily-loss count starts at startup. The
+  gate is fed quotes as well as bar closes, whether or not the strategy
+  takes quotes (a backtest of a bar strategy feeds it bar closes only).
   Without `[risk]` it warns and trades unchecked in paper mode. Live mode is
   refused without `[risk]`, and on a provider whose venue is still a stub
   (Kraken and Schwab); Binance.US runs live. Read

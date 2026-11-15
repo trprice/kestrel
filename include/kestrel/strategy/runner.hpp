@@ -22,6 +22,10 @@
 #include "kestrel/trading/trade_log.hpp"
 #include "kestrel/trading/trading_venue.hpp"
 
+namespace kestrel::trading {
+class PaperTradingVenue;
+}
+
 namespace kestrel::strategy {
 
 class OrderTracker;
@@ -29,7 +33,10 @@ class RunRecorder;
 
 struct RunnerOptions {
     // When set, the strategy gets a RiskGatedVenue with these limits instead
-    // of the venue itself, fed with prices from the bars and quotes.
+    // of the venue itself, fed with prices from the bars and quotes. The
+    // quotes are streamed for it even when the strategy takes only bars (and
+    // likewise for a trade_log's marks): bar closes alone would leave a loss
+    // limit up to a bar behind the market. The strategy does not see them.
     std::optional<trading::RiskLimits> risk;
     // How often Run() asks the venue for new fills and for changes to the
     // strategy's orders; zero turns polling off.
@@ -338,12 +345,21 @@ class Runner : private Context {
     // OnTimer: its interval, and when it is next due.
     std::chrono::milliseconds mTimerInterval{0};
     std::optional<types::Timestamp> mNextTimer;
+    // Whether the strategy asked for quotes. When it did not, any that come
+    // are the runner's own, streamed for the risk gate and the recorder, and
+    // OnQuote is not called.
+    bool mStrategyQuotes = false;
     // The stale-quote check (Run() thread only): when each quoted symbol's
-    // last quote came (or the run began), and which are reported stale.
+    // last quote came (or the run began), and which are reported stale. Only
+    // for a strategy that takes quotes.
     std::map<types::Symbol, types::Timestamp> mLastQuote;
     std::set<types::Symbol> mStaleQuotes;
     // Those the risk gate has been told are stale (RiskLimits::max_quote_age).
     std::set<types::Symbol> mGateStale;
+    // When the venue is a PaperTradingVenue, the runner's quote stream also
+    // feeds its book (OnQuote), so a paper run opens one quote stream rather
+    // than two.
+    std::shared_ptr<trading::PaperTradingVenue> mPaper;
     std::shared_ptr<trading::RiskGatedVenue> mGate;  // null without risk
     std::shared_ptr<OrderTracker> mTracker;
     std::unique_ptr<RunRecorder> mRecorder;  // null without options.trade_log

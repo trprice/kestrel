@@ -496,7 +496,6 @@ types::Result<BacktestResult> RunBacktest(
         }
 
         if (item.is_quote) {
-            venue->OnQuote(*item.quote);
             data->EmitQuote(*item.quote);
             runner.Drain();
             observe(*item.symbol, SummaryBuilder::MarkOf(*item.quote));

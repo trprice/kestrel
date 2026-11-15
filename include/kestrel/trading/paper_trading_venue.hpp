@@ -150,8 +150,9 @@ class PaperTradingVenue : public TradingVenue {
                       std::function<types::Timestamp()> clock = types::Now);
     ~PaperTradingVenue() override;
 
-    // Subscribes to the data source's quotes for `symbols`. Optional: quotes
-    // can also be pushed in through OnQuote().
+    // Subscribes to the data source's quotes for `symbols`. For standalone
+    // use: the Runner feeds OnQuote from its own quote stream, and
+    // RunBacktest pushes quotes in directly.
     types::Result<void> Start(const std::vector<std::string>& symbols);
     void Stop();
 

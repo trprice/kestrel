@@ -781,6 +781,23 @@ TEST_F(RiskGateTest, PricesMeasureTheLossesAtMostOnceASecond) {
     EXPECT_EQ(venue->get_fills_calls, before + 2);
 }
 
+// Each measurement reads the fills: a venue whose requests are scarce is
+// read less often.
+TEST_F(RiskGateTest, TheWatchIntervalSetsHowOftenPricesMeasureTheLosses) {
+    limits.max_drawdown = D("50");
+    limits.watch_interval = std::chrono::seconds(10);
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    const int before = venue->get_fills_calls;
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    now += std::chrono::seconds(9);
+    gate->NoteReferencePrice(kSymbol, D("101"));
+    EXPECT_EQ(venue->get_fills_calls, before + 1);
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("102"));
+    EXPECT_EQ(venue->get_fills_calls, before + 2);
+}
+
 TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {
     limits.max_drawdown_close = D("50");
     venue->positions = {HoldingOf("2", "100")};

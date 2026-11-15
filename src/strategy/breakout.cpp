@@ -1026,22 +1026,34 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
     }
     mHeld = std::max(mHeld - fill.quantity, Decimal());
     if (!mTargetId.empty() && fill.order_id == mTargetId) {
-        mTargetHit = true;
-        if (mState == State::kLong && mHeld.Sign() > 0) {
+        const bool first = !std::exchange(mTargetHit, true);
+        if (first && mState == State::kLong && mHeld.Sign() > 0) {
             // In part: the price got there, so sell the rest now rather
             // than leave it to a stop sized for the whole (cancelling the
             // target cancels its stop too, on a venue that has not already).
-            const auto cancelled =
-                context.Venue().CancelOrder(std::exchange(mTargetId, {}));
+            const auto cancelled = context.Venue().CancelOrder(mTargetId);
             if (cancelled &&
                 *cancelled == trading::CancelOutcome::kAlreadyFilled) {
                 return;  // it sold the rest too; that fill makes us flat
             }
+            mTargetId.clear();
             Exit(context, "target, the rest");
             return;
         }
     }
     if (selling && mHeld.Sign() == 0) {
+        // Said here, for every way out: a stop or target resting on the
+        // venue fills without the strategy having done anything to log.
+        const auto is = [&fill](const std::string& id) {
+            return !id.empty() && fill.order_id == id;
+        };
+        Log(context).Info("{} closed by {} at {}; entered at {}",
+                          mShort ? "short" : "long",
+                          is(mStopId)     ? "the protective stop"
+                          : is(mTargetId) ? "the target"
+                          : is(mExitId)   ? "the exit"
+                                          : "order " + fill.order_id,
+                          Price(fill.price), Price(mEntryPrice));
         // A failed breakout: the stop, never moved, closed all of it.
         const bool reverse = mParams.reverse && !mReversal &&
                              fill.order_id == mStopId && !mTargetHit &&
@@ -1153,18 +1165,22 @@ void Breakout::OnOrderUpdate(Context& context,
         }
     } else if (status.order_id == mStopId && mState == State::kLong) {
         mStopId.clear();
+        if (mTargetHit && !mTargetId.empty()) {
+            return;  // the target already filled in full; its fills finish it
+        }
         if (!mTargetId.empty() && status.state == OrderState::kRejected) {
             mTargetRefused = true;  // the pair was refused: not again
         }
         if (!mTargetId.empty()) {
             // Closed with its target, which may have sold some: take the
             // target down too (if it is still working) before going on.
-            const std::string target = std::exchange(mTargetId, {});
-            const auto cancelled = context.Venue().CancelOrder(target);
+            const auto cancelled = context.Venue().CancelOrder(mTargetId);
             if (cancelled &&
                 *cancelled == trading::CancelOutcome::kAlreadyFilled) {
+                mTargetHit = true;
                 return;  // the target sold it all; its fill makes us flat
             }
+            mTargetId.clear();
         }
         if (mTargetHit) {
             // The target sold part: the price got there, so sell the rest.

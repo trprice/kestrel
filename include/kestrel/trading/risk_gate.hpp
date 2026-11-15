@@ -113,6 +113,10 @@ struct RiskLimits {
     // for valuing balances under max_symbol_share
     // (PaperOptions::default_quote_asset).
     std::string default_quote_asset = "USD";
+    // Not a limit: how often a reference price may measure the losses
+    // (NoteReferencePrice). Each measurement reads the venue's fills, so the
+    // factory sets it longer for a live venue, whose requests are counted.
+    std::chrono::milliseconds watch_interval{1000};
 };
 
 // A TradingVenue that checks every order against RiskLimits before passing it
@@ -126,7 +130,8 @@ struct RiskLimits {
 // Prices: a limit order is valued at its limit price and a stop at its stop
 // price; a market order has no price of its own, so it is valued at the
 // reference price last given to NoteReferencePrice (the Runner supplies
-// these from bars and quotes). Without a usable reference price a market
+// these from bars and quotes, streaming the quotes itself for a strategy
+// that takes only bars). Without a usable reference price a market
 // order is rejected whenever a notional limit is set.
 //
 // An order that reduces a position (a sell of no more than is held) is the
@@ -167,8 +172,9 @@ class RiskGatedVenue : public TradingVenue {
 
     // Latest price for valuing market orders, stamped with the clock. With
     // max_drawdown, max_drawdown_close or max_loss_per_position, also
-    // measures the drawdown and each position's loss (at most once a second,
-    // and not while an order is being placed), closing positions as those
+    // measures the drawdown and each position's loss (at most once every
+    // RiskLimits::watch_interval, a second by default, and not while an
+    // order is being placed), closing positions as those
     // limits say. That reads the venue's fills (and, to close, its orders,
     // positions and balances) on the caller's thread, holding the order
     // lock, so a slow venue delays the caller and any order meanwhile.

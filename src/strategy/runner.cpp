@@ -4,6 +4,7 @@
 
 #include "kestrel/data/recent_bars.hpp"
 #include "kestrel/strategy/run_recorder.hpp"
+#include "kestrel/trading/paper_trading_venue.hpp"
 #include "kestrel/trading/session_gated_venue.hpp"
 
 namespace kestrel::strategy {
@@ -160,6 +161,7 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
       mLog(mOptions.log.Strategy().empty()
                ? mOptions.log.WithStrategy(mStrategy->Name())
                : mOptions.log) {
+    mPaper = std::dynamic_pointer_cast<trading::PaperTradingVenue>(mVenue);
     if (mOptions.risk) {
         mGate = std::make_shared<trading::RiskGatedVenue>(
             mVenue, *mOptions.risk, mClock, mHours);
@@ -317,6 +319,7 @@ types::Result<void> Runner::Begin() {
     if (requirements.state) {
         mState = mOptions.state_store;
     }
+    mStrategyQuotes = requirements.quotes;
     if (requirements.quotes) {
         for (const auto& symbol : requirements.symbols) {
             mLastQuote[symbol] = mClock();
@@ -386,13 +389,31 @@ types::Result<void> Runner::Begin() {
         }
         mSubscriptions.push_back(std::move(*sub));
     }
-    if (requirements.quotes) {
+    // For the strategy, or else for the paper venue, the risk gate and the
+    // recorder: with only bar closes, a paper order would have no book to
+    // trade against, and a loss limit and the recorded marks would be up to a
+    // bar behind the market.
+    if (requirements.quotes || mPaper || mGate || mRecorder) {
         auto sub = mData->StreamQuotes(
-            requirements.symbols,
-            [this](const types::Quote& quote) { PushQuote(quote); });
+            requirements.symbols, [this](const types::Quote& quote) {
+                if (mPaper) {
+                    mPaper->OnQuote(quote);
+                }
+                if (mStrategyQuotes || mGate || mRecorder) {
+                    PushQuote(quote);
+                }
+            });
         if (!sub) {
             mSubscriptions.clear();
-            return std::unexpected(sub.error());
+            types::Error error = sub.error();
+            if (!requirements.quotes) {
+                error.message = std::string("quotes for ") +
+                                (mGate       ? "the risk gate"
+                                 : mRecorder ? "the recorded P&L"
+                                             : "the paper venue") +
+                                ": " + error.message;
+            }
+            return std::unexpected(std::move(error));
         }
         mSubscriptions.push_back(std::move(*sub));
     }
@@ -866,7 +887,10 @@ bool Runner::Handle(const Event& event) {
                 }
             }
         }
-        Guarded("OnQuote", [&] { mStrategy->OnQuote(*this, quote->quote); });
+        if (mStrategyQuotes) {
+            Guarded("OnQuote",
+                    [&] { mStrategy->OnQuote(*this, quote->quote); });
+        }
     } else {
         return false;
     }

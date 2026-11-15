@@ -478,6 +478,75 @@ TEST(Breakout, LogsTheArmedEntry) {
               "(order order-1); stop 10.98, for 1 bar");
 }
 
+// So is the way out: a stop resting on the venue fills with nothing else
+// said, and a later setup would arm as if no trade had been.
+TEST(Breakout, LogsWhichOrderClosedTheTrade) {
+    std::vector<std::string> lines;
+    Breakout strategy(Params());
+    FakeContext context;
+    context.log = LogContext(
+        "breakout", [&](LogContext::Level level, std::string_view line) {
+            if (level == LogContext::Level::kInfo) {
+                lines.emplace_back(line);
+            }
+        });
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    // The stop (order-2) sells in two parts: said once, at the last.
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "0.4", "10.98"));
+    ASSERT_EQ(lines.size(), 2u);  // armed, long
+    strategy.OnFill(context, FillOf("order-2", Side::kSell, "0.6", "10.9"));
+    ASSERT_EQ(lines.size(), 3u);
+    EXPECT_EQ(lines[2],
+              "breakout symbol=BTC/USD: long closed by the protective stop at "
+              "10.9; entered at 13.01");
+
+    // An order the strategy does not know (the risk gate's close, say) is
+    // named by its ID.
+    lines.clear();
+    Feed(strategy, context, {"12", "14", "10", "12"});
+    Feed(strategy, context, {"12", "13", "10", "12"});
+    Feed(strategy, context, {"12", "15", "10", "12"});
+    Feed(strategy, context, {"12", "13", "11", "12"});  // armed: order-3
+    strategy.OnFill(context, FillOf("order-3", Side::kBuy, "1", "13.01"));
+    strategy.OnFill(context, FillOf("gate-1", Side::kSell, "1", "12"));
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(),
+              "breakout symbol=BTC/USD: long closed by order gate-1 at 12; "
+              "entered at 13.01");
+
+    // A resting target that fills in several parts (its cancel after the
+    // first finds it already filled) is cancelled only once, ignores the
+    // stop's expiry in between, and is still named as the target on the last.
+    lines.clear();
+    auto resting = Params();
+    resting.resting_target = true;
+    Breakout with_target(resting);
+    FakeContext oco_context;
+    oco_context.venue.oco = true;
+    oco_context.venue.cancel_result = trading::CancelOutcome::kAlreadyFilled;
+    oco_context.log = context.log;
+    Feed(with_target, oco_context);
+    with_target.OnFill(oco_context,
+                       FillOf("order-1", Side::kBuy, "1", "13.01"));
+    with_target.OnFill(oco_context,
+                       FillOf("order-2", Side::kSell, "0.3", "15.01"));
+    types::OrderStatus stop;
+    stop.order_id = "order-3";
+    stop.state = types::OrderState::kExpired;
+    with_target.OnOrderUpdate(oco_context, stop);
+    with_target.OnFill(oco_context,
+                       FillOf("order-2", Side::kSell, "0.3", "15.01"));
+    with_target.OnFill(oco_context,
+                       FillOf("order-2", Side::kSell, "0.4", "15.01"));
+    EXPECT_EQ(oco_context.venue.cancels, std::vector<std::string>{"order-2"});
+    EXPECT_EQ(oco_context.venue.orders.size(), 3u);  // no market exit placed
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.back(),
+              "breakout symbol=BTC/USD: long closed by the target at 15.01; "
+              "entered at 13.01");
+}
+
 // The stop raised to breakeven (13.01) on a close of 15.1 is refused (as a
 // venue refuses a sell-stop above the price): sold at market instead.
 TEST(Breakout, ARefusedRaisedStopSellsAtMarket) {
