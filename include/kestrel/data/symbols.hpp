@@ -12,10 +12,14 @@ namespace kestrel::data {
 // --- Kraken -----------------------------------------------------------------
 // Both the REST API and the v2 WebSocket API accept the standard BASE/QUOTE
 // form ("BTC/USD", "DOGE/USD"), though responses may use Kraken's legacy
-// codes (XBT, XDG, XXBTZUSD), which FromKrakenSymbol maps back.
+// codes (XBT, XDG, XXBTZUSD), which FromKrakenSymbol and FromKrakenAsset map
+// back.
 types::Result<std::string> ToKrakenSymbol(std::string_view symbol);
 // Accepts every form Kraken emits: "XBT/USD", "BTC/USD", "XBTUSD", "XXBTZUSD".
 types::Result<types::Symbol> FromKrakenSymbol(std::string_view native);
+// Maps a Kraken asset key ("XXBT", "ZUSD", "XDG", "XXBT.F") to its normalized
+// code ("BTC", "USD", "DOGE", "BTC.F"), keeping any staking/earn suffix.
+std::string FromKrakenAsset(std::string_view asset);
 
 // --- Binance.US
 // --------------------------------------------------------------- Concatenated

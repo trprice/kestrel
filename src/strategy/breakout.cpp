@@ -562,9 +562,10 @@ void Breakout::ArmThrowback(Context& context) {
     request.quantity = *size;
     request.limit_price = mLevels->high;
     // Only ever a maker: if the price is already back at the level, the
-    // venue refuses it rather than buying at market, and the setup is
-    // dropped (the throwback came and went; on daily bars, an open below
-    // the level), where a buy-stop would be placed again.
+    // venue refuses it rather than buying at market (Kraken usually accepts it
+    // and reports it refused at the next poll), and the setup is dropped (the
+    // throwback came and went; on daily bars, an open below the level), where a
+    // buy-stop would be placed again.
     request.post_only = true;
     if (auto id = Place(context, request, "throwback limit")) {
         Log(context).Info("throwback limit at {}", Price(mLevels->high));

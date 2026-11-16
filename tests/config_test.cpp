@@ -390,6 +390,23 @@ TEST(Factory, LiveModeBuildsTheProviderVenue) {
     EXPECT_EQ(components->venue->Name(), "binanceus");
     // No call on the venue: it would go to the real exchange. Its behaviour is
     // tested against a fake HTTP client in binanceus_trading_venue_test.cpp.
+
+    auto kraken = config::KrakenConfiguration::Parse(
+        "[general]\nprovider='kraken'\nmode='live'\nsymbols=['BTC/USD']\n"
+        "[kraken]\nrest_url='https://api.kraken.test'\n",
+        NoEnv({{"KESTREL_KRAKEN_API_KEY", "k"},
+               {"KESTREL_KRAKEN_API_SECRET", "c2VjcmV0"}}));
+    ASSERT_OK(kraken);
+    auto kraken_components = CreateComponents(*kraken);
+    ASSERT_OK(kraken_components);
+    EXPECT_EQ(kraken_components->venue->Name(), "kraken");
+
+    auto kraken_no_creds = config::KrakenConfiguration::Parse(
+        "[general]\nprovider='kraken'\nmode='live'\nsymbols=['BTC/USD']",
+        NoEnv());
+    ASSERT_OK(kraken_no_creds);
+    EXPECT_EQ(CreateComponents(*kraken_no_creds).error().category,
+              types::ErrorCategory::kAuth);
 }
 
 TEST(Factory, PaperModeBuildsThePaperVenueWithoutStartingStreams) {
@@ -1278,15 +1295,32 @@ TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {
     EXPECT_TRUE(
         ValidateForRun(*schwab_on, schwab_on->GetRiskLimits()).has_value());
 
-    // Kraken's venue is still a stub.
-    auto stub = config::KrakenConfiguration::Parse(
-        WithTables("[risk]\nmax_open_orders=1\n", "live"),
-        NoEnv({{"KESTREL_KRAKEN_API_KEY", "key"},
-               {"KESTREL_KRAKEN_API_SECRET", "c2VjcmV0"}}));
-    ASSERT_OK(stub);
-    auto stubbed = ValidateForRun(*stub, stub->GetRiskLimits());
-    ASSERT_FALSE(stubbed.has_value());
-    EXPECT_EQ(stubbed.error().category, types::ErrorCategory::kNotImplemented);
+    // Kraken's venue is off until [kraken] live_trading turns it on, too.
+    const auto kraken_env = NoEnv({{"KESTREL_KRAKEN_API_KEY", "key"},
+                                   {"KESTREL_KRAKEN_API_SECRET", "c2VjcmV0"}});
+    const std::string kraken_base =
+        "[general]\nprovider='kraken'\nmode='live'\nsymbols=['BTC/USD']\n"
+        "[risk]\nmax_open_orders=1\n";
+    auto kraken_off =
+        config::KrakenConfiguration::Parse(kraken_base, kraken_env);
+    ASSERT_OK(kraken_off);
+    EXPECT_FALSE(kraken_off->LiveTrading());
+    auto kraken_refused =
+        ValidateForRun(*kraken_off, kraken_off->GetRiskLimits());
+    ASSERT_FALSE(kraken_refused.has_value());
+    EXPECT_EQ(kraken_refused.error().category,
+              types::ErrorCategory::kNotImplemented);
+    EXPECT_NE(kraken_refused.error().message.find("live_trading"),
+              std::string::npos);
+    auto kraken_on = config::KrakenConfiguration::Parse(
+        kraken_base + "[kraken]\nlive_trading=true\n", kraken_env);
+    ASSERT_OK(kraken_on);
+    EXPECT_TRUE(kraken_on->LiveTrading());
+    EXPECT_TRUE(
+        ValidateForRun(*kraken_on, kraken_on->GetRiskLimits()).has_value());
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     kraken_base + "[kraken]\nlive_trading='yes'\n", kraken_env)
+                     .has_value());
 }
 
 TEST(SchwabTokenStore, SaveLoadRoundTripAndPermissions) {

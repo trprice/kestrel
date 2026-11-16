@@ -67,7 +67,13 @@ once it has expired or Schwab refuses it.
 ## Provider tables
 
 `[kraken]` and `[binanceus]` take `rest_url` and `ws_url` (defaults: the
-production endpoints). `[schwab]` takes `redirect_uri` (default
+production endpoints); `[kraken]` also takes `live_trading` (default `false`,
+off until the Kraken trading venue has been checked on a real account; live
+`run` polls Kraken for fills every 15 seconds, and the risk gate watches losses
+every 30 seconds, so idle polling stays inside Kraken's Starter-tier counter
+decay, while heavy order churn waits on the local counter limiter rather than
+risking an API ban).
+`[schwab]` takes `redirect_uri` (default
 `https://127.0.0.1:8182`), which must match the app's callback URL in the
 Schwab developer portal exactly, `token_file`, and `extended_hours` (default
 `false`): intraday bars from outside the regular session too (pre-market,
@@ -139,7 +145,7 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 | `max_price_age_ms` | refuse orders valued at a reference price older than this |
 | `max_orders_per_day` | then only position-reducing orders |
 | `max_consecutive_losses` | losing sells in a row; resets on a win or a new UTC day |
-| `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second; every 10 seconds in live mode, where each measurement reads the venue's fills); then only position-reducing orders. Does not reset at midnight |
+| `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second; every 10 seconds in live mode, or 30 seconds on Kraken, where each measurement reads the venue's fills); then only position-reducing orders. Does not reset at midnight |
 | `max_drawdown_close` | the same fall, at which the gate halts, cancels every open order and closes every position at market; trading stays halted until the next run, and what is still held is closed again each minute while the fall stands. Set it above `max_drawdown`, or alone |
 | `max_loss_per_position` | one position's unrealized loss from its average cost, measured the same way; the gate cancels that symbol's orders, closes the position at market, and refuses new positions in the symbol for the rest of the UTC day. A backstop for the strategy's own stop |
 | `max_quote_age_ms` | refuse new positions in a symbol whose quotes have stopped this long while its market is open, until they return (checked every 10 s; strategies that take quotes) |

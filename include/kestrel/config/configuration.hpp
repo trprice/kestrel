@@ -185,18 +185,23 @@ class KrakenConfiguration : public Configuration {
     const std::optional<KrakenCredentials>& Credentials() const {
         return mCredentials;
     }
+    // [kraken] live_trading: allows `run` in live mode on Kraken. Default
+    // false until the trading venue has been checked on a real account.
+    bool LiveTrading() const { return mLiveTrading; }
 
    private:
     KrakenConfiguration(CommonSettings c, std::string rest, std::string ws,
-                        std::optional<KrakenCredentials> cr)
+                        std::optional<KrakenCredentials> cr, bool live_trading)
         : Configuration(std::move(c)),
           mRestUrl(std::move(rest)),
           mWsUrl(std::move(ws)),
-          mCredentials(std::move(cr)) {}
+          mCredentials(std::move(cr)),
+          mLiveTrading(live_trading) {}
     friend class ConfigParser;
     std::string mRestUrl;
     std::string mWsUrl;
     std::optional<KrakenCredentials> mCredentials;
+    bool mLiveTrading = false;
 };
 
 class BinanceUSConfiguration : public Configuration {

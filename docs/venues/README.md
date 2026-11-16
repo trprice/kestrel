@@ -7,7 +7,7 @@ provider's own details are in its document:
 | Provider | Document | Market | Live trading |
 |---|---|---|---|
 | `binanceus` | below, under [Binance.US](#binanceus) | crypto spot | yes |
-| `kraken` | below, under [Kraken](#kraken) | crypto spot | no: the trading venue is a stub |
+| `kraken` | below, under [Kraken](#kraken) | crypto spot | written; `run` off until `[kraken] live_trading = true` |
 | `schwab` | [schwab.md](schwab.md) | US stocks and ETFs | market orders checked live; off until `[schwab] live_trading = true` |
 
 The config file's `[general] provider` picks the provider and `[general]
@@ -27,7 +27,8 @@ mode` picks `paper` or `live` (see
   (`PaperTradingVenue`). It fills orders against the data source's live
   quotes and never sends an order anywhere.
 - **Live venue**: a trading venue that sends orders to the provider and trades
-  the real account (`BinanceUSTradingVenue`, `SchwabTradingVenue`).
+  the real account (`BinanceUSTradingVenue`, `KrakenTradingVenue`,
+  `SchwabTradingVenue`).
 - **Symbol**: Kestrel writes every symbol one way, whatever the provider
   calls it: `BTC/USD` for a pair (base/quote), `AAPL` or `BRK.B` for a stock.
   Each provider class converts to and from its own form, and nothing outside
@@ -68,9 +69,9 @@ data source is the provider's live one in both:
 stored bars and quotes instead of a live feed.
 
 `kestrel_app` builds both halves in one place, `factory.cpp`
-(`CreateComponents`), from the provider and mode. `run` refuses live mode on a
-provider without a working trading venue (`NoLiveVenue` in `factory.cpp`):
-Kraken always, and Schwab until `[schwab] live_trading` is set.
+(`CreateComponents`), from the provider and mode. `run` refuses live mode on
+Kraken and Schwab until `live_trading = true` is set in `[kraken]` or
+`[schwab]` (`NoLiveVenue` in `factory.cpp`).
 
 ## The layers between a strategy and the venue
 
@@ -86,8 +87,8 @@ front of it, each a `TradingVenue` that wraps the next:
      |               for a data source whose market closes: Schwab)
   RiskGatedVenue     refuses orders that break a [risk] limit, and can close
      |               positions itself (only with a [risk] table)
-  the venue          PaperTradingVenue, BinanceUSTradingVenue or
-                     SchwabTradingVenue
+  the venue          PaperTradingVenue, BinanceUSTradingVenue,
+                     KrakenTradingVenue or SchwabTradingVenue
 ```
 
 Cancels and reads pass through every layer unchanged, so a strategy can always
@@ -170,7 +171,8 @@ The strategy hears of fills through `OnFill` and of order changes through
   (`fill_backstop_interval`) in case a push was missed.
 - **Polled**: otherwise a second thread asks the venue for new fills and the
   state of the strategy's orders every `fill_poll_interval`: 1 second by
-  default, 5 seconds on Schwab, whose requests count against a smaller limit.
+  default, 5 seconds on Schwab and 15 seconds on Kraken, whose requests count
+  against smaller limits.
 
 Either way the same fill is delivered once, checked by its fill ID.
 
@@ -178,10 +180,10 @@ Either way the same fill is delivered once, checked by its fill ID.
 
 - **A placement is never sent twice.** Placing and cancelling are not retried,
   since the first attempt may have taken effect. When a placement ends
-  without an answer (a timeout, a dropped connection, a server error), the
-  venue looks for the order on the account instead: found, it is acknowledged
-  as it stands; not found, the error is returned, and the order may still
-  appear later. Reads are retried with backoff.
+  without an answer (a timeout, a dropped connection, a server error, or an
+  unparseable 2xx), the venue looks for the order on the account instead:
+  found, it is acknowledged as it stands; not found, the error is returned, and
+  the order may still appear later. Reads are retried with backoff.
 - **Requests stay under the provider's rate limits**, which each venue keeps
   with its own counters (`util::RateLimiter`), and a provider's request to
   slow down (HTTP 429, `Retry-After`) is honoured.
@@ -234,12 +236,46 @@ kept in `[paper] default_quote_asset` (default `USD`).
 ## Kraken
 
 - **Market data** needs no credentials: REST bars (only the newest 720 of a
-  timeframe; older ranges are `kUnsupported`) and symbol info, and quotes over
-  the v2 WebSocket. No bar stream, so bar strategies get their bars from
-  `GetBars`, and no public trade history.
-- **Trading** is a stub: every call returns `kNotImplemented`, and `run`
-  refuses live mode. The endpoints it needs are listed in
-  `include/kestrel/trading/kraken_trading_venue.hpp`. Paper mode works.
+  timeframe; older ranges are `kUnsupported`) and symbol info (`tick_size`,
+  `ordermin`, `lot_decimals` and `costmin`), and quotes over the v2 WebSocket.
+  No bar stream, so bar strategies get their bars from `GetBars`, and no public
+  trade history.
+- **Trading** (`KrakenTradingVenue`) posts signed requests to
+  `/0/private/*`: `API-Key` and `API-Sign`, an HMAC-SHA512 over the path and
+  a SHA-256 of the `nonce` and form body. `run` refuses live mode until
+  `[kraken] live_trading = true`.
+- **Nonces:** nonce assignment and the HTTP round trip share one lock per
+  venue instance, so threads never deliver nonces out of order when the API
+  key's nonce window is zero. A slow poll can delay a placement by one round
+  trip. Running `account` or `order` while `run` is active needs a separate
+  API key or a non-zero nonce window on Kraken.
+- **Orders:** market, limit (GTC, IOC or FOK) and stop (`stop-loss`, GTC
+  only, trigger in `price`). Kraken has no day orders and no OCO pair on a
+  held spot position (`PlaceOco` returns `kNotImplemented`). `order --test`
+  sends `AddOrder` with `validate=true`.
+- **Post-only** is sent as `oflags=post`. Kraken normally accepts a crossing
+  post-only order with a `txid` and cancels it at once with reason `"Post
+  only order"`; Kestrel reports it as rejected on the next poll.
+- **Fees:** every order carries `oflags=fciq`, so the fee is taken in the
+  quote asset, as the fills report it. Kraken's default takes a sell's fee in
+  the base asset.
+- **Client order IDs:** each order gets a `cl_ord_id`, either `kst<tag><n>`
+  (at most 18 characters) or the caller's own (a UUID, or 1-18 letters,
+  digits, `-` or `_`). When a placement ends without an answer, the venue
+  looks it up in `OpenOrders` and `ClosedOrders`.
+- **Rate limits:** private reads draw from a counter sized below Kraken's
+  Starter tier (max 15, decaying 0.33/s). Live `run` polls fills every 15 s
+  and the risk gate's loss watch every 30 s, so idle polling stays inside the
+  refill rate; heavy order churn waits on the local limiter rather than
+  risking a lockout. Because fills and post-only refusals are polled,
+  `market_maker` is not practical live on Kraken until executions are pushed.
+- **Fill reads** page through `TradesHistory` by cursor (`with_cursor=true`,
+  `limit=100`; each page costs 2). If a later page fails or the cursor
+  stalls, the whole read fails: callers move their fill cursor to the newest
+  fill returned, so a partial read would skip the older fills.
+- **No positions:** spot accounts have only balances (`BalanceEx`, with legacy
+  codes like `XXBT` and `ZUSD` mapped back, and reward/staking suffixes like
+  `.F` and `.S` kept distinct), so `GetPositions` is empty.
 
 ## Where the code is
 

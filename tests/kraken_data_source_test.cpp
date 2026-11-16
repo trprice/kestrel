@@ -205,6 +205,7 @@ TEST(KrakenSymbolInfo, ParsedFromAssetPairsAndCached) {
     EXPECT_EQ(info->tick_size, D("0.1"));
     EXPECT_EQ(info->lot_size, D("0.00000001"));
     EXPECT_EQ(info->min_order_size, D("0.00005"));
+    EXPECT_EQ(info->min_notional, D("0.5"));
     ASSERT_OK(source.GetSymbolInfo("BTC/USD"));
     EXPECT_EQ(f.http->requests.size(), 1u);  // second call served from cache
 }
@@ -217,6 +218,10 @@ TEST(KrakenErrors, Classification) {
               ErrorCategory::kRateLimit);
     EXPECT_EQ(data::ClassifyKrakenError("EService:Unavailable"),
               ErrorCategory::kServer);
+    EXPECT_EQ(data::ClassifyKrakenError("EService:Market in cancel_only mode"),
+              ErrorCategory::kRejected);
+    EXPECT_EQ(data::ClassifyKrakenError("EOrder:Post only order"),
+              ErrorCategory::kWouldTake);
     EXPECT_EQ(data::ClassifyKrakenError("EAPI:Invalid key"),
               ErrorCategory::kAuth);
     EXPECT_EQ(data::ClassifyKrakenError("EOrder:Insufficient funds"),

@@ -45,21 +45,34 @@ constexpr std::array<std::string_view, 12> kQuotes{
     "USDT", "USDC", "BUSD", "USD", "EUR", "GBP",
     "CAD",  "JPY",  "AUD",  "CHF", "BTC", "ETH"};
 
+// Kraken's, likewise longest first ("PYUSD" and "USDG" before "USD", "EURC"
+// before "EUR"), with "XBT" for pairs like "ETHXBT". Legacy 4-letter pairs
+// ("XXBTZUSD", "XETHXXBT", "USDTZUSD") are split in FromKrakenSymbol before
+// these are tried, so "ZUSD" and "ZEUR" never take the trailing 'Z' of
+// "XTZUSD" or "CHZUSD".
+constexpr std::array<std::string_view, 17> kKrakenQuotes{
+    "PYUSD", "RLUSD", "USDT", "USDC", "USDG", "BUSD", "EURC", "USD", "EUR",
+    "GBP",   "CAD",   "JPY",  "AUD",  "CHF",  "XBT",  "BTC",  "ETH"};
+
 Result<Symbol> SplitConcatenated(std::string_view native, bool kraken) {
-    for (const auto quote : kQuotes) {
-        if (native.size() > quote.size() && native.ends_with(quote)) {
-            std::string base(native.substr(0, native.size() - quote.size()));
-            std::string q(quote);
-            if (kraken) {
-                base = KrakenAssetToNormalized(base);
-                q = KrakenAssetToNormalized(q);
+    const auto try_split = [&](auto quotes) -> Result<Symbol> {
+        for (const auto quote : quotes) {
+            if (native.size() > quote.size() && native.ends_with(quote)) {
+                std::string base(
+                    native.substr(0, native.size() - quote.size()));
+                std::string q(quote);
+                if (kraken) {
+                    base = KrakenAssetToNormalized(base);
+                    q = KrakenAssetToNormalized(q);
+                }
+                return types::JoinSymbol(base, q);
             }
-            return types::JoinSymbol(base, q);
         }
-    }
-    return MakeError(
-        ErrorCategory::kInvalidArgument,
-        "cannot split native symbol '" + std::string(native) + "'");
+        return MakeError(
+            ErrorCategory::kInvalidArgument,
+            "cannot split native symbol '" + std::string(native) + "'");
+    };
+    return kraken ? try_split(kKrakenQuotes) : try_split(kQuotes);
 }
 
 Result<types::SymbolParts> RequirePair(std::string_view symbol,
@@ -112,6 +125,15 @@ Result<Symbol> FromKrakenSymbol(std::string_view native) {
         }
     }
     return SplitConcatenated(native, /*kraken=*/true);
+}
+
+std::string FromKrakenAsset(std::string_view asset) {
+    const auto dot = asset.find('.');
+    if (dot == std::string_view::npos) {
+        return KrakenAssetToNormalized(std::string(asset));
+    }
+    return KrakenAssetToNormalized(std::string(asset.substr(0, dot))) +
+           std::string(asset.substr(dot));
 }
 
 Result<std::string> ToBinanceUSSymbol(std::string_view symbol) {

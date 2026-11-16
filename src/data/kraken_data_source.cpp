@@ -56,9 +56,15 @@ ErrorCategory ClassifyKrakenError(std::string_view code) {
         code.starts_with("EGeneral:Temporary lockout")) {
         return ErrorCategory::kRateLimit;
     }
+    if (code.starts_with("EService:Market in ")) {
+        return ErrorCategory::kRejected;
+    }
     if (code.starts_with("EService:") ||
         code.starts_with("EGeneral:Internal error")) {
         return ErrorCategory::kServer;
+    }
+    if (code.starts_with("EOrder:Post only")) {
+        return ErrorCategory::kWouldTake;
     }
     if (code.starts_with("EAPI:Invalid key") ||
         code.starts_with("EAPI:Invalid signature") ||
@@ -340,6 +346,12 @@ Result<types::SymbolInfo> KrakenDataSource::GetSymbolInfo(
     info.tick_size = *tick;
     info.lot_size = types::Decimal(1, static_cast<int>(decimals));
     info.min_order_size = *min_size;
+    if (const auto cost_min = meta.find("costmin"); cost_min != meta.end()) {
+        if (auto parsed = util::JsonDecimal(*cost_min);
+            parsed && parsed->Sign() > 0) {
+            info.min_notional = *parsed;
+        }
+    }
     {
         std::lock_guard lock(mCacheMutex);
         mSymbolCache[symbol] = info;

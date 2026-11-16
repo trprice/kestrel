@@ -184,9 +184,9 @@ before then (`authorize --status` shows when).
   takes quotes; for a bar strategy, only in the hours its bars cover (a
   backtest of a bar strategy feeds it bar closes only).
   Without `[risk]` it warns and trades unchecked in paper mode. Live mode is
-  refused without `[risk]`, and on a provider whose venue is still a stub
-  (Kraken and Schwab); Binance.US runs live. Read
-  [One trader per account](#one-trader-per-account) before a live run.
+  refused without `[risk]`, and on Kraken and Schwab unless `live_trading =
+  true` is set in `[kraken]` or `[schwab]`; Binance.US runs live by default.
+  Read [One trader per account](#one-trader-per-account) before a live run.
 - **`run` cancels every open order first.** Before the strategy starts,
   `run` cancels every order open on the `[general] symbols`, whoever placed
   it, and logs the IDs it cancelled. If the cancel fails, `run` exits without

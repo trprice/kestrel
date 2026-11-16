@@ -1,11 +1,11 @@
 # Kestrel TODO
 
 The strategy, risk and backtest code runs on Binance.US, in paper mode and
-live, and on Schwab in paper mode. Schwab's trading venue traded on a real
-account on Nov 13 2026 (see Done), but `run` trades live on Schwab only with
-`[schwab] live_trading = true` (see Schwab data source under In progress).
-`run` refuses live mode on Kraken, whose trading venue is a stub
-(see Venues under Projects; `NoLiveVenue` in `factory.cpp`).
+live, and on Kraken and Schwab in paper mode. Schwab's trading venue traded on
+a real account on Nov 13 2026 (see Done), and Kraken's trading venue is
+written, but `run` trades live on Kraken and Schwab only with `live_trading =
+true` in `[kraken]` or `[schwab]` (see In progress; `NoLiveVenue` in
+`factory.cpp`).
 
 Order of this file: Priorities, In progress, Projects (each by priority), then
 the reference sections, Known limitations and Done.
@@ -37,6 +37,27 @@ and what the live API showed beyond Schwab's documents, is in
       place one; `breakout` with `resting_target` can), and a margin
       account's balance fields.
 
+### Kraken trading venue
+
+`KrakenTradingVenue` is written and unit-tested (`AddOrder`, `validate=true`
+for `order --test`, `CancelOrder`, symbol-scoped `CancelAll`, `OpenOrders`,
+`QueryOrders`, `TradesHistory` and `BalanceEx`, with unknown-outcome lookup by
+`cl_ord_id`). Live `run` stays off until `[kraken] live_trading = true`.
+
+#### Next steps
+- [ ] Check on a real Kraken account (`account`, `order --test` including `pair
+      = "BTC/USD"` and `timeinforce = "FOK"`, a small resting limit placed and
+      cancelled, a stop and a sell through `order --test` (both carry
+      `oflags=fciq`), a crossing `post_only` limit, a fill read back through
+      `TradesHistory` (`with_cursor=true`), and `BalanceEx` on an account with
+      Kraken Rewards `.F` balances if used), then default `[kraken]
+      live_trading` on.
+- [ ] Kraken WebSocket v2 `executions` channel behind
+      `KrakenTradingVenue::StreamExecutions`, so fills and order changes are
+      pushed instead of polled every 15 s.
+- [ ] Batch cancels in `KrakenTradingVenue::CancelAll` via `CancelOrderBatch`
+      (up to 50 IDs per call) if strategies with many open orders run on Kraken.
+
 ## Projects
 
 Sections in priority order: safety first, then what is in use.
@@ -46,10 +67,6 @@ Sections in priority order: safety first, then what is in use.
       reports that use them
 
 ### Venues
-Each stub's header has a TODO comment listing the endpoints and auth it needs.
-- [ ] **Kraken trading venue.** REST orders, balances, open orders and trade
-      history, signed with the existing HMAC helper. Data source is already
-      done.
 - [ ] Schwab pushed executions: `ACCT_ACTIVITY` behind
       `SchwabTradingVenue::StreamExecutions`, on `SchwabStreamer`'s one
       connection. Until then fills and order changes are polled, every 5 s.
@@ -69,15 +86,6 @@ Each stub's header has a TODO comment listing the endpoints and auth it needs.
 - [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
       provider's docs. The lists in the code and docs/design.md came from
       memory.
-- [ ] Bound redirects in `CprHttpClient`: cpr follows them by default, up to
-      50 and to any host. Allow a few, HTTPS only, and check that libcurl
-      still drops `Authorization` on a redirect to another host. Before the
-      Kraken trading venue lands (Schwab already trades without it).
-- [ ] Keep `BinanceUSApi`'s rule in the Kraken venue: a request that is not
-      idempotent is never retried (`util::Retry` itself retries a timeout).
-      The Schwab venue keeps it: orders and cancels are not retried on a
-      timeout or error, only re-sent once with a new token after a 401,
-      which Schwab answers before acting on the request.
 - [ ] A stop-limit order type, if a venue needs one.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 
@@ -563,7 +571,31 @@ the header of the code concerned.
 ### Venues and data
 - Schwab's limitations are in
   [docs/venues/schwab.md](docs/venues/schwab.md#known-limitations).
-- The Kraken trading venue is a stub that returns `kNotImplemented`.
+- The Kraken trading venue (live `run` is off until `[kraken] live_trading =
+  true`):
+  - Polling: fills every 15 s and the risk gate's loss watch every 30 s, to
+    stay inside the Starter tier's counter decay of 0.33/s (`TradesHistory`
+    costs 2).
+  - Fill reads page by cursor (`with_cursor=true`). If a later page fails or
+    the cursor stalls, the whole read fails, since callers move their fill
+    cursor to the newest fill returned and a partial read would skip the
+    older pages.
+  - A crossing post-only order shows as rejected only at the next poll, up to
+    15 s later, so `market_maker` is not practical live until executions are
+    pushed.
+  - Fees: `TradesHistory` reports `fee` in the quote asset. Kestrel's orders
+    set `fciq`, so it is paid in the quote asset too; a sell placed elsewhere
+    pays in the base asset by default.
+  - Private calls take one lock per venue instance to keep nonces in order,
+    so `account` or `order` during `run` needs a separate API key or a
+    non-zero nonce window on Kraken.
+  - As on Binance.US, a placement that times out and is not found by the two
+    `cl_ord_id` lookups may still appear on the account, untracked, until the
+    next `run` cancels it at startup or a manual `cancel`.
+  - `PlaceOco` is not implemented: Kraken's conditional close attaches one
+    order to an entry, not an OCO pair on a held spot position.
+  - `GetPositions` is empty on spot, and `BalanceEx` keeps reward and staking
+    suffixes (`.F`, `.S`, `.B`, `.M`) apart from the base asset.
 - The Binance.US venue runs live under `run`, polled for fills (no user-data
   stream yet). Its `GetPositions` returns nothing, so the risk gate counts
   only what filled since the run started (see Risk gate above).
@@ -578,10 +610,9 @@ the header of the code concerned.
   write is dropped, not retried.
 - `PaperTradingVenue` has no leverage, and its shorts (`allow_short`) pay no
   borrow fee and are never called.
-- `run` refuses live mode on a provider whose venue is a stub
-  (`ValidateForRun`, with `HasLiveVenue` in `factory.cpp` to update as venues
-  land), but `CreateComponents` still builds the stub, so `bars` in live mode
-  runs until the first order-related call fails with `kNotImplemented`.
+- `run` refuses live mode on Kraken and Schwab unless `live_trading = true` is
+  set in `[kraken]` or `[schwab]` (`ValidateForRun` / `NoLiveVenue` in
+  `factory.cpp`).
 - Stream liveness: every WebSocket pings every 20 s, and IXWebSocket closes
   and reconnects one whose pong has not come back by the next ping; Schwab's
   streamer also reconnects after 60 s without a message. `run` logs a quote feed
@@ -1028,6 +1059,9 @@ the header of the code concerned.
       side effect; the `Runner` feeds a `PaperTradingVenue` from its own quote
       stream, so `bars` and `account` open no WebSocket and a paper run opens
       one quote stream rather than two
+- [x] `CprHttpClient` refuses 3xx redirects (`cpr::Redirect{false}`) rather
+      than forwarding custom signed headers (`API-Key`, `API-Sign`,
+      `X-MBX-APIKEY`) across redirects
 
 ### Documentation
 - [x] A document for each strategy in `docs/strategies/` (how it works,

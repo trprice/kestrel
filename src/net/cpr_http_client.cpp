@@ -89,6 +89,10 @@ types::Result<HttpResponse> CprHttpClient::Send(const HttpRequest& request) {
         session->SetParameters(cpr::Parameters{});
     }
     session->SetHeader(headers);
+    // Venue REST endpoints never redirect, and libcurl forwards custom headers
+    // (API-Key, API-Sign, X-MBX-APIKEY) across redirects to other hosts: refuse
+    // 3xx redirects rather than follow them.
+    session->SetRedirect(cpr::Redirect{false});
     session->SetTimeout(
         cpr::Timeout{static_cast<std::int32_t>(mTimeout.count())});
     if (request.body.empty()) {

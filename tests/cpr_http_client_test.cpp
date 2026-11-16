@@ -61,6 +61,10 @@ class LoopbackServer {
     std::string Url(const std::string& path) const {
         return "http://127.0.0.1:" + std::to_string(mPort) + path;
     }
+    void RedirectTo(std::string location) {
+        std::lock_guard lock(mMutex);
+        mRedirect = std::move(location);
+    }
     int Accepted() const { return mAccepted; }
     std::vector<Seen> Requests() {
         std::lock_guard lock(mMutex);
@@ -112,12 +116,17 @@ class LoopbackServer {
             seen.target = head.substr(space + 1, head.find(' ', space + 1) - space - 1);
             seen.body = buffer.substr(0, length);
             buffer.erase(0, length);
+            std::string redirect;
             {
                 std::lock_guard lock(mMutex);
                 mSeen.push_back(std::move(seen));
+                redirect = mRedirect;
             }
             const std::string reply =
-                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+                redirect.empty()
+                    ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+                    : "HTTP/1.1 302 Found\r\nLocation: " + redirect +
+                          "\r\nContent-Length: 0\r\n\r\n";
             ::send(fd, reply.data(), reply.size(), MSG_NOSIGNAL);
         }
     }
@@ -130,6 +139,7 @@ class LoopbackServer {
     std::vector<int> mConnections;
     std::vector<std::thread> mServers;
     std::vector<Seen> mSeen;
+    std::string mRedirect;
 };
 
 HttpRequest Get(const std::string& url) {
@@ -218,6 +228,26 @@ TEST(CprHttpClient, ATransportFailureIsReportedAndNotReused) {
     LoopbackServer server;
     ASSERT_OK(client.Send(Get(server.Url("/x"))));
     EXPECT_EQ(server.Accepted(), 1);
+}
+
+TEST(CprHttpClient, RefusesRedirectsRatherThanForwardingSignedHeaders) {
+    LoopbackServer origin;
+    LoopbackServer target;
+    origin.RedirectTo(target.Url("/stolen"));
+
+    CprHttpClient client;
+    HttpRequest post;
+    post.method = HttpMethod::kPost;
+    post.url = origin.Url("/0/private/AddOrder");
+    post.headers["API-Key"] = "secret-key";
+    post.headers["API-Sign"] = "secret-sign";
+    post.body = "nonce=1";
+
+    auto r = client.Send(post);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().http_status, 302);
+    EXPECT_EQ(target.Accepted(), 0);
+    EXPECT_TRUE(target.Requests().empty());
 }
 
 }  // namespace

@@ -47,13 +47,27 @@ TEST(KrakenSymbols, FromEveryNativeForm) {
     EXPECT_EQ(*data::FromKrakenSymbol("XDGUSD"), "DOGE/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("SOLUSD"), "SOL/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("ETH/XBT"), "ETH/BTC");
+    EXPECT_EQ(*data::FromKrakenSymbol("ETHXBT"), "ETH/BTC");
+    EXPECT_EQ(*data::FromKrakenSymbol("XETHXXBT"), "ETH/BTC");
     EXPECT_EQ(*data::FromKrakenSymbol("ADAUSDT"), "ADA/USDT");
     EXPECT_EQ(*data::FromKrakenSymbol("XTZUSD"), "XTZ/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("CHZUSD"), "CHZ/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("ZRXUSD"), "ZRX/USD");
     EXPECT_EQ(*data::FromKrakenSymbol("XTZEUR"), "XTZ/EUR");
     EXPECT_EQ(*data::FromKrakenSymbol("USDTZUSD"), "USDT/USD");
+    EXPECT_EQ(*data::FromKrakenSymbol("BTCPYUSD"), "BTC/PYUSD");
+    EXPECT_EQ(*data::FromKrakenSymbol("ETHRLUSD"), "ETH/RLUSD");
     EXPECT_FALSE(data::FromKrakenSymbol("???").has_value());
+}
+
+TEST(KrakenSymbols, AssetNormalization) {
+    EXPECT_EQ(data::FromKrakenAsset("XXBT"), "BTC");
+    EXPECT_EQ(data::FromKrakenAsset("XBT"), "BTC");
+    EXPECT_EQ(data::FromKrakenAsset("ZUSD"), "USD");
+    EXPECT_EQ(data::FromKrakenAsset("XXDG"), "DOGE");
+    EXPECT_EQ(data::FromKrakenAsset("SOL"), "SOL");
+    EXPECT_EQ(data::FromKrakenAsset("XXBT.F"), "BTC.F");
+    EXPECT_EQ(data::FromKrakenAsset("XETH.S"), "ETH.S");
 }
 
 TEST(BinanceUSSymbols, RoundTrip) {

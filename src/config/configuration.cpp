@@ -860,8 +860,8 @@ Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
     if (auto ok = ConfigParser::RejectSecrets(section, "kraken"); !ok) {
         return std::unexpected(ok.error());
     }
-    if (auto ok = ConfigParser::RejectUnknownKeys(section, "kraken",
-                                                  {"rest_url", "ws_url"});
+    if (auto ok = ConfigParser::RejectUnknownKeys(
+            section, "kraken", {"rest_url", "ws_url", "live_trading"});
         !ok) {
         return std::unexpected(ok.error());
     }
@@ -883,8 +883,17 @@ Result<KrakenConfiguration> KrakenConfiguration::Parse(std::string_view text,
     if (!ws_url) {
         return std::unexpected(ws_url.error());
     }
+    bool live_trading = false;
+    if (const auto* node = section ? section->get("live_trading") : nullptr) {
+        if (!node->is_boolean()) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "[kraken] live_trading must be true or false");
+        }
+        live_trading = node->value_or(false);
+    }
     return KrakenConfiguration(std::move(*common), std::move(*rest_url),
-                               std::move(*ws_url), std::move(*creds));
+                               std::move(*ws_url), std::move(*creds),
+                               live_trading);
 }
 
 Result<KrakenConfiguration> KrakenConfiguration::Load(

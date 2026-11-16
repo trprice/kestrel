@@ -53,11 +53,11 @@ types::Error MissingCredentials(std::string_view provider,
 }
 
 Result<Components> BuildKraken(const config::KrakenConfiguration& cfg) {
+    auto http = net::MakeTimedHttpClient(cfg.GetHttp().slow_request);
     data::KrakenDataSource::Options options;
     options.rest_base_url = cfg.RestUrl();
     options.ws_url = cfg.WsUrl();
-    auto ds = std::make_shared<data::KrakenDataSource>(
-        net::MakeTimedHttpClient(cfg.GetHttp().slow_request), options);
+    auto ds = std::make_shared<data::KrakenDataSource>(http, options);
     if (cfg.GetMode() == config::Mode::kPaper) {
         return Components{ds, MakePaper(cfg, ds)};
     }
@@ -65,8 +65,11 @@ Result<Components> BuildKraken(const config::KrakenConfiguration& cfg) {
         return std::unexpected(MissingCredentials(
             "kraken", "KESTREL_KRAKEN_API_KEY and KESTREL_KRAKEN_API_SECRET"));
     }
+    trading::KrakenTradingVenue::Options venue_options;
+    venue_options.rest_base_url = cfg.RestUrl();
     return Components{ds, std::make_unique<trading::KrakenTradingVenue>(
-                              *cfg.Credentials(), ds)};
+                              *cfg.Credentials(), ds, cfg.GetSymbols(), http,
+                              std::move(venue_options))};
 }
 
 Result<Components> BuildBinanceUS(const config::BinanceUSConfiguration& cfg) {
@@ -706,9 +709,9 @@ constexpr StrategyEntry kStrategies[] = {
     {"mean_reversion", BuildMeanReversion},
 };
 
-// Why `run` may not trade live with `cfg`, or nothing if it may. Kraken's
-// venue is a stub (TODO.md, Venues); Schwab's is real but off until
-// [schwab] live_trading, as it has not traded on a real account yet.
+// Why `run` may not trade live with `cfg`, or nothing if it may. Kraken's and
+// Schwab's venues stay off until `live_trading = true`, until each has been
+// checked in full on a real account.
 std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
     switch (cfg.GetProvider()) {
         case config::Provider::kBinanceUS:
@@ -723,7 +726,14 @@ std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
                    "checked on a real account; set [schwab] live_trading = "
                    "true to turn it on";
         case config::Provider::kKraken:
-            break;
+            if (const auto* kraken =
+                    dynamic_cast<const config::KrakenConfiguration*>(&cfg);
+                kraken && kraken->LiveTrading()) {
+                return std::nullopt;
+            }
+            return "live trading on kraken is off until the venue has been "
+                   "checked on a real account; set [kraken] live_trading = "
+                   "true to turn it on";
     }
     return "live trading on " +
            std::string(config::ToString(cfg.GetProvider())) +
@@ -732,8 +742,14 @@ std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
 
 // Schwab's fills and order changes are polled (no pushed executions yet), and
 // each poll is two requests against the app's 120 a minute, which the data
-// source shares.
+// source shares. Kraken's Starter tier decays at 0.33 counter points a second
+// and TradesHistory costs 2, so it is polled every 15 s and the risk gate
+// watches every 30 s (~0.27/s combined with OpenOrders when an order rests).
+// That leaves little room: an order's risk checks (open orders, a fills read,
+// balances) and lookups of closed orders draw on the same counter, and when
+// it runs dry the venue's limiter makes the caller wait.
 constexpr std::chrono::milliseconds kSchwabFillPollInterval{5000};
+constexpr std::chrono::milliseconds kKrakenFillPollInterval{15'000};
 
 // The risk gate reads the fills each time it measures the losses at a new
 // price (RiskLimits::watch_interval). Live that is a request or two against
@@ -741,6 +757,7 @@ constexpr std::chrono::milliseconds kSchwabFillPollInterval{5000};
 // kept to, the read reaching back at most an hour; Schwab: two of 120), so
 // not every second as on the paper venue.
 constexpr std::chrono::milliseconds kLiveRiskWatchInterval{10'000};
+constexpr std::chrono::milliseconds kKrakenLiveRiskWatchInterval{30'000};
 
 }  // namespace
 
@@ -929,12 +946,18 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
             cfg.GetPaperOptions().default_quote_asset;
     }
     if (options.risk && cfg.GetMode() == config::Mode::kLive) {
-        options.risk->watch_interval = kLiveRiskWatchInterval;
+        options.risk->watch_interval =
+            cfg.GetProvider() == config::Provider::kKraken
+                ? kKrakenLiveRiskWatchInterval
+                : kLiveRiskWatchInterval;
     }
     options.cancel_entries_on_stop = true;
-    if (cfg.GetProvider() == config::Provider::kSchwab &&
-        cfg.GetMode() == config::Mode::kLive) {
-        options.fill_poll_interval = kSchwabFillPollInterval;
+    if (cfg.GetMode() == config::Mode::kLive) {
+        if (cfg.GetProvider() == config::Provider::kSchwab) {
+            options.fill_poll_interval = kSchwabFillPollInterval;
+        } else if (cfg.GetProvider() == config::Provider::kKraken) {
+            options.fill_poll_interval = kKrakenFillPollInterval;
+        }
     }
     if (cfg.GetRecording().enabled) {
         auto log = make_log(cfg, strategy_name,

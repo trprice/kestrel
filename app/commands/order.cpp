@@ -7,6 +7,7 @@
 #include "common.hpp"
 #include "kestrel/factory.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
+#include "kestrel/trading/kraken_trading_venue.hpp"
 #include "kestrel/trading/risk_gate.hpp"
 #include "kestrel/trading/schwab_trading_venue.hpp"
 
@@ -148,6 +149,12 @@ class OrderCommand : public Command {
                 venue = std::make_shared<TestEndpointVenue>(
                     venue, [schwab](const types::OrderRequest& r) {
                         return schwab->TestOrder(r);
+                    });
+            } else if (auto kraken = std::dynamic_pointer_cast<
+                           trading::KrakenTradingVenue>(venue)) {
+                venue = std::make_shared<TestEndpointVenue>(
+                    venue, [kraken](const types::OrderRequest& r) {
+                        return kraken->TestOrder(r);
                     });
             } else {
                 spdlog::error("order --test: {} has no test endpoint",
@@ -346,8 +353,8 @@ void AddOrderCommand(CLI::App& app, CommandSlot& slot) {
     sub->add_flag("--post-only", args->post_only,
                   "With --limit: refused instead of taking liquidity");
     sub->add_option("--client-id", args->client_id,
-                    "Client order ID (Binance.US: default a generated kst-... "
-                    "ID; Schwab orders have none)");
+                    "Client order ID (Binance.US / Kraken: default a generated "
+                    "kst... ID; Schwab orders have none)");
     sub->add_flag("--test", args->test,
                   "Send to the venue's test endpoint: checked, not placed");
     sub->add_flag("--confirm", args->confirm, "Place the order for real");
