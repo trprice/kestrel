@@ -53,7 +53,7 @@ for the config file.
 | `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue |
-| `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; read-only on the venue |
+| `account [--days N] [--order ID] [--store]` | the venue's balances, positions, open orders and the fills of the last `N` days (default 7), and one order by ID; on Kraken, also the account's maker and taker fees on the `[general] symbols`; read-only on the venue |
 | `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] [--client-id ID] [--no-risk] (--test \| --confirm)` | one order on the live venue, checked against the `[risk]` limits that apply to one order; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
 | `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
 | `authorize [--status]` | Schwab only: authorizes Kestrel to use the account and saves its tokens; `--status` shows when they expire |
@@ -271,6 +271,15 @@ way to check that live credentials work:
 ./build/kestrel_app -c live.toml account --days 30
 ./build/kestrel_app -c live.toml account --order 412845258
 ./build/kestrel_app -c live.toml account --store   # also sync fills into account_fills
+```
+
+On Kraken, `account` also prints the fees the account pays on each of the
+`[general] symbols` (from `TradeVolume`), in percent and in basis points, the
+unit of `[paper] maker_fee_bps` and `taker_fee_bps`, with the next volume tier:
+
+```
+fee volume: 1234.5600 USD (Kraken's 30-day volume, which sets the tier)
+fee BTC/USD: maker=0.25% (25 bps) taker=0.4% (40 bps); next tier at 10000 USD: maker=0.2% (20 bps) taker=0.35% (35 bps)
 ```
 
 **Check an order without placing it.** `--test` sends it to Binance's test

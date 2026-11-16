@@ -259,6 +259,9 @@ kept in `[paper] default_quote_asset` (default `USD`).
 - **Fees:** every order carries `oflags=fciq`, so the fee is taken in the
   quote asset, as the fills report it. Kraken's default takes a sell's fee in
   the base asset.
+- **Fee rates:** `GetFees` reads the account's maker and taker fees on given
+  pairs, with the next volume tier, from `TradeVolume`; `account` prints them
+  for the `[general] symbols`.
 - **Client order IDs:** each order gets a `cl_ord_id`, either `kst<tag><n>`
   (at most 18 characters) or the caller's own (a UUID, or 1-18 letters,
   digits, `-` or `_`). When a placement ends without an answer, the venue

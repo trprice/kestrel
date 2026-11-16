@@ -73,14 +73,40 @@ types::Result<std::string> SignKrakenRequest(std::string_view uri_path,
 //
 // Rate limits: private account calls draw from `counter_per_second` /
 // `counter_burst` (sized for Kraken's Starter tier: max 15, decay 0.33/s;
-// OpenOrders, QueryOrders and BalanceEx cost 1, TradesHistory and
+// OpenOrders, QueryOrders, BalanceEx and TradeVolume cost 1, TradesHistory and
 // ClosedOrders cost 2). Order placements and cancels cost 0 on the account
 // counter and are paced by `orders_per_second` / `order_burst`.
 //
 // Positions: spot has none, so GetPositions returns an empty list; read
 // GetBalances (/0/private/BalanceEx) for what is held.
+//
+// Fees: GetFees reads the account's fee tier for given pairs from
+// /0/private/TradeVolume.
 class KrakenTradingVenue : public TradingVenue {
    public:
+    // One side's fee on a pair, in percent of the trade's value (0.26 is
+    // 0.26%), as Kraken gives it.
+    struct FeeRate {
+        types::Decimal percent;
+        // The next volume tier's fee and the volume that reaches it; empty
+        // at the last tier.
+        std::optional<types::Decimal> next_percent;
+        std::optional<types::Decimal> next_volume;
+    };
+    struct PairFees {
+        types::Symbol symbol;
+        FeeRate taker;
+        // Empty for a pair that has no maker schedule (takers' fee applies).
+        std::optional<FeeRate> maker;
+    };
+    struct Fees {
+        // The account's trading volume that sets its tier (Kraken counts the
+        // last 30 days), in `volume_asset`.
+        types::Decimal volume;
+        std::string volume_asset;
+        std::vector<PairFees> pairs;  // sorted by symbol
+    };
+
     struct Options {
         std::string rest_base_url = "https://api.kraken.com";
         util::RetryPolicy retry;
@@ -113,6 +139,10 @@ class KrakenTradingVenue : public TradingVenue {
     // placing it.
     types::Result<void> TestOrder(const types::OrderRequest& request);
 
+    // The account's maker and taker fees on `symbols` (TradeVolume). Fails
+    // with kInvalidArgument when `symbols` is empty.
+    types::Result<Fees> GetFees(const std::vector<types::Symbol>& symbols);
+
     types::Result<types::OrderAcknowledgement> PlaceOrder(
         const types::OrderRequest& request) override;
     types::Result<CancelOutcome> CancelOrder(
@@ -141,6 +171,7 @@ class KrakenTradingVenue : public TradingVenue {
     static constexpr CallCost kQueryOrdersCall{Bucket::kCounter, 1};
     static constexpr CallCost kClosedOrdersCall{Bucket::kCounter, 2};
     static constexpr CallCost kTradesHistoryCall{Bucket::kCounter, 2};
+    static constexpr CallCost kTradeVolumeCall{Bucket::kCounter, 1};
     static constexpr CallCost kOrderCall{Bucket::kOrder, 1};
 
     types::Result<nlohmann::json> PostPrivate(const std::string& method,

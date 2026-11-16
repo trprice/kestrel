@@ -45,13 +45,17 @@ for `order --test`, `CancelOrder`, symbol-scoped `CancelAll`, `OpenOrders`,
 `cl_ord_id`). Live `run` stays off until `[kraken] live_trading = true`.
 
 #### Next steps
-- [ ] Check on a real Kraken account (`account`, `order --test` including `pair
-      = "BTC/USD"` and `timeinforce = "FOK"`, a small resting limit placed and
+- [x] `account` on a real Kraken account (Nov 16 2026): the signed calls were
+      accepted, and `BalanceEx`, `OpenOrders`, `TradesHistory` with
+      `with_cursor=true` and `TradeVolume` with `pair` in the `BTC/USD` form
+      all answered. The account was empty (no balances, no orders, no fills in
+      30 days), so no balance, order or fill rows were parsed.
+- [ ] The rest of the real-account check: `order --test` including `pair =
+      "BTC/USD"` and `timeinforce = "FOK"`, a small resting limit placed and
       cancelled, a stop and a sell through `order --test` (both carry
       `oflags=fciq`), a crossing `post_only` limit, a fill read back through
-      `TradesHistory` (`with_cursor=true`), and `BalanceEx` on an account with
-      Kraken Rewards `.F` balances if used), then default `[kraken]
-      live_trading` on.
+      `TradesHistory`, and `BalanceEx` with balances (and Kraken Rewards `.F`
+      ones if used); then default `[kraken] live_trading` on.
 - [ ] Kraken WebSocket v2 `executions` channel behind
       `KrakenTradingVenue::StreamExecutions`, so fills and order changes are
       pushed instead of polled every 15 s.

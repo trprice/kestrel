@@ -7,6 +7,7 @@
 #include "common.hpp"
 #include "kestrel/db/account_fill_store.hpp"
 #include "kestrel/factory.hpp"
+#include "kestrel/trading/kraken_trading_venue.hpp"
 
 namespace kestrel::app {
 
@@ -36,6 +37,36 @@ void PrintOrder(const types::OrderStatus& o) {
         std::cout << " reason=\"" << *o.reason << "\"";
     }
     std::cout << '\n';
+}
+
+// "0.26% (26 bps)": Kraken's percent, and the basis points [paper]
+// maker_fee_bps / taker_fee_bps take.
+std::string Percent(const types::Decimal& percent) {
+    return percent.Normalized().ToString() + "% (" +
+           (percent * types::Decimal::FromInt(100)).Normalized().ToString() +
+           " bps)";
+}
+
+void PrintFees(const trading::KrakenTradingVenue::Fees& fees) {
+    std::cout << "fee volume: " << fees.volume << " " << fees.volume_asset
+              << " (Kraken's 30-day volume, which sets the tier)\n";
+    for (const auto& pair : fees.pairs) {
+        std::cout << "fee " << pair.symbol << ": maker="
+                  << (pair.maker ? Percent(pair.maker->percent) : "as taker")
+                  << " taker=" << Percent(pair.taker.percent);
+        const auto& next = pair.taker;
+        if (next.next_percent && next.next_volume) {
+            std::cout << "; next tier at " << next.next_volume->Normalized()
+                      << " " << fees.volume_asset << ": maker="
+                      << (pair.maker && pair.maker->next_percent
+                              ? Percent(*pair.maker->next_percent)
+                              : "as taker")
+                      << " taker=" << Percent(*next.next_percent);
+        } else {
+            std::cout << "; lowest tier";
+        }
+        std::cout << '\n';
+    }
 }
 
 // Reads the account through the configured venue and prints it. Every call to
@@ -86,6 +117,18 @@ class AccountCommand : public Command {
         } else {
             spdlog::error("balances: {}", balances.error().ToString());
             ok = false;
+        }
+
+        // Only Kraken's venue reads its fees from the account, for the
+        // [general] symbols.
+        auto* kraken = dynamic_cast<trading::KrakenTradingVenue*>(&venue);
+        if (kraken && !config.GetSymbols().empty()) {
+            if (auto fees = kraken->GetFees(config.GetSymbols())) {
+                PrintFees(*fees);
+            } else {
+                spdlog::error("fees: {}", fees.error().ToString());
+                ok = false;
+            }
         }
 
         if (auto positions = venue.GetPositions()) {
@@ -192,7 +235,8 @@ void AddAccountCommand(CLI::App& app, CommandSlot& slot) {
     auto* sub = AddSubcommand(
         app, "account",
         "Print the venue's balances, positions, open orders and the fills of "
-        "the last --days days for the configured symbols, and one order with "
+        "the last --days days for the configured symbols (on Kraken, also the "
+        "account's maker and taker fees on them), and one order with "
         "--order. Read-only on the venue: places and cancels nothing");
     auto args = std::make_shared<Args>();
     sub->add_option("--days", args->days, "How many days of fills (default 7)")

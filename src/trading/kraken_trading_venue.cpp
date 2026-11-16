@@ -163,6 +163,21 @@ Result<types::Decimal> OptionalDecimal(const json& object, const char* key) {
     return *number;
 }
 
+// A number that may be missing or null (empty then).
+Result<std::optional<types::Decimal>> NullableDecimal(const json& object,
+                                                      const char* key) {
+    const auto it = object.find(key);
+    if (it == object.end() || it->is_null()) {
+        return std::optional<types::Decimal>{};
+    }
+    auto number = util::JsonDecimal(*it);
+    if (!number) {
+        return std::unexpected(Malformed(std::string("bad number in \"") + key +
+                                         "\": " + number.error().message));
+    }
+    return std::optional<types::Decimal>{*number};
+}
+
 Result<std::string> TextMember(const json& object, const char* key) {
     auto value = Member(object, key);
     if (!value) {
@@ -1219,6 +1234,91 @@ Result<std::vector<types::Balance>> KrakenTradingVenue::GetBalances() {
         }
     }
     std::ranges::sort(out, {}, &types::Balance::asset);
+    return out;
+}
+
+namespace {
+
+Result<KrakenTradingVenue::FeeRate> ParseFeeRate(const json& row) {
+    if (!row.is_object()) {
+        return std::unexpected(Malformed("TradeVolume fee is not an object"));
+    }
+    auto percent = DecimalMember(row, "fee");
+    auto next_percent = NullableDecimal(row, "nextfee");
+    auto next_volume = NullableDecimal(row, "nextvolume");
+    if (!percent) return std::unexpected(percent.error());
+    if (!next_percent) return std::unexpected(next_percent.error());
+    if (!next_volume) return std::unexpected(next_volume.error());
+    return KrakenTradingVenue::FeeRate{*percent, *next_percent, *next_volume};
+}
+
+}  // namespace
+
+Result<KrakenTradingVenue::Fees> KrakenTradingVenue::GetFees(
+    const std::vector<types::Symbol>& symbols) {
+    if (symbols.empty()) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "kraken fees: no pairs asked for");
+    }
+    std::string pairs;
+    for (const auto& symbol : symbols) {
+        auto native = data::ToKrakenSymbol(symbol);
+        if (!native) {
+            return std::unexpected(native.error());
+        }
+        pairs += (pairs.empty() ? "" : ",") + *native;
+    }
+    auto result =
+        PostPrivate("TradeVolume", {{"pair", pairs}}, kTradeVolumeCall, true);
+    if (!result) {
+        return std::unexpected(result.error());
+    }
+    if (!result->is_object()) {
+        return std::unexpected(Malformed("TradeVolume is not an object"));
+    }
+    auto volume = DecimalMember(*result, "volume");
+    if (!volume) {
+        return std::unexpected(volume.error());
+    }
+    Fees out;
+    out.volume = *volume;
+    out.volume_asset = data::FromKrakenAsset(OptionalText(*result, "currency"));
+
+    // Both maps are keyed by Kraken's pair name ("XXBTZUSD"); `fees_maker`
+    // is missing or null when no pair has a maker schedule.
+    auto taker = Member(*result, "fees");
+    if (!taker) {
+        return std::unexpected(taker.error());
+    }
+    if (!taker->is_object()) {
+        return std::unexpected(Malformed("TradeVolume: \"fees\" is not a map"));
+    }
+    const json no_maker = json::object();
+    const auto maker_it = result->find("fees_maker");
+    const json& maker = maker_it != result->end() && maker_it->is_object()
+                            ? *maker_it
+                            : no_maker;
+    for (const auto& [native, row] : taker->items()) {
+        auto rate = ParseFeeRate(row);
+        if (!rate) {
+            return std::unexpected(rate.error());
+        }
+        PairFees pair;
+        // A name that does not parse is still worth showing as Kraken wrote
+        // it.
+        auto symbol = ResolveSymbol(native);
+        pair.symbol = symbol ? *symbol : native;
+        pair.taker = *rate;
+        if (const auto it = maker.find(native); it != maker.end()) {
+            auto maker_rate = ParseFeeRate(*it);
+            if (!maker_rate) {
+                return std::unexpected(maker_rate.error());
+            }
+            pair.maker = *maker_rate;
+        }
+        out.pairs.push_back(std::move(pair));
+    }
+    std::ranges::sort(out.pairs, {}, &PairFees::symbol);
     return out;
 }
 

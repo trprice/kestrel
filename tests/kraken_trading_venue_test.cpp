@@ -910,6 +910,88 @@ TEST_F(KrakenTradingVenueTest,
               types::ErrorCategory::kNotImplemented);
 }
 
+TEST_F(KrakenTradingVenueTest, GetFeesReadsMakerAndTakerTiersPerPair) {
+    auto venue = Make();
+    http->Push(R"({"error":[],"result":{
+        "currency":"ZUSD","volume":"1234.5600",
+        "fees":{
+            "XXBTZUSD":{"fee":"0.4000","minfee":"0.0800","maxfee":"0.4000",
+                        "nextfee":"0.3500","tiervolume":"0.0000",
+                        "nextvolume":"10000.0000"},
+            "SOLUSD":{"fee":"0.1000","minfee":"0.1000","maxfee":"0.4000",
+                      "nextfee":null,"tiervolume":"10000000.0000",
+                      "nextvolume":null}
+        },
+        "fees_maker":{
+            "XXBTZUSD":{"fee":"0.2500","minfee":"0.0000","maxfee":"0.2500",
+                        "nextfee":"0.2000","tiervolume":"0.0000",
+                        "nextvolume":"10000.0000"}
+        }
+    }})");
+
+    auto fees = venue->GetFees({"SOL/USD", "BTC/USD"});
+    ASSERT_OK(fees);
+    const auto requests = http->Requests();
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(requests[0].url, "https://api.kraken.test/0/private/TradeVolume");
+    EXPECT_EQ(ParseForm(requests[0].body).at("pair"), "SOL/USD,BTC/USD");
+
+    EXPECT_EQ(fees->volume, D("1234.56"));
+    EXPECT_EQ(fees->volume_asset, "USD");
+    ASSERT_EQ(fees->pairs.size(), 2u);
+
+    const auto& btc = fees->pairs[0];
+    EXPECT_EQ(btc.symbol, "BTC/USD");
+    EXPECT_EQ(btc.taker.percent, D("0.40"));
+    EXPECT_EQ(btc.taker.next_percent, D("0.35"));
+    EXPECT_EQ(btc.taker.next_volume, D("10000"));
+    ASSERT_TRUE(btc.maker);
+    EXPECT_EQ(btc.maker->percent, D("0.25"));
+    EXPECT_EQ(btc.maker->next_percent, D("0.20"));
+
+    const auto& sol = fees->pairs[1];
+    EXPECT_EQ(sol.symbol, "SOL/USD");
+    EXPECT_EQ(sol.taker.percent, D("0.10"));
+    EXPECT_FALSE(sol.taker.next_percent);
+    EXPECT_FALSE(sol.taker.next_volume);
+    EXPECT_FALSE(sol.maker);
+}
+
+TEST_F(KrakenTradingVenueTest, GetFeesRefusesNoPairsAndMalformedReplies) {
+    auto venue = Make();
+    EXPECT_EQ(venue->GetFees({}).error().category,
+              types::ErrorCategory::kInvalidArgument);
+    EXPECT_TRUE(http->Requests().empty());
+
+    // A null `fees_maker` is no maker schedule, not an error.
+    http->Push(R"({"error":[],"result":{"currency":"ZUSD","volume":"0",
+        "fees":{"XXBTZUSD":{"fee":"0.4000","nextfee":"0.3500",
+                            "nextvolume":"10000"}},
+        "fees_maker":null}})");
+    auto no_maker = venue->GetFees({"BTC/USD"});
+    ASSERT_OK(no_maker);
+    ASSERT_EQ(no_maker->pairs.size(), 1u);
+    EXPECT_FALSE(no_maker->pairs[0].maker);
+
+    http->Push(R"({"error":[],"result":{"currency":"ZUSD","volume":"0",
+        "fees":{"XXBTZUSD":{"fee":"lots"}}}})");
+    EXPECT_EQ(venue->GetFees({"BTC/USD"}).error().category,
+              types::ErrorCategory::kParse);
+
+    http->Push(R"({"error":[],"result":{"currency":"ZUSD","volume":"0",
+        "fees":null}})");
+    EXPECT_EQ(venue->GetFees({"BTC/USD"}).error().category,
+              types::ErrorCategory::kParse);
+
+    http->Push(R"({"error":["EGeneral:Permission denied"]})");
+    auto denied = venue->GetFees({"BTC/USD"});
+    ASSERT_FALSE(denied);
+    EXPECT_EQ(denied.error().category, types::ErrorCategory::kAuth);
+    for (const auto& request : http->Requests()) {
+        ExpectNoSecretsIn(request.body);
+    }
+}
+
 TEST_F(KrakenTradingVenueTest,
        OrderRateLimitPenalizesOrderLimiterNotCounterLimiter) {
     trading::KrakenTradingVenue::Options opts;
