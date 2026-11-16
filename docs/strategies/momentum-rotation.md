@@ -39,12 +39,19 @@ checked with the venue; if one is still open, that rebalance is skipped.
 While the market is closed (daily stock bars), a rebalance waits for the next
 session's open.
 
-**What it holds.** Only what the strategy bought counts as held, from its
-fills, less fees taken in the coin; leftovers under the minimum order count as
-nothing held. It does not count the account's other balances: it warns at
-startup about coins the account already holds, which it neither counts nor
-sells, so a restart forgets what the last run bought. Run it on an account
-(or sub-account) of its own.
+**What it holds.** What the strategy bought counts as held, from its fills,
+less fees taken in the coin; leftovers under the minimum order count as
+nothing held. By default it does not count the account's other balances: it
+warns at startup about coins of its universe the account already holds, which
+it neither counts nor sells, so a restart forgets what the last run bought.
+
+With `adopt_holdings`, those coins count as held from startup (the part not
+locked in an order), so a restarted run picks up where the last one left off:
+at the next rebalance a coin still in the top keeps its slot as it is, and one
+ranked out is sold. It cannot tell its coins from anyone else's, so run it on
+an account (or sub-account) of its own, the only place it should run live. A
+restart also starts the `rebalance_bars` count again, so the first ranking
+after it rebalances.
 
 ## Parameters
 
@@ -58,3 +65,4 @@ In the `[strategy]` table (see [configuration.md](../configuration.md#strategy))
 | `top_n` | how many symbols to hold (default 3); at most the number of symbols |
 | `positive_only` | hold only symbols whose momentum is above zero, else cash (default `true`) |
 | `invest_fraction` | share of equity invested, split over the `top_n` slots; the rest covers fees and the move to the fill (default 0.95; above 0, at most 1) |
+| `adopt_holdings` | count the coins of the universe the account holds at startup as held, to keep or sell (default `false`); see [What it holds](#how-it-works) |

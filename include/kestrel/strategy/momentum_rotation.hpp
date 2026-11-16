@@ -21,6 +21,9 @@ struct MomentumRotationParams {
     std::size_t top_n = 3;
     bool positive_only = true;
     types::Decimal invest_fraction{95, 2};  // 0.95
+    // Count the coins of the universe the account holds at startup as held
+    // (so a restarted run sells or keeps them); for an account of its own.
+    bool adopt_holdings = false;
 };
 
 // Cross-sectional momentum, long only; see
@@ -30,8 +33,8 @@ struct MomentumRotationParams {
 // period has begun), since the bars arrive one at a time and ranking on a
 // partial set would compare returns over different times. Entries wait for
 // the sells' fills, as those fills are what pays for them. Only what the
-// strategy bought itself counts as held: the account's other balances may
-// belong to someone else.
+// strategy bought itself counts as held, as the account's other balances may
+// belong to someone else, unless adopt_holdings says the account is its own.
 class MomentumRotation : public Strategy {
    public:
     // Throws std::invalid_argument for parameters out of range.

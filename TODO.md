@@ -961,6 +961,10 @@ the header of the code concerned.
       against +63% (67%) for holding BTC: by year -41% / +167% / +53% /
       -12% / +7% against BTC's -64% / +156% / +121% / -6% / -12%. Short
       lookbacks with one holding were erratic without ZEC.
+- [x] `momentum_rotation` `adopt_holdings`: at startup it counts the coins of
+      its universe the account holds as held, so a restarted run sells or
+      keeps what the last one bought instead of stranding it (off by
+      default: for an account of its own).
 - [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
       confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
       and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h

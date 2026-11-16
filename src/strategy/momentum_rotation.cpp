@@ -123,19 +123,36 @@ void MomentumRotation::OnSessionOpen(Context& context) {
 }
 
 void MomentumRotation::OnStart(Context& context) {
-    // Only what this run buys counts as held: say so about coins the account
-    // already holds, which it will neither sell nor count.
+    // The coins of the universe the account already holds: with
+    // adopt_holdings, counted as held (a restart picks up what the last run
+    // bought); else neither counted nor sold, and said so.
     auto balances = context.Venue().GetBalances();
     if (!balances) {
+        if (mParams.adopt_holdings) {
+            context.Log().Warn(
+                "cannot read the account's balances: {}; nothing adopted",
+                balances.error().ToString());
+        }
         return;
     }
     for (const auto& balance : *balances) {
         for (const auto& [symbol, base] : mBase) {
-            if (balance.asset == base && balance.total.Sign() > 0) {
+            if (balance.asset != base || balance.total.Sign() <= 0) {
+                continue;
+            }
+            const std::string amount = balance.total.Normalized().ToString();
+            if (!mParams.adopt_holdings) {
                 context.Log().Warn(
                     "the account holds {} {}, which this run did not buy: it "
-                    "is not counted, and not sold",
-                    balance.total.Normalized().ToString(), base);
+                    "is not counted, and not sold (adopt_holdings counts it)",
+                    amount, base);
+            } else if (balance.available.Sign() > 0) {
+                // What is free to sell: a part locked in an order is not.
+                mHeld[symbol] = balance.available;
+                context.Log().Info(
+                    "adopting {} {} the account holds: held from now on, "
+                    "sold if ranked out",
+                    balance.available.Normalized().ToString(), base);
             }
         }
     }

@@ -645,6 +645,8 @@ Result<StrategyPtr> BuildMomentumRotation(ParamReader& p) {
          error);
     Take(p.Number("invest_fraction", params.invest_fraction),
          params.invest_fraction, error);
+    Take(p.Flag("adopt_holdings", params.adopt_holdings), params.adopt_holdings,
+         error);
     if (error) {
         return std::unexpected(*error);
     }

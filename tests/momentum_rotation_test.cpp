@@ -72,14 +72,21 @@ struct Trade {
     std::string symbol;
     Side side;
     types::Decimal price;
+    types::Decimal quantity;
 };
 
-std::vector<Trade> Rotate(const std::shared_ptr<ReplayDataSource>& data,
-                          MomentumRotationParams params, int end_day = 7) {
+// `held`: coins the account holds at the start, beside 1000 USD.
+std::vector<Trade> Rotate(
+    const std::shared_ptr<ReplayDataSource>& data,
+    MomentumRotationParams params, int end_day = 7,
+    const std::map<std::string, types::Decimal>& held = {}) {
     backtest::BacktestOptions o;
     o.start = Day(3);
     o.end = Day(end_day);
     o.paper.initial_balances = {{"USD", D("1000")}};
+    for (const auto& [asset, amount] : held) {
+        o.paper.initial_balances[asset] = amount;
+    }
     o.paper.slippage = D("0");
     o.paper.maker_fee_rate = D("0");
     o.paper.taker_fee_rate = D("0");
@@ -89,7 +96,8 @@ std::vector<Trade> Rotate(const std::shared_ptr<ReplayDataSource>& data,
     std::vector<Trade> trades;
     if (result) {
         for (const auto& fill : result->fills) {
-            trades.push_back({fill.symbol, fill.side, fill.price});
+            trades.push_back(
+                {fill.symbol, fill.side, fill.price, fill.quantity});
         }
     }
     return trades;
@@ -117,6 +125,43 @@ TEST(MomentumRotation, HoldsTheStrongestAndRotatesWhenItChanges) {
     EXPECT_EQ(trades[2].symbol, "B/USD");
     EXPECT_EQ(trades[2].side, Side::kBuy);
     EXPECT_EQ(trades[2].price, D("15"));
+}
+
+// The account holds 10 C. Adopted, C is ranked out on day 3 and sold at day
+// 4's open (7) before A is bought; not adopted, it is never sold.
+TEST(MomentumRotation, AdoptsTheCoinsTheAccountHolds) {
+    auto params = Params();
+    params.adopt_holdings = true;
+    const auto trades = Rotate(Data(Rotating()), params, 7, {{"C", D("10")}});
+    ASSERT_EQ(trades.size(), 4u);
+    EXPECT_EQ(trades[0].symbol, "C/USD");
+    EXPECT_EQ(trades[0].side, Side::kSell);
+    EXPECT_EQ(trades[0].quantity, D("10"));
+    EXPECT_EQ(trades[0].price, D("7"));
+    EXPECT_EQ(trades[1].symbol, "A/USD");
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+
+    const auto ignored =
+        Rotate(Data(Rotating()), Params(), 7, {{"C", D("10")}});
+    EXPECT_EQ(ignored.size(), 3u);
+    EXPECT_TRUE(std::ranges::none_of(
+        ignored, [](const Trade& t) { return t.symbol == "C/USD"; }));
+}
+
+// An adopted coin still in the top keeps its slot: A, held at the start, is
+// not bought on day 3, and is sold whole when B overtakes it on day 4.
+TEST(MomentumRotation, AnAdoptedCoinInTheTopKeepsItsSlot) {
+    auto params = Params();
+    params.adopt_holdings = true;
+    const auto trades = Rotate(Data(Rotating()), params, 7, {{"A", D("10")}});
+    ASSERT_EQ(trades.size(), 2u);
+    EXPECT_EQ(trades[0].symbol, "A/USD");
+    EXPECT_EQ(trades[0].side, Side::kSell);
+    EXPECT_EQ(trades[0].quantity, D("10"));
+    EXPECT_EQ(trades[0].price, D("14"));
+    EXPECT_EQ(trades[1].symbol, "B/USD");
+    EXPECT_EQ(trades[1].side, Side::kBuy);
+    EXPECT_EQ(trades[1].price, D("15"));
 }
 
 TEST(MomentumRotation, SitsInCashWhenNothingRose) {
