@@ -33,6 +33,7 @@ Unless a test says otherwise:
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
+| Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
 
 ## Market maker (ZEC/USDT)
 
@@ -350,6 +351,41 @@ holding limit or stop.
   runs (+23.19% and +18.37%, 94 and 90 trades). The cause wasn't found;
   several signals sat within 0.2% of the 200-day average, where a tiny
   difference in a price flips the filter.
+
+## Daily stock setups against holding
+
+Each daily stock setup above was rerun in Kestrel's backtester on the 35
+Schwab stocks and ETFs, from Jan 2016 to Nov 2026. Each trade was then
+compared with holding the same symbol over the same bars, its average daily
+return times the bars held ("less drift"). The stocks rose about 1,355% over
+the period, and these setups hold for 15–28 bars, so drift alone is worth
++0.9% to +1.7% a trade.
+
+| Setup | Trades | A trade | Drift | Less drift | t | Symbols up | 2016–21 | 2022–26 | ETFs | Without the best 5 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Ascending triangle (`range_bars = 60`) | 407 | +1.90% | +1.24% | +0.67% | 1.3 | 20/35 | +0.35% | +1.05% | +0.09% | +0.06% |
+| Cup-and-handle (`range_bars = 250`, `swing_bars = 3`) | 152 | +2.30% | +1.67% | +0.62% | 0.7 | 20/33 | −0.08% | +1.41% | +0.62% | −0.66% |
+| Symmetrical triangle (`range_bars = 60`) | 574 | +1.27% | +1.09% | +0.17% | 0.5 | 17/35 | +0.76% | −0.55% | +0.12% | |
+| Double bottom (`range_bars = 60`) | 327 | +0.90% | +0.89% | +0.01% | 0.0 | 18/35 | −0.39% | +0.52% | −0.05% | |
+| Inverse head-and-shoulders (`range_bars = 60`) | 63 | +1.23% | +1.60% | −0.37% | −0.3 | 14/31 | −1.26% | +0.81% | −0.77% | |
+| Failed breakdown | 967 | +0.95% | +1.38% | −0.43% | −1.4 | 15/35 | +0.81% | −1.61% | +0.33% | |
+| Connors RSI(2), 200-day filter | 2,384 | +0.42% | +0.28% | +0.14% | 1.9 | 23/34 | +0.17% | +0.10% | +0.02% | |
+| Connors RSI(2), no filter | 4,365 | +0.30% | +0.23% | +0.07% | 1.1 | 18/35 | −0.04% | +0.19% | −0.08% | |
+
+- **No setup beats holding with any confidence.** The raw figures match
+  the earlier runs (on 33 symbols then), but most of each trade's gain is
+  the stock rising while it was held.
+- **The two best are a few large trades in volatile stocks.**
+  - The ascending triangle's +0.67% falls to +0.06% without its 5 best
+    trades. One DKI trade made +90% over drift, and COIN, PLTR, TSLA and
+    AMD together made +3.19% a trade.
+  - The cup-and-handle falls to −0.66% without its 5 best trades.
+  - Both setups were about even on ETFs and on AAPL, AMZN, GOOGL, META,
+    MSFT and NVDA.
+- **Connors RSI(2) with the 200-day filter comes closest**: +0.14% a trade
+  over drift, positive in both periods and on 23 of 34 symbols. It holds
+  about 4 bars, so per day in the market it earns about one and a half
+  times holding's rate. On ETFs it is only +0.02%, and t = 1.9 is weak.
 
 ## Fair value gaps
 
