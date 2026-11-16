@@ -2,8 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
+#include <mutex>
+#include <thread>
 
 #include "kestrel/types/market_hours.hpp"
 #include "test_helpers.hpp"
@@ -27,9 +30,25 @@ class FakeHttp : public net::HttpClient {
     std::vector<net::HttpRequest> requests;
 
     types::Result<net::HttpResponse> Send(const net::HttpRequest& r) override {
+        std::lock_guard lock(mMutex);
         requests.push_back(r);
         return reply(r);
     }
+    // For a test whose requests come from another thread (the daily bar
+    // poller): the requests to `path` so far.
+    std::vector<net::HttpRequest> To(std::string_view path) {
+        std::lock_guard lock(mMutex);
+        std::vector<net::HttpRequest> out;
+        for (const auto& r : requests) {
+            if (r.url.ends_with(path)) {
+                out.push_back(r);
+            }
+        }
+        return out;
+    }
+
+   private:
+    std::mutex mMutex;
 };
 
 // A candle as Schwab sends it, opening at `iso`.
@@ -582,6 +601,150 @@ TEST_F(SchwabDataSourceTest, UnknownSymbolsAndOtherAssetsAreRefused) {
     EXPECT_FALSE(source.GetSymbolInfo("SPY"));
     Reply(QuoteBody("SPY", "EQUITY", "728.37"));
     EXPECT_TRUE(source.GetSymbolInfo("SPY"));
+}
+
+// Daily bars: StreamBars fetches each day's candle once the day has ended.
+class SchwabDailyBarsTest : public SchwabDataSourceTest {
+   protected:
+    // A source whose clock starts at `start` and runs with real time, and
+    // that waits `delay`, then `retry`, for at most `patience`.
+    SchwabDataSource DailySource(types::Timestamp start,
+                                 std::chrono::milliseconds patience = 2s) {
+        SchwabDataSource::Options options;
+        options.base_url = "https://api.test/marketdata/v1";
+        const auto began = std::chrono::steady_clock::now();
+        options.clock = [start, began] {
+            return start +
+                   std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - began);
+        };
+        options.daily_bar_delay = 50ms;
+        options.daily_bar_retry = 20ms;
+        options.daily_bar_patience = patience;
+        return SchwabDataSource(
+            std::make_shared<SchwabApi>(mAuth, mHttp,
+                                        SchwabApi::Options{1000, 1000}),
+            std::move(options));
+    }
+    // Price history answers with `candles` (the calendar's /markets gets a
+    // 404, so it keeps to its rules).
+    void ReplyDaily(std::function<std::vector<std::string>()> candles) {
+        mHttp->reply = [candles =
+                            std::move(candles)](const net::HttpRequest& r) {
+            if (!r.url.ends_with("/pricehistory")) {
+                return Status(404);
+            }
+            return types::Result<net::HttpResponse>(
+                net::HttpResponse{200, Candles(candles()), {}});
+        };
+    }
+    // Waits up to 5 s for `done`.
+    static bool WaitFor(const std::function<bool()>& done) {
+        for (int i = 0; i < 500 && !done(); ++i) {
+            std::this_thread::sleep_for(10ms);
+        }
+        return done();
+    }
+
+    std::mutex mBarsMutex;
+    std::vector<std::pair<types::Symbol, types::Bar>> mBars;
+    BarCallback Collect() {
+        return [this](const types::Symbol& symbol, Timeframe tf,
+                      const types::Bar& bar) {
+            EXPECT_EQ(tf, Timeframe::kD1);
+            std::lock_guard lock(mBarsMutex);
+            mBars.emplace_back(symbol, bar);
+        };
+    }
+    std::size_t BarCount() {
+        std::lock_guard lock(mBarsMutex);
+        return mBars.size();
+    }
+};
+
+TEST_F(SchwabDailyBarsTest, ADaysBarIsFetchedOnceTheDayHasEnded) {
+    // Schwab dates a daily candle at midnight in Chicago, 06:00 UTC.
+    ReplyDaily([] {
+        return std::vector{Candle("2026-11-04T06:00:00Z", "101"),
+                           Candle("2026-11-05T06:00:00Z", "102")};
+    });
+    // Thursday, just before the day ends.
+    auto source = DailySource(At("2026-11-05T23:59:59.900Z"));
+    auto sub = source.StreamBars({"brk.b"}, Timeframe::kD1, Collect());
+    ASSERT_OK(sub);
+    ASSERT_TRUE(WaitFor([&] { return BarCount() >= 1; }));
+    (*sub)->Stop();
+
+    // Wednesday's bar closed before the subscription: only Thursday's.
+    ASSERT_EQ(mBars.size(), 1u);
+    EXPECT_EQ(mBars[0].first, "BRK.B");
+    EXPECT_EQ(mBars[0].second.open_time, At("2026-11-05T00:00:00Z"));
+    EXPECT_EQ(mBars[0].second.close, types::Decimal::FromInt(102));
+    const auto asked = mHttp->To("/pricehistory");
+    ASSERT_EQ(asked.size(), 1u);
+    EXPECT_EQ(asked[0].query.at("symbol"), "BRK/B");
+    EXPECT_EQ(asked[0].query.at("frequencyType"), "daily");
+}
+
+TEST_F(SchwabDailyBarsTest, ALateBarIsAskedForAgainUntilItComes) {
+    std::atomic<int> answers{0};
+    ReplyDaily([&answers] {
+        // Thursday's candle is there from the third answer.
+        std::vector<std::string> candles{Candle("2026-11-04T06:00:00Z")};
+        if (++answers >= 3) {
+            candles.push_back(Candle("2026-11-05T06:00:00Z"));
+        }
+        return candles;
+    });
+    auto source = DailySource(At("2026-11-05T23:59:59.900Z"));
+    auto sub = source.StreamBars({"SPY", "XLF"}, Timeframe::kD1, Collect());
+    ASSERT_OK(sub);
+    ASSERT_TRUE(WaitFor([&] { return BarCount() >= 2; }));
+    std::this_thread::sleep_for(100ms);
+    (*sub)->Stop();
+
+    // Each symbol was asked twice (the answers count across both), and
+    // nothing more once both had come.
+    EXPECT_EQ(mHttp->To("/pricehistory").size(), 4u);
+    ASSERT_EQ(mBars.size(), 2u);
+    for (const auto& [symbol, bar] : mBars) {
+        EXPECT_EQ(bar.open_time, At("2026-11-05T00:00:00Z")) << symbol;
+    }
+}
+
+TEST_F(SchwabDailyBarsTest, AMissingBarIsGivenUpOnAfterThePatience) {
+    ReplyDaily([] { return std::vector{Candle("2026-11-04T06:00:00Z")}; });
+    auto source = DailySource(At("2026-11-05T23:59:59.900Z"), 100ms);
+    auto sub = source.StreamBars({"SPY"}, Timeframe::kD1, Collect());
+    ASSERT_OK(sub);
+    ASSERT_TRUE(
+        WaitFor([&] { return mHttp->To("/pricehistory").size() >= 2; }));
+    std::this_thread::sleep_for(300ms);
+    const auto asked = mHttp->To("/pricehistory").size();
+    std::this_thread::sleep_for(200ms);
+    (*sub)->Stop();
+    EXPECT_EQ(mHttp->To("/pricehistory").size(), asked);
+    EXPECT_LE(asked, 8u);
+    EXPECT_EQ(BarCount(), 0u);
+}
+
+TEST_F(SchwabDailyBarsTest, ADayWithoutASessionIsNotAskedAbout) {
+    ReplyDaily([] { return std::vector{Candle("2026-11-06T06:00:00Z")}; });
+    // Saturday.
+    auto source = DailySource(At("2026-11-07T23:59:59.900Z"));
+    auto sub = source.StreamBars({"SPY"}, Timeframe::kD1, Collect());
+    ASSERT_OK(sub);
+    std::this_thread::sleep_for(300ms);
+    (*sub)->Stop();
+    EXPECT_TRUE(mHttp->To("/pricehistory").empty());
+    EXPECT_EQ(BarCount(), 0u);
+}
+
+TEST_F(SchwabDailyBarsTest, RefusesSymbolsSchwabCannotTake) {
+    auto source = DailySource(At("2026-11-05T12:00:00Z"));
+    EXPECT_FALSE(source.StreamBars({"BTC/USD"}, Timeframe::kD1, Collect()));
+    EXPECT_FALSE(source.StreamBars({}, Timeframe::kD1, Collect()));
+    EXPECT_FALSE(source.StreamBars({"SPY"}, Timeframe::kD1, nullptr));
 }
 
 }  // namespace

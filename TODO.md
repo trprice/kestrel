@@ -829,6 +829,10 @@ the header of the code concerned.
       trimmed to the range, daily and longer at 00:00 UTC of their date,
       `[schwab] extended_hours`) and `GetSymbolInfo` from US equity rules;
       share classes map `BRK.B` to Schwab's `BRK/B`
+- [x] Schwab daily bars for `run`: `StreamBars` with `1d` fetches each
+      day's own candle from `/pricehistory` after 00:00 UTC (retried for up
+      to 3 hours; days without a session skipped), so daily strategies such
+      as `breakout` run on the bars their backtests used
 - [x] Schwab `StreamQuotes` on the streamer's LEVELONE_EQUITIES, over one
       connection shared by the process (`SchwabStreamer`): login with a
       current token, ADD and UNSUBS as subscriptions come and go, one token

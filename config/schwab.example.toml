@@ -61,8 +61,8 @@ takeover_reconnect_ms = 0
 [strategy]                     # parameters for the run / backtest subcommands
 symbol    = "SPY"              # must be in [general] symbols
 quantity  = "1"                # shares per order
-# Schwab has 1, 5, 10, 15 and 30 minute bars (and daily and longer for
-# backtests); no hourly ones.
+# Schwab has 1, 5, 10, 15 and 30 minute bars and daily ones (weekly and
+# monthly for backtests only); no hourly ones.
 timeframe = "30m"
 # fast_period = 10
 # slow_period = 30

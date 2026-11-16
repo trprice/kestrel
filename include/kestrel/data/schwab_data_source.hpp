@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -131,6 +132,12 @@ types::Result<SchwabFrequency> SchwabFrequencyFor(types::Timeframe timeframe);
 // early close ends at 13:00) are given. An unknown symbol gets no bars and no
 // error.
 //
+// Daily bars (1d) are not built from minutes: each day's own candle, as
+// GetBars gives it, is fetched once the day has ended at 00:00 UTC (Kestrel's
+// daily bar runs 00:00 to 00:00 UTC), daily_bar_delay after it, and again every
+// daily_bar_retry until it has come, for at most daily_bar_patience. Days
+// without a regular session have none. They take no streamer connection.
+//
 // Hours: the US equity market's, from SchwabCalendar: the regular session,
 // or with extended_hours also 07:00 to 09:30 and the close to 20:00 (Schwab's
 // pre- and after-market). The overnight session's bars come with
@@ -150,6 +157,10 @@ class SchwabDataSource : public DataSource {
         // timeout, 429 or 5xx), honouring Retry-After.
         util::RetryPolicy retry;
         util::Sleeper sleeper = util::DefaultSleep;
+        // Daily bars from StreamBars: see above.
+        std::chrono::milliseconds daily_bar_delay{std::chrono::minutes(2)};
+        std::chrono::milliseconds daily_bar_retry{std::chrono::minutes(5)};
+        std::chrono::milliseconds daily_bar_patience{std::chrono::hours(3)};
     };
 
     explicit SchwabDataSource(std::shared_ptr<SchwabApi> api)

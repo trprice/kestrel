@@ -3,6 +3,10 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <condition_variable>
+#include <map>
+#include <mutex>
+#include <thread>
 
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
@@ -322,7 +326,12 @@ SchwabDataSource::SchwabDataSource(std::shared_ptr<SchwabApi> api,
     mRegular = std::make_shared<const types::MarketHours>(calendar, false);
 }
 
-types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
+namespace {
+
+// GetBars, apart from the data source, for the daily bar poller, which may
+// run on after a call returns.
+types::Result<std::vector<types::Bar>> FetchBars(
+    SchwabApi& api, const SchwabDataSource::Options& options,
     const types::Symbol& symbol, types::Timeframe tf, types::Timestamp start,
     types::Timestamp end) {
     auto frequency = SchwabFrequencyFor(tf);
@@ -339,14 +348,14 @@ types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
     }
     const bool intraday = frequency->frequency_type == "minute";
     const auto window = intraday ? kMinuteWindow : kLongWindow;
-    const types::Timestamp now = mOptions.clock();
+    const types::Timestamp now = options.clock();
 
     std::vector<types::Bar> bars;
     for (types::Timestamp since = start; since < end;) {
         const types::Timestamp until = std::min<types::Timestamp>(
             end, since + duration_cast<milliseconds>(window));
         net::HttpRequest request;
-        request.url = mOptions.base_url + "/pricehistory";
+        request.url = options.base_url + "/pricehistory";
         request.query = {
             {"symbol", *native},
             // Minute bars come only with periodType=day; daily, weekly and
@@ -359,11 +368,10 @@ types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
         if (intraday) {
             // Schwab's default is true.
             request.query["needExtendedHoursData"] =
-                mOptions.extended_hours ? "true" : "false";
+                options.extended_hours ? "true" : "false";
         }
         auto response = util::Retry(
-            mOptions.retry, [&] { return mApi->Send(request); },
-            mOptions.sleeper);
+            options.retry, [&] { return api.Send(request); }, options.sleeper);
         if (!response) {
             auto error = response.error();
             error.message =
@@ -437,6 +445,143 @@ types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
     return bars;
 }
 
+// StreamBars for daily bars. Schwab streams minutes only, and a day built
+// from them would miss the opening and closing auctions (and, after a start
+// in the session, the minutes before it), so each day's own candle, the bar
+// GetBars and the backtests use, is fetched once that day (00:00 to 00:00 UTC,
+// as Kestrel's daily bars run) has ended: `delay` after 00:00 UTC, then every
+// `retry` until every symbol's bar has come, for at most `patience`. A day
+// without a regular session has no bar and is not asked about. A day still
+// missing is asked for again with the next one.
+class DailyBarPoller final : public Subscription {
+   public:
+    using Fetch = std::function<types::Result<std::vector<types::Bar>>(
+        const types::Symbol&, types::Timestamp, types::Timestamp)>;
+    struct Timing {
+        milliseconds delay;
+        milliseconds retry;
+        milliseconds patience;
+        std::function<types::Timestamp()> clock;
+    };
+
+    DailyBarPoller(std::vector<types::Symbol> symbols, Fetch fetch,
+                   BarCallback callback,
+                   std::shared_ptr<const types::MarketHours> regular,
+                   Timing timing)
+        : mFetch(std::move(fetch)),
+          mCallback(std::move(callback)),
+          mRegular(std::move(regular)),
+          mTiming(std::move(timing)) {
+        // Bars that closed before the subscription are the warmup's: the
+        // stream starts with today's.
+        const types::Timestamp yesterday =
+            floor<days>(mTiming.clock()) - days(1);
+        for (auto& symbol : symbols) {
+            mLast.emplace(std::move(symbol), yesterday);
+        }
+        mWorker = std::thread([this] { Work(); });
+    }
+    ~DailyBarPoller() override { Stop(); }
+
+    void Stop() override {
+        {
+            std::lock_guard lock(mMutex);
+            mStopping = true;
+        }
+        mWake.notify_all();
+        if (mWorker.joinable() &&
+            mWorker.get_id() != std::this_thread::get_id()) {
+            mWorker.join();
+        }
+    }
+
+   private:
+    // Waits until the clock reaches `until`; false once stopped.
+    bool SleepUntil(types::Timestamp until) {
+        std::unique_lock lock(mMutex);
+        while (!mStopping) {
+            const types::Timestamp now = mTiming.clock();
+            if (now >= until) {
+                return true;
+            }
+            mWake.wait_for(lock, until - now);
+        }
+        return false;
+    }
+
+    void Work() {
+        for (;;) {
+            const types::Timestamp day_end =
+                floor<days>(mTiming.clock()) + days(1);
+            if (!SleepUntil(day_end + mTiming.delay)) {
+                return;
+            }
+            const types::Timestamp day = day_end - days(1);
+            if (!mRegular->AnyOpen(day, day_end)) {
+                continue;
+            }
+            const types::Timestamp give_up = day_end + mTiming.patience;
+            while (!FetchUpTo(day)) {
+                const types::Timestamp next = mTiming.clock() + mTiming.retry;
+                if (next > give_up) {
+                    spdlog::warn(
+                        "schwab: no daily bar yet for the day {}; asking again "
+                        "after the next day",
+                        types::FormatIso8601(day));
+                    break;
+                }
+                if (!SleepUntil(next)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    // Gives each symbol's bars after the last one given, up to `day`'s;
+    // true once every symbol has had `day`'s.
+    bool FetchUpTo(types::Timestamp day) {
+        bool all = true;
+        for (auto& [symbol, last] : mLast) {
+            if (last >= day) {
+                continue;
+            }
+            auto bars = mFetch(symbol, last + days(1), day + days(1));
+            if (!bars) {
+                spdlog::warn("schwab: daily bars for {}: {}", symbol,
+                             bars.error().ToString());
+                all = false;
+                continue;
+            }
+            for (const types::Bar& bar : *bars) {
+                if (bar.open_time > last) {
+                    mCallback(symbol, types::Timeframe::kD1, bar);
+                    last = bar.open_time;
+                }
+            }
+            all = all && last >= day;
+        }
+        return all;
+    }
+
+    Fetch mFetch;
+    BarCallback mCallback;
+    std::shared_ptr<const types::MarketHours> mRegular;
+    Timing mTiming;
+    std::map<types::Symbol, types::Timestamp> mLast;  // the worker's alone
+    std::mutex mMutex;                                // guards mStopping
+    std::condition_variable mWake;
+    bool mStopping = false;
+    std::thread mWorker;  // last: starts once the rest is built
+};
+
+}  // namespace
+
+types::Result<std::vector<types::Bar>> SchwabDataSource::GetBars(
+    const types::Symbol& symbol, types::Timeframe tf, types::Timestamp start,
+    types::Timestamp end) {
+    return FetchBars(*mApi, mOptions, symbol, tf, start, end);
+}
+
 types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamQuotes(
     const std::vector<std::string>& symbols, QuoteCallback callback) {
     if (symbols.empty()) {
@@ -466,11 +611,37 @@ types::Result<std::unique_ptr<Subscription>> SchwabDataSource::StreamBars(
         return MakeError(ErrorCategory::kInvalidArgument,
                          "StreamBars: no callback");
     }
+    if (timeframe == Timeframe::kD1) {
+        std::vector<types::Symbol> normalized;
+        for (const auto& symbol : symbols) {
+            auto one = types::NormalizeSymbol(symbol);
+            if (!one) {
+                return std::unexpected(one.error());
+            }
+            if (auto native = ToSchwabSymbol(*one); !native) {
+                return std::unexpected(native.error());
+            }
+            normalized.push_back(std::move(*one));
+        }
+        return std::make_unique<DailyBarPoller>(
+            std::move(normalized),
+            [api = mApi, options = mOptions](const types::Symbol& symbol,
+                                             types::Timestamp start,
+                                             types::Timestamp end) {
+                return FetchBars(*api, options, symbol, Timeframe::kD1, start,
+                                 end);
+            },
+            std::move(callback), mRegular,
+            DailyBarPoller::Timing{
+                mOptions.daily_bar_delay, mOptions.daily_bar_retry,
+                mOptions.daily_bar_patience, mOptions.clock});
+    }
     if (timeframe != Timeframe::kM1 && timeframe != Timeframe::kM5 &&
         timeframe != Timeframe::kM10 && timeframe != Timeframe::kM15 &&
         timeframe != Timeframe::kM30) {
         return MakeError(ErrorCategory::kUnsupported,
-                         "Schwab streams 1m, 5m, 10m, 15m and 30m bars, not " +
+                         "Schwab streams 1m, 5m, 10m, 15m, 30m and 1d bars, "
+                         "not " +
                              std::string(types::ToString(timeframe)));
     }
     auto keys = Keys(symbols);

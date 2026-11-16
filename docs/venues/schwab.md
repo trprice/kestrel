@@ -203,6 +203,15 @@ their sizes, the security status and the quote and trade times.
   whose last minute had none closes with the next minute that has trades.
   After a connect or reconnect, the first longer bar is skipped if minutes of
   it were missed; the runner backfills it with `GetBars`.
+- Daily bars are not built from the minutes, which would miss the opening and
+  closing auctions. Each day's own candle (the bar `GetBars` and the
+  backtests use) is fetched from `/pricehistory` once the day has ended at
+  00:00 UTC, when Kestrel's daily bar closes (19:00 or 20:00 New York time),
+  2 minutes after it and then every 5 minutes until it has come, for up to 3
+  hours; a day still missing is asked for again with the next one. Days
+  without a regular session have no bar and are not asked about. This takes
+  no streamer connection. A daily strategy sees each day's bar in the
+  evening, and its orders go in at the next open.
 - Without `extended_hours`, only bars in the regular session are given, by
   the market calendar (so early closes count).
 - An unknown symbol gets no bars and no error.
@@ -441,8 +450,9 @@ token, and STOP_STREAMING (code 30).
   whole read of open orders or fills, and so `run`'s startup.
 - **Margin accounts**: cash is read from the non-marginable fields, and a
   margin loan makes the USD total negative and nothing available.
-- **Bars**: no hourly bars, and no streamed daily or longer ones (they come
-  from `GetBars` only).
+- **Bars**: no hourly bars. Streamed daily bars are fetched after each day
+  (see [Streamed bars](#streamed-bars)); weekly and monthly ones come from
+  `GetBars` only.
 - **One streaming process per user** (see [The streamer](#the-streamer)).
 - **The tick in paper mode** is set from the price when the symbol is first
   asked about, and kept until the next run; a stock crossing $1 keeps its old
