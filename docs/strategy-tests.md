@@ -32,6 +32,7 @@ Unless a test says otherwise:
 | `mean_reversion` Connors RSI(2) | SPY and QQQ, daily, 2016–2026 | +0.25% to +0.36% a trade, 63–70% won, on both and with or without the 200-day filter; the filter cut SPY's worst fall from −14.7% to −5.8%. In the market 11–16% of days, so 15 shares made +18% to +26% against +85% to +88% for holding them |
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
+| Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
 
 ## Market maker (ZEC/USDT)
 
@@ -349,6 +350,108 @@ holding limit or stop.
   runs (+23.19% and +18.37%, 94 and 90 trades). The cause wasn't found;
   several signals sat within 0.2% of the 200-day average, where a tiny
   difference in a price flips the filter.
+
+## Fair value gaps
+
+Three bars in a row whose first high and third low do not overlap leave a
+"fair value gap" in the middle bar. The published setup waits for a swing
+low and a rally that breaks the last swing high before it, a "change of
+character" when the market had been making lower highs and lower lows. It
+then rests a buy limit at the midpoint (50%) of a gap the rally left inside
+its own 50%–61.8% Fibonacci pullback, with a stop below the gap's middle bar
+and a target at 2R.
+
+Gemini 4 Carbon ran the tests, and Claude Opus 5.5 reran them with its own
+code. The data:
+- 11 continuous Binance.US USDT pairs: `1h` and `1d` from Jan 2022 to Nov
+  2026, `4h` from Oct 2024 to Oct 2026.
+- 35 Schwab stocks and ETFs: `1d` from Jan 2016 to Nov 2026, `30m` from Feb
+  to Nov 2026.
+
+Costs are 0 on resting limit entries and targets, and 7 bps (crypto) or 5 bps
+(stocks) on stop and time exits. A limit fills only when price trades
+strictly through it. Swings are 3-bar fractals, known 3 bars after they
+print.
+
+On daily stocks, a trade's return is also compared with holding the same
+symbol over the same bars, its average daily return times the bars held
+("less drift"). These 35 stocks rose about 1,355% over the period, so on daily
+bars any long position makes money.
+
+- **Does the gap pull price back, or bounce it better?** No.
+  - The test compared gaps of at least 0.2 ATR with 3-bar up moves of the
+    same ATR-scaled size whose wicks overlapped. A buy rested below each one
+    for 20 bars, as deep below the close as the gap's midpoint.
+  - Gaps filled about as often as the overlaps: 71–76% against 68–79%.
+  - Once filled, both groups hit the middle-bar stop first 62–74% of the
+    time.
+  - Neither group did consistently better (gaps against overlaps): −0.24R
+    against −0.21R on `1h` crypto, +0.04R against −0.14R on `1d` crypto,
+    −0.13R against −0.05R on `1d` stocks, and −0.23R against −0.30R on `30m`
+    stocks.
+  - Gemini first found that gaps filled *less* often (71–76% against
+    79–84%), but its control's buy rested at the middle of the 3-bar move,
+    which is shallower. At equal depth the difference is between −4 and +3
+    points.
+- **Resting limits at the gap made nothing on any market or timeframe.**
+  Each order rested up to 24 bars, with a `2R` resting target, and trades
+  closed after 48 bars. `30m` trades closed at the end of the session. The
+  table gives the average return per trade, net of costs, with the number of
+  trades in brackets:
+
+  | Variant | Crypto 1h (2022–26) | Crypto 1d (2022–26) | Stocks 1d (2016–26) | Stocks 1d, less drift | Stocks 30m (2026) |
+  |---|---|---|---|---|---|
+  | Plain 50%–61.8% Fib pullback (no gap) | −0.06% (8,212) | −0.86% (330) | +0.07% (1,563) | −0.13% | −0.05% (838) |
+  | Raw gap midpoint | −0.09% (15,382) | +0.05% (518) | +0.16% (2,279) | −0.03% | −0.05% (1,291) |
+  | Gap + Fib + change of character (the published setup) | −0.08% (1,562) | −0.31% (66) | +0.03% (184) | −0.11% | +0.01% (33) |
+  | Gap + Fib + any break + trend SMA (1000h / 200d) | 0.00% (2,800) | −0.92% (114) | +0.11% (635) | −0.08% | −0.14% (86) |
+  | Same, buying the top of the gap | 0.00% (3,138) | −0.95% (127) | +0.56% (790) | +0.12% (t = 0.7) | −0.10% (113) |
+
+  - Crypto `4h` (14 USDT pairs) lost too: −0.13% a trade at the raw gap
+    midpoint and −0.23% for the published setup.
+  - Removing ZEC left the `1h` results unchanged.
+  - Every stock variant that made money did so by holding a rising stock.
+    Less drift, all of them landed within ±0.13% a trade, with |t| of 1.5
+    or less.
+  - The top of the gap, with no other rule, made +0.39% a trade on daily
+    stocks (2,714 trades) but only +0.04% less drift. The same buy at an
+    overlapping 3-bar move's third low made +0.02% (900 trades).
+- **Gemini's simulator was too pessimistic on gapped opens.** When a bar
+  opened below a resting buy limit, it filled the buy at the limit, not at
+  the lower open. When that open was also below the stop, it booked the whole
+  drop from the limit as a loss.
+  - A real resting limit fills at the open, and so does Kestrel's backtester.
+  - With Gemini's rule, the code here reproduces its figures: −0.19% for the
+    raw gap midpoint on `1h` crypto (15,381 and 15,382 trades), and −0.15%
+    against Gemini's −0.16% on daily stocks.
+  - The rule mattered most where bars open away from the last close: ZEC
+    (−0.51% against −0.01% a trade) and daily stocks.
+  - Gemini's replay of the `1h` setups on `1m` bars (seven pairs, May–Oct
+    2026) used the same rule. It confirms that stop-first ordering within a
+    bar changes little (2–3 bps), not that the fills are right.
+- **Kestrel's own `breakout` `fvg` setup did no better.** It buys on a stop
+  above the gap's third bar (`entry = "stop"`), or with a post-only limit at
+  the gap's top after a close above it (`entry = "throwback"`). Results from
+  Kestrel's backtester, fees included:
+  - Crypto `1h` (`max_hold_bars = 24`): −0.07% a trade with the stop entry
+    (8,314 trades) and −0.15% with throwback (9,972). Without ZEC: −0.03% and
+    −0.12%.
+  - Daily stocks (`min_gap_bps = 50`, `max_hold_bars = 10`): +0.42% a trade
+    with the stop entry (3,390 trades, 48% won) and +0.22% with throwback
+    (2,753). But holding the same symbols over the same bars made +0.52% and
+    +0.28%.
+  - Less drift, that is −0.10% and −0.06% (t = −1.1 and −0.8). Since 2022 it
+    is −0.32% and −0.19%. The ETFs alone fared no better.
+- **What didn't rescue it:**
+  - Gemini also tried wider gaps (`0.5` or `1.0` ATR), uncapped bar-close
+    targets and swing-low stops. All stayed negative on `1h` crypto and were
+    noise on daily bars; these ran with its fill rule and were not rerun.
+  - Waiting for a bullish close inside the gap, then buying at that close
+    and holding 10 bars, made +0.34% a trade on daily stocks (1,528 trades).
+    Gemini's run of this gave +0.35%. Less drift, it is −0.13%. It lost
+    0.14% a trade on `1h` crypto.
+- Rejected: no variant beats holding the symbol, and the gap adds nothing
+  over a plain 3-bar move of the same size.
 
 ## Paper runs
 
