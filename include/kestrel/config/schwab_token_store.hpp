@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "kestrel/types/error.hpp"
@@ -36,7 +37,17 @@ class SchwabTokenStore {
     // kNotFound when the file does not exist yet (first run).
     types::Result<SchwabTokens> Load() const;
     // Atomic (write + rename); the file is created readable by the owner only.
+    // Saves in other threads and processes take turns (an flock on the
+    // file's directory).
     types::Result<void> Save(const SchwabTokens& tokens) const;
+    // Saves renewed tokens unless the file holds a later authorization: one
+    // whose refresh token outlasts `tokens`'s, which only a new `authorize`
+    // gives, since renewing keeps the deadline. Then the file is left as it
+    // is and its tokens returned, so a process that renews with an older
+    // authorization never undoes a re-authorization made while it ran.
+    // nullopt when `tokens` were saved.
+    types::Result<std::optional<SchwabTokens>> SaveUnlessSuperseded(
+        const SchwabTokens& tokens) const;
 
     // Classifies the tokens and logs: a warning when the refresh token has
     // under 24h left, an error with re-authorization instructions once it has

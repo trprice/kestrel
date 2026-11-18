@@ -79,6 +79,13 @@ the last `authorize`. Kestrel warns in the refresh token's last 24 hours, and
 once it has expired or Schwab refuses it logs `SCHWAB RE-AUTHORIZATION
 REQUIRED` with what to run.
 
+`authorize` can run while a `run` or `stream` is going. A running process
+looks at the token file before each renewal, and while its own refresh token
+is refused or expired, and takes up a newer unexpired authorization it finds
+there (one whose refresh token lasts longer). It never saves a renewal over
+one: saves take turns under an `flock` on the token file's directory, and a
+renewal finding a newer authorization in the file uses that instead.
+
 Market data needs the tokens too, so Schwab needs the app key and secret and
 a token file even in paper mode.
 
@@ -161,8 +168,10 @@ Live quotes and bars come over Schwab's streamer (`SchwabStreamer`,
   go quiet; with more than 0 it waits that long and connects again, which
   disconnects the other one in turn. Two processes that both set it take the
   connection from each other at every wait.
-- **A refused login** renews the access token and connects again. A second
-  refusal in a row, or a refresh token that has expired, stops the streamer.
+- **A refused login** renews the access token and connects again; a second
+  refusal in a row stops the streamer. When the refresh token has expired or
+  been refused, the streamer waits and connects again once `authorize` has
+  saved a new one.
 - **Silence**: Schwab sends a heartbeat about every 10 seconds, trading or
   not, so a connection that hears nothing for 60 seconds is taken as dead and
   reconnected.

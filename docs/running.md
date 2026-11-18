@@ -82,7 +82,9 @@ The browser can be on any machine: Schwab never connects to the callback URL,
 it only sends the browser there. The tokens are saved to `[schwab]
 token_file`. After that the access token is renewed automatically, but the
 refresh token expires 7 days after the authorization; run `authorize` again
-before then (`authorize --status` shows when).
+before then (`authorize --status` shows when). Processes already running take
+up the new authorization at their next renewal (or within seconds if the old
+refresh token had expired or been refused); there is no need to restart them.
 
 ## Backtesting and running strategies
 

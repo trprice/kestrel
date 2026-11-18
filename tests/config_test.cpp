@@ -1,3 +1,4 @@
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -1380,6 +1381,98 @@ TEST(SchwabTokenStore, ConcurrentSavesLeaveOneWholeFile) {
         ++files;
     }
     EXPECT_EQ(files, 1);  // no temporary file left behind
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SchwabTokenStore, SaveUnlessSupersededKeepsALaterAuthorization) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-token-supersede-test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const config::SchwabTokenStore store(dir / "tokens.json");
+    const config::SchwabTokens old{"a1", "r1", types::FromEpochSeconds(100),
+                                   types::FromEpochSeconds(1000)};
+
+    // No file yet: saved.
+    auto first = store.SaveUnlessSuperseded(old);
+    ASSERT_OK(first);
+    EXPECT_FALSE(first->has_value());
+
+    // The same deadline (a renewal): saved over it.
+    auto renewed = old;
+    renewed.access_token = "a2";
+    auto second = store.SaveUnlessSuperseded(renewed);
+    ASSERT_OK(second);
+    EXPECT_FALSE(second->has_value());
+    EXPECT_EQ(store.Load()->access_token, "a2");
+
+    // A later authorization in the file: left alone and returned.
+    const config::SchwabTokens later{"b1", "r2", types::FromEpochSeconds(500),
+                                     types::FromEpochSeconds(5000)};
+    ASSERT_OK(store.Save(later));
+    auto third = store.SaveUnlessSuperseded(renewed);
+    ASSERT_OK(third);
+    ASSERT_TRUE(third->has_value());
+    EXPECT_EQ((*third)->refresh_token, "r2");
+    EXPECT_EQ(store.Load()->refresh_token, "r2");
+
+    // A corrupt file is replaced.
+    std::ofstream(dir / "tokens.json") << "not json";
+    auto fourth = store.SaveUnlessSuperseded(renewed);
+    ASSERT_OK(fourth);
+    EXPECT_FALSE(fourth->has_value());
+    EXPECT_EQ(store.Load()->access_token, "a2");
+    std::filesystem::remove_all(dir);
+}
+
+TEST(SchwabTokenStore, ConcurrentRenewalsNeverOverwriteAReauthorization) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     "kestrel-token-supersede-race-test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const config::SchwabTokenStore store(dir / "tokens.json");
+    const auto old_deadline = types::FromEpochSeconds(1'700'600'000);
+    const auto new_deadline = types::FromEpochSeconds(1'701'200'000);
+    ASSERT_OK(store.Save(
+        {"a0", "r-old", types::FromEpochSeconds(1'700'000'000), old_deadline}));
+
+    std::atomic<bool> reauthorized{false};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < 6; ++i) {
+        threads.emplace_back([&, i] {
+            for (int k = 0; k < 40; ++k) {
+                auto r = store.SaveUnlessSuperseded(
+                    {"renew-" + std::to_string(i * 40 + k), "r-old",
+                     types::FromEpochSeconds(1'700'001'800), old_deadline});
+                EXPECT_TRUE(r.has_value());
+                if (reauthorized.load()) {
+                    // Once `authorize` has completed, every renewal sees it.
+                    auto loaded = store.Load();
+                    EXPECT_TRUE(loaded.has_value());
+                    if (loaded) {
+                        EXPECT_EQ(loaded->refresh_expires_at, new_deadline);
+                    }
+                }
+            }
+        });
+    }
+    threads.emplace_back([&] {
+        for (int k = 0; k < 10; ++k) {
+            EXPECT_TRUE(store
+                            .Save({"auth-" + std::to_string(k), "r-new",
+                                   types::FromEpochSeconds(1'700'601'800),
+                                   new_deadline})
+                            .has_value());
+            reauthorized.store(true);
+        }
+    });
+    for (auto& t : threads) {
+        t.join();
+    }
+    auto final_tokens = store.Load();
+    ASSERT_OK(final_tokens);
+    EXPECT_EQ(final_tokens->refresh_token, "r-new");
+    EXPECT_EQ(final_tokens->refresh_expires_at, new_deadline);
     std::filesystem::remove_all(dir);
 }
 

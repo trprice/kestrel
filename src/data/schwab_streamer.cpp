@@ -389,13 +389,15 @@ SchwabStreamer::SchwabStreamer(std::shared_ptr<SchwabApi> api,
                                SocketFactory make_socket,
                                std::chrono::milliseconds takeover_reconnect,
                                Clock clock,
-                               std::chrono::milliseconds silence_timeout)
+                               std::chrono::milliseconds silence_timeout,
+                               std::chrono::milliseconds auth_retry)
     : mApi(std::move(api)),
       mTraderUrl(std::move(trader_url)),
       mMakeSocket(std::move(make_socket)),
       mTakeoverReconnect(takeover_reconnect),
       mClock(std::move(clock)),
-      mSilenceTimeout(silence_timeout) {}
+      mSilenceTimeout(silence_timeout),
+      mAuthRetry(auth_retry) {}
 
 SchwabStreamer::~SchwabStreamer() {
     std::unique_ptr<SchwabStreamerSocket> socket;
@@ -442,6 +444,7 @@ void SchwabStreamer::ReconnectAfter(std::chrono::milliseconds delay,
 
 void SchwabStreamer::ResumeLoop() {
     using SteadyClock = std::chrono::steady_clock;
+    std::string last_token_warn;
     std::unique_lock lock(mMutex);
     while (!mClosing) {
         // Due next: a reconnect, or else the silence check of a logged-in
@@ -476,7 +479,44 @@ void SchwabStreamer::ResumeLoop() {
         }
         mResumeAt.reset();
         if (!mSocket || mHalted) {
+            mAwaitingAuth = false;
+            last_token_warn.clear();
             continue;  // nobody is subscribed any more
+        }
+        if (mAwaitingAuth) {
+            const std::uint64_t generation = mGeneration;
+            lock.unlock();
+            auto token = mApi->Auth().AccessToken();
+            lock.lock();
+            if (mClosing) {
+                break;
+            }
+            if (!mSocket || mHalted) {
+                mAwaitingAuth = false;
+                last_token_warn.clear();
+                continue;
+            }
+            if (!Current(generation) || !mAwaitingAuth || mResumeAt) {
+                last_token_warn.clear();
+                continue;
+            }
+            if (!token) {
+                if (token.error().category != ErrorCategory::kAuth) {
+                    if (token.error().message != last_token_warn) {
+                        last_token_warn = token.error().message;
+                        spdlog::warn(
+                            "schwab streamer: no access token yet ({}); "
+                            "retrying",
+                            last_token_warn);
+                    }
+                } else {
+                    last_token_warn.clear();
+                }
+                mResumeAt = SteadyClock::now() + mAuthRetry;
+                continue;
+            }
+            mAwaitingAuth = false;
+            last_token_warn.clear();
         }
         spdlog::info("schwab streamer: reconnecting after {}", mResumeReason);
         auto old = std::move(mSocket);
@@ -601,6 +641,7 @@ void SchwabStreamer::Remove(std::uint64_t id) {
             socket = std::move(mSocket);
             mLoggedIn = false;
             mResumeAt.reset();
+            mAwaitingAuth = false;
         } else if (mLoggedIn && !removed.empty()) {
             SendKeys(service, "UNSUBS", removed);
         }
@@ -659,6 +700,8 @@ void SchwabStreamer::SendKeys(Service service, std::string_view command,
 void SchwabStreamer::Halt(const std::string& reason) {
     mHalted = reason;
     mLoggedIn = false;
+    mResumeAt.reset();
+    mAwaitingAuth = false;
     spdlog::error(
         "schwab streamer: stopped, so no more Schwab quotes or bars: {}",
         reason);
@@ -724,9 +767,9 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
             }
         }
         mLoggedIn = false;
-        if (mResumeAt) {
-            // A reconnect begun before the takeover was seen: logging in
-            // now would take the connection back before the wait is over.
+        if (mResumeAt || mAwaitingAuth) {
+            // A reconnect begun before the wait was set: logging in now would
+            // act before the wait is over.
             mSocket->Close();
             return;
         }
@@ -734,17 +777,20 @@ void SchwabStreamer::OnOpen(std::uint64_t generation) {
     // Not under mMutex: a renewal is a request to the token endpoint.
     auto token = mApi->Auth().AccessToken();
     std::lock_guard lock(mMutex);
-    if (!Current(generation) || mHalted || mResumeAt) {
+    if (!Current(generation) || mHalted || mResumeAt || mAwaitingAuth) {
         return;
     }
     if (!token) {
         if (token.error().category == ErrorCategory::kAuth) {
-            Halt(token.error().message);
+            spdlog::error("schwab streamer: {}; waiting for re-authorization",
+                          token.error().message);
+            mAwaitingAuth = true;
+            ReconnectAfter(mAuthRetry, "re-authorization");
         } else {
             spdlog::warn("schwab streamer: no access token to log in with: {}",
                          token.error().message);
-            mSocket->Close();
         }
+        mSocket->Close();
         return;
     }
     mLoginToken = *token;

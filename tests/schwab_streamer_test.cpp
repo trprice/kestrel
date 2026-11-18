@@ -5,6 +5,7 @@
 #include <atomic>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <thread>
 
 #include "kestrel/data/schwab_data_source.hpp"
@@ -20,13 +21,28 @@ using Event = SchwabStreamerSocket::Event;
 
 class FakeHttp : public net::HttpClient {
    public:
-    std::function<types::Result<net::HttpResponse>(const net::HttpRequest&)>
-        reply;
+    using Handler = std::function<types::Result<net::HttpResponse>(
+        const net::HttpRequest&)>;
+    std::mutex mutex;
+    Handler reply;
     std::vector<net::HttpRequest> requests;
 
+    void SetReply(Handler h) {
+        std::lock_guard lock(mutex);
+        reply = std::move(h);
+    }
+    std::size_t RequestCount() {
+        std::lock_guard lock(mutex);
+        return requests.size();
+    }
     types::Result<net::HttpResponse> Send(const net::HttpRequest& r) override {
-        requests.push_back(r);
-        return reply(r);
+        Handler h;
+        {
+            std::lock_guard lock(mutex);
+            requests.push_back(r);
+            h = reply;
+        }
+        return h(r);
     }
 };
 
@@ -141,11 +157,22 @@ class SchwabStreamerTest : public ::testing::Test {
 
     std::shared_ptr<SchwabStreamer> MakeStreamer(
         std::chrono::milliseconds takeover_reconnect,
-        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60)) {
+        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60),
+        std::chrono::milliseconds auth_retry = std::chrono::seconds(5)) {
         return std::make_shared<SchwabStreamer>(
             mApi, "https://api.test/trader/v1",
             [this] { return std::make_unique<FakeSocket>(mWire); },
-            takeover_reconnect, [this] { return mNow; }, silence_timeout);
+            takeover_reconnect, [this] { return Now(); }, silence_timeout,
+            auth_retry);
+    }
+
+    types::Timestamp Now() {
+        std::lock_guard lock(mClockMutex);
+        return mNow;
+    }
+    void SetNow(types::Timestamp t) {
+        std::lock_guard lock(mClockMutex);
+        mNow = t;
     }
 
     void TakeOver() {
@@ -154,7 +181,10 @@ class SchwabStreamerTest : public ::testing::Test {
                     R"("content":{"code":12,"msg":"This Streamer was )"
                     R"(disconnected because of another connection"}}]})");
     }
-    void TearDown() override { std::filesystem::remove_all(mDir); }
+    void TearDown() override {
+        mStreamer.reset();
+        std::filesystem::remove_all(mDir);
+    }
 
     // Subscribes `keys`, appending each quote to `out`.
     std::unique_ptr<Subscription> Subscribe(std::vector<std::string> keys,
@@ -172,6 +202,7 @@ class SchwabStreamerTest : public ::testing::Test {
     std::shared_ptr<SchwabApi> mApi;
     std::shared_ptr<Wire> mWire = std::make_shared<Wire>();
     std::shared_ptr<SchwabStreamer> mStreamer;
+    std::mutex mClockMutex;
     types::Timestamp mNow = *types::ParseIso8601("2026-11-04T20:00:00Z");
 };
 
@@ -391,6 +422,121 @@ TEST_F(SchwabStreamerTest, ADeniedLoginRenewsTheTokenOnce) {
     EXPECT_EQ(refused.error().category, types::ErrorCategory::kRejected);
 }
 
+// Waits up to five seconds for `done`.
+template <typename Done>
+bool Eventually(Done done) {
+    for (int i = 0; i < 500 && !done(); ++i) {
+        std::this_thread::sleep_for(10ms);
+    }
+    return done();
+}
+
+TEST_F(SchwabStreamerTest, WaitsForReauthorizationThenReconnects) {
+    mStreamer = MakeStreamer({}, 60s, 30ms);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+
+    mTokenHttp->SetReply([](const net::HttpRequest&) {
+        return types::Result<net::HttpResponse>(
+            std::unexpected(net::ErrorFromHttpStatus(
+                net::HttpResponse{400, R"({"error":"invalid_grant"})", {}})));
+    });
+    mWire->Fire(Event::kClose, "1006 gone");
+    mWire->Fire(Event::kOpen);
+    mWire->Respond("ADMIN", "LOGIN", 3, "Login Denied.");
+    mWire->Fire(Event::kClose, "1000");
+    mWire->Fire(Event::kOpen);  // renewal fails with invalid_grant -> kAuth
+    EXPECT_FALSE(mWire->reconnecting);
+
+    // While un-authorized, no new socket is opened and subscriptions still
+    // work.
+    std::this_thread::sleep_for(90ms);
+    EXPECT_EQ(mWire->started, 1);
+    EXPECT_EQ(mTokenHttp->RequestCount(), 1u);
+    std::vector<types::Quote> more;
+    auto second = Subscribe({"AAPL"}, more);
+    ASSERT_NE(second, nullptr);
+
+    const auto sent = mWire->sent.size();
+    const auto now = types::Now();
+    ASSERT_OK(config::SchwabTokenStore(mDir / "tokens.json")
+                  .Save({"access-2", "refresh-2", now + 30min, now + 168h}));
+    ASSERT_TRUE(Eventually([&] { return mWire->started == 2; }));
+    EXPECT_TRUE(Eventually([&] { return mWire->stopped == 1; }));
+    mWire->Connect();
+    EXPECT_EQ(mWire->sent[sent]["command"], "LOGIN");
+    EXPECT_EQ(mWire->sent[sent]["parameters"]["Authorization"], "access-2");
+    EXPECT_EQ(mWire->Last()["command"], "SUBS");
+    EXPECT_EQ(mWire->Last()["parameters"]["keys"], "AAPL,SPY");
+}
+
+TEST_F(SchwabStreamerTest, StoppingWhileAwaitingAuthCancelsTheReconnect) {
+    mStreamer = MakeStreamer({}, 60s, 30ms);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    mWire->Connect();
+
+    mTokenHttp->SetReply([](const net::HttpRequest&) {
+        return types::Result<net::HttpResponse>(
+            std::unexpected(net::ErrorFromHttpStatus(
+                net::HttpResponse{400, R"({"error":"invalid_grant"})", {}})));
+    });
+    mWire->Fire(Event::kClose, "1006 gone");
+    mWire->Fire(Event::kOpen);
+    mWire->Respond("ADMIN", "LOGIN", 3, "Login Denied.");
+    mWire->Fire(Event::kClose, "1000");
+    mWire->Fire(Event::kOpen);
+    EXPECT_FALSE(mWire->reconnecting);
+
+    sub.reset();
+    EXPECT_EQ(mWire->stopped, 1);
+    const auto now = types::Now();
+    ASSERT_OK(config::SchwabTokenStore(mDir / "tokens.json")
+                  .Save({"access-2", "refresh-2", now + 30min, now + 168h}));
+    std::this_thread::sleep_for(100ms);
+    EXPECT_EQ(mWire->started, 1);  // nobody is subscribed any more
+}
+
+TEST_F(SchwabStreamerTest, UnrecognisedRefusalWaitsThenReconnectsOnRenewal) {
+    // Expired access token: an unrecognised 4xx refusal is reported as kAuth,
+    // and SchwabAuth still retries after kRetryInterval (or re-authorization).
+    const auto issued = At("2026-11-04T20:00:00Z");
+    const config::SchwabTokenStore store(mDir / "tokens.json");
+    ASSERT_OK(store.Save({"access", "refresh", issued - 1min, issued + 72h}));
+    mAuth = std::make_shared<SchwabAuth>(
+        config::SchwabCredentials{"key", "secret"}, store, mTokenHttp,
+        "https://127.0.0.1:8182", [this] { return Now(); });
+    ASSERT_OK(mAuth->Load());
+    mApi = std::make_shared<SchwabApi>(mAuth, mHttp,
+                                       SchwabApi::Options{1000, 1000});
+    mStreamer = MakeStreamer({}, 60s, 30ms);
+
+    // FetchInfo needs a valid token first, then expire it for OnOpen.
+    SetNow(issued - 20min);
+    std::vector<types::Quote> quotes;
+    auto sub = Subscribe({"SPY"}, quotes);
+    SetNow(issued);
+    mTokenHttp->SetReply([](const net::HttpRequest&) {
+        return types::Result<net::HttpResponse>(
+            std::unexpected(net::ErrorFromHttpStatus(net::HttpResponse{
+                400, R"({"error":"unsupported_token"})", {}})));
+    });
+    mWire->Fire(Event::kOpen);
+    EXPECT_FALSE(mWire->reconnecting);
+
+    // Once the retry interval passes and renewal works again, the streamer
+    // reconnects.
+    mTokenHttp->SetReply([](const net::HttpRequest&) {
+        return Ok(R"({"expires_in":1800,"token_type":"Bearer",)"
+                  R"("refresh_token":"refresh","access_token":"recovered"})");
+    });
+    SetNow(issued + SchwabAuth::kRetryInterval);
+    ASSERT_TRUE(Eventually([&] { return mWire->started == 2; }));
+    mWire->Connect();
+    EXPECT_EQ(mWire->sent[0]["parameters"]["Authorization"], "recovered");
+}
+
 TEST_F(SchwabStreamerTest, AnotherConnectionTakingOverStopsTheStreamer) {
     std::vector<types::Quote> quotes;
     auto sub = Subscribe({"SPY"}, quotes);
@@ -408,15 +554,6 @@ TEST_F(SchwabStreamerTest, AnotherConnectionTakingOverStopsTheStreamer) {
               std::string::npos);
     EXPECT_NE(refused.error().message.find("takeover_reconnect_ms"),
               std::string::npos);
-}
-
-// Waits up to five seconds for `done`.
-template <typename Done>
-bool Eventually(Done done) {
-    for (int i = 0; i < 500 && !done(); ++i) {
-        std::this_thread::sleep_for(10ms);
-    }
-    return done();
 }
 
 // Schwab sends heartbeats whether anything trades or not, so a logged-in
@@ -782,7 +919,6 @@ TEST_F(SchwabStreamerTest, OnlyFixedTimeframesAreBuilt) {
     EXPECT_EQ(monthly.error().category, types::ErrorCategory::kInvalidArgument);
 }
 
-}  // namespace
 TEST(SchwabLevelOneMerger, ASymbolUnknownBeforeAReconnectIsTriedAgain) {
     SchwabLevelOneMerger merger;
     EXPECT_TRUE(
@@ -792,4 +928,5 @@ TEST(SchwabLevelOneMerger, ASymbolUnknownBeforeAReconnectIsTriedAgain) {
     EXPECT_EQ(Merge(merger, R"([{"key":"SPY","1":767.78}])").size(), 1u);
 }
 
+}  // namespace
 }  // namespace kestrel::data

@@ -970,6 +970,14 @@ the header of the code concerned.
       turns on TimescaleDB compression for `quotes`, `market_trades` and
       `bars` where the community edition is installed (see
       docs/database.md#compression).
+- [x] Schwab re-authorization while a process runs: a `stream` or `run`
+      started before `authorize` saved its older tokens over the new ones
+      at its next access-token renewal, so the authorization was undone
+      and expired on the old deadline. Saves now take an flock on the
+      token file's directory, a renewal never saves over a later
+      authorization, running processes take up a newer unexpired one before
+      renewing (or while refused or expired), and the streamer waits for
+      re-authorization instead of stopping on an expired or refused token.
 - [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
       confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
       and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h

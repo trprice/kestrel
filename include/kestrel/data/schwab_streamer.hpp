@@ -161,9 +161,11 @@ std::unique_ptr<SchwabStreamerSocket> MakeSchwabStreamerSocket();
 // subscription stops, and the next one connects again.
 //
 // A denied login renews the access token and reconnects; a second denial in
-// a row, or a token only re-authorizing can fix, stops the streamer. After a
-// stop the existing subscriptions get no more data, which is logged as an
-// error, and new ones are refused.
+// a row stops the streamer. After a stop the existing subscriptions get no
+// more data, which is logged as an error, and new ones are refused. When
+// `SchwabAuth` has no usable token (`kAuth`, e.g. an expired or refused
+// refresh token), the streamer closes the socket and checks again every
+// `auth_retry` until `authorize` provides a new one.
 //
 // Code 12 means another connection for this user (another Kestrel process,
 // or thinkorswim) has taken over, and reconnecting takes it back. With
@@ -192,7 +194,8 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
         SocketFactory make_socket,
         std::chrono::milliseconds takeover_reconnect = {},
         Clock clock = types::Now,
-        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60));
+        std::chrono::milliseconds silence_timeout = std::chrono::seconds(60),
+        std::chrono::milliseconds auth_retry = std::chrono::seconds(5));
     ~SchwabStreamer();
     SchwabStreamer(const SchwabStreamer&) = delete;
     SchwabStreamer& operator=(const SchwabStreamer&) = delete;
@@ -253,8 +256,9 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     // Makes mSocket a new socket and starts it. Requires mMutex.
     void StartSocket();
     // The streamer's timer thread, started with the first connection: it
-    // reconnects after a takeover or a STOP_STREAMING once mResumeAt comes,
-    // and closes a logged-in connection silent for mSilenceTimeout.
+    // reconnects after a takeover, a STOP_STREAMING, or a re-authorization
+    // wait once mResumeAt comes, and closes a logged-in connection silent for
+    // mSilenceTimeout.
     void ResumeLoop();
     // Stops this connection reconnecting by itself and has the resume thread
     // connect afresh after `delay`; `reason` is logged then ("after <reason>").
@@ -267,6 +271,7 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     const std::chrono::milliseconds mTakeoverReconnect;
     const Clock mClock;
     const std::chrono::milliseconds mSilenceTimeout;
+    const std::chrono::milliseconds mAuthRetry;
     // When the last message arrived (steady clock ticks); written on the
     // socket's thread, read by the timer thread.
     std::atomic<std::chrono::steady_clock::rep> mLastMessage{0};
@@ -289,13 +294,14 @@ class SchwabStreamer : public std::enable_shared_from_this<SchwabStreamer> {
     int mDenials = 0;                    // denied logins since the last success
     std::optional<std::string> mHalted;  // why the streamer stopped
     std::uint64_t mNextRequest = 1;
-    // When to reconnect after a takeover; until then nothing logs in.
+    // When to reconnect after a wait; until then nothing logs in.
     std::optional<std::chrono::steady_clock::time_point> mResumeAt;
     std::string mResumeReason;            // why mResumeAt was set, for the log
+    bool mAwaitingAuth = false;           // waiting for `authorize`
     bool mClosing = false;                // the destructor has begun
     std::condition_variable mResumeWake;  // with mMutex
 
-    std::thread mResumer;  // started at the first takeover
+    std::thread mResumer;  // started with the first connection
 };
 
 }  // namespace kestrel::data

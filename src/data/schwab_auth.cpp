@@ -136,14 +136,7 @@ Result<void> SchwabAuth::Load() {
             "the Schwab refresh token has expired; re-authorization required"));
     }
     std::lock_guard lock(mMutex);
-    mTokens = std::move(*tokens);
-    mRefreshRefused = false;
-    mRefusalLogged = false;
-    mLastError.reset();
-    mNextAttempt = {};
-    mSavePending = false;
-    mRotated = false;
-    mNextSave = {};
+    Adopt(std::move(*tokens));
     return {};
 }
 
@@ -157,14 +150,7 @@ Result<void> SchwabAuth::Authorize(std::string_view code) {
         return std::unexpected(tokens.error());
     }
     std::lock_guard lock(mMutex);
-    mTokens = std::move(*tokens);
-    mRefreshRefused = false;
-    mRefusalLogged = false;
-    mLastError.reset();
-    mNextAttempt = {};
-    mSavePending = false;
-    mRotated = false;
-    mNextSave = {};
+    Adopt(std::move(*tokens));
     if (auto saved = mStore.Save(*mTokens); !saved) {
         mSavePending = true;
         mRotated = true;
@@ -259,8 +245,52 @@ Result<void> SchwabAuth::Refresh(types::Timestamp now) {
     return {};
 }
 
+void SchwabAuth::Adopt(config::SchwabTokens tokens) {
+    mTokens = std::move(tokens);
+    mRefreshRefused = false;
+    mRefusalLogged = false;
+    mLastError.reset();
+    mNextAttempt = {};
+    mSavePending = false;
+    mRotated = false;
+    mNextSave = {};
+}
+
+void SchwabAuth::AdoptFromFile(config::SchwabTokens tokens) {
+    spdlog::info(
+        "{} holds usable Schwab tokens from a newer save (refresh token lasts "
+        "until {}); using them",
+        mStore.Path().string(),
+        types::FormatIso8601(tokens.refresh_expires_at));
+    Adopt(std::move(tokens));
+}
+
+bool SchwabAuth::AdoptNewerAuthorization(types::Timestamp now) {
+    auto file = mStore.Load();
+    if (!file || file->refresh_expires_at <= now) {
+        return false;
+    }
+    const bool newer_auth =
+        file->refresh_expires_at > mTokens->refresh_expires_at;
+    const bool rotated_sibling =
+        mRefreshRefused &&
+        file->refresh_expires_at == mTokens->refresh_expires_at &&
+        file->refresh_token != mTokens->refresh_token;
+    if (!newer_auth && !rotated_sibling) {
+        return false;
+    }
+    AdoptFromFile(std::move(*file));
+    return true;
+}
+
 void SchwabAuth::Save(types::Timestamp now) {
-    auto saved = mStore.Save(*mTokens);
+    auto saved = mStore.SaveUnlessSuperseded(*mTokens);
+    if (saved && saved->has_value()) {
+        // Re-authorized while this process ran: the renewal just made belongs
+        // to the older authorization, so the file's tokens take its place.
+        AdoptFromFile(std::move(**saved));
+        return;
+    }
     if (saved) {
         if (mNextSave != types::Timestamp{}) {
             spdlog::info("saved the renewed Schwab tokens to {}",
@@ -296,7 +326,8 @@ Result<std::string> SchwabAuth::AccessToken() {
             AuthError("no Schwab tokens; run `kestrel_app authorize`"));
     }
     const auto now = mClock();
-    if (mRefreshRefused || now >= mTokens->refresh_expires_at) {
+    if ((mRefreshRefused || now >= mTokens->refresh_expires_at) &&
+        !AdoptNewerAuthorization(now)) {
         return std::unexpected(AuthError(
             "the Schwab refresh token is no longer valid; re-authorization "
             "required"));
@@ -307,49 +338,66 @@ Result<std::string> SchwabAuth::AccessToken() {
     if (now + kRefreshMargin < mTokens->access_expires_at) {
         return mTokens->access_token;
     }
-    const bool usable = now < mTokens->access_expires_at;
-    if (now < mNextAttempt) {
-        if (usable) {
-            return mTokens->access_token;
-        }
-        return std::unexpected(*mLastError);
-    }
-    if (auto refreshed = Refresh(now); !refreshed) {
-        mLastError = refreshed.error();
-        mNextAttempt = now + kRetryInterval;
-        if (!mRefreshRefused && !usable && IsRefusal(refreshed.error())) {
-            // Schwab's body for a revoked refresh token has not been seen
-            // live, so one RefusesTheRefreshToken does not recognise still
-            // ends here once the access token has run out: say what to do,
-            // and fail as an authorization error (the streamer stops on it).
-            // Renewal is still tried every kRetryInterval.
-            if (!mRefusalLogged) {
-                mRefusalLogged = true;
-                spdlog::error(
-                    "Schwab keeps refusing to renew the access token ({}); "
-                    "the refresh token has probably been revoked",
-                    refreshed.error().ToString());
-                config::SchwabTokenStore::LogReauthorizationInstructions();
-            }
-            mLastError =
-                AuthError("Schwab refuses to renew the access token (" +
-                          refreshed.error().message +
-                          "); re-authorization is probably required");
-            return std::unexpected(*mLastError);
-        }
-        if (mRefreshRefused || !usable) {
-            return std::unexpected(refreshed.error());
-        }
-        spdlog::warn(
-            "could not renew the Schwab access token ({}); the current one "
-            "lasts until {}",
-            refreshed.error().ToString(),
-            types::FormatIso8601(mTokens->access_expires_at));
+    // Before renewing, take up a re-authorization made since this process
+    // read the file, whose access token may well still be good.
+    if (AdoptNewerAuthorization(now) &&
+        now + kRefreshMargin < mTokens->access_expires_at) {
         return mTokens->access_token;
     }
-    mLastError.reset();
-    mNextAttempt = {};
-    mRefusalLogged = false;
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool usable = now < mTokens->access_expires_at;
+        if (now < mNextAttempt) {
+            if (usable) {
+                return mTokens->access_token;
+            }
+            return std::unexpected(*mLastError);
+        }
+        const auto prev_deadline = mTokens->refresh_expires_at;
+        if (auto refreshed = Refresh(now); !refreshed) {
+            mLastError = refreshed.error();
+            mNextAttempt = now + kRetryInterval;
+            if (!mRefreshRefused && !usable && IsRefusal(refreshed.error())) {
+                // Schwab's body for a revoked refresh token has not been seen
+                // live, so one RefusesTheRefreshToken does not recognise still
+                // ends here once the access token has run out: say what to do,
+                // and fail as an authorization error (the streamer waits for
+                // re-authorization on it). Renewal is still tried every
+                // kRetryInterval.
+                if (!mRefusalLogged) {
+                    mRefusalLogged = true;
+                    spdlog::error(
+                        "Schwab keeps refusing to renew the access token ({}); "
+                        "the refresh token has probably been revoked (or the "
+                        "app key or secret was refused)",
+                        refreshed.error().ToString());
+                    config::SchwabTokenStore::LogReauthorizationInstructions();
+                }
+                mLastError =
+                    AuthError("Schwab refuses to renew the access token (" +
+                              refreshed.error().message +
+                              "); re-authorization is probably required");
+                return std::unexpected(*mLastError);
+            }
+            if (mRefreshRefused || !usable) {
+                return std::unexpected(refreshed.error());
+            }
+            spdlog::warn(
+                "could not renew the Schwab access token ({}); the current one "
+                "lasts until {}",
+                refreshed.error().ToString(),
+                types::FormatIso8601(mTokens->access_expires_at));
+            return mTokens->access_token;
+        }
+        mLastError.reset();
+        mNextAttempt = {};
+        mRefusalLogged = false;
+        // If Save() adopted a newer authorization from the file whose own
+        // access token is already due for renewal, renew that one next.
+        if (mTokens->refresh_expires_at <= prev_deadline ||
+            now + kRefreshMargin < mTokens->access_expires_at) {
+            break;
+        }
+    }
     return mTokens->access_token;
 }
 

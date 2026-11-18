@@ -5,6 +5,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/factory.hpp"
@@ -30,9 +31,15 @@ class FakeHttp : public net::HttpClient {
         mScript.push_back(std::unexpected(std::move(e)));
     }
     std::vector<net::HttpRequest> requests;
+    // Runs as each request is sent, before its answer (e.g. to have another
+    // process write the token file meanwhile).
+    std::function<void()> on_send;
 
     types::Result<net::HttpResponse> Send(const net::HttpRequest& r) override {
         requests.push_back(r);
+        if (auto hook = on_send) {
+            hook();
+        }
         if (mScript.empty()) {
             return types::MakeError(types::ErrorCategory::kInternal,
                                     "unscripted request");
@@ -96,6 +103,12 @@ class SchwabAuthTest : public ::testing::Test {
                     std::chrono::hours refresh_left = 72h) {
         ASSERT_OK(Store().Save({"access-1", "refresh-1", mNow + access_left,
                                 mNow + refresh_left}));
+    }
+    // What `authorize` in another process writes: fresh tokens whose refresh
+    // token lasts the full 7 days from now.
+    config::SchwabTokens Reauthorized() const {
+        return {"access-new", "refresh-new", mNow + 30min,
+                mNow + kSchwabRefreshLifetime};
     }
 
     std::filesystem::path mDir;
@@ -301,9 +314,8 @@ TEST_F(SchwabAuthTest, SchwabsOwnRefusalNeedsReauthorizationToo) {
     auto auth = MakeAuth();
     ASSERT_OK(auth->Load());
     mHttp->PushStatus(
-        400,
-        R"({"error":"refresh_token_authentication_error",)"
-        R"("error_description":"Failed refresh token authentication"})");
+        400, R"({"error":"refresh_token_authentication_error",)"
+             R"("error_description":"Failed refresh token authentication"})");
     auto token = auth->AccessToken();
     ASSERT_FALSE(token.has_value());
     EXPECT_EQ(token.error().category, types::ErrorCategory::kAuth);
@@ -335,7 +347,7 @@ TEST_F(SchwabAuthTest, OtherRefusalsAreRetried) {
 
 // A refusal worded in a way RefusesTheRefreshToken does not recognise: once
 // the access token has run out it is an authorization error (the streamer
-// stops on one), but renewal is still tried.
+// waits for re-authorization on one), but renewal is still tried.
 TEST_F(SchwabAuthTest, AnUnrecognisedRefusalOnceExpiredIsAnAuthError) {
     SaveTokens(-1min);
     auto auth = MakeAuth();
@@ -393,6 +405,135 @@ TEST_F(SchwabAuthTest, RetriesSavingARotatedRefreshToken) {
     ASSERT_OK(saved);
     EXPECT_EQ(saved->refresh_token, "refresh-2");
     EXPECT_EQ(mHttp->requests.size(), 1u);
+}
+
+TEST_F(SchwabAuthTest, TakesUpAReauthorizationBeforeRenewing) {
+    SaveTokens(30min);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    mNow += 20min;
+    const auto fresh = Reauthorized();
+    ASSERT_OK(Store().Save(fresh));  // `authorize` ran meanwhile
+
+    mNow += 6min;  // the old access token is due for renewal
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-new");
+    EXPECT_TRUE(mHttp->requests.empty());  // its access token is still good
+    EXPECT_EQ(auth->RefreshExpiresAt(), fresh.refresh_expires_at);
+
+    // Renewing from then on uses the new refresh token.
+    mNow += 26min;
+    mHttp->Push(TokenReply("access-3", "refresh-new"));
+    ASSERT_OK(auth->AccessToken());
+    ASSERT_EQ(mHttp->requests.size(), 1u);
+    EXPECT_EQ(FormValue(mHttp->requests[0].body, "refresh_token"),
+              "refresh-new");
+}
+
+TEST_F(SchwabAuthTest, ARenewalNeverOverwritesAReauthorization) {
+    SaveTokens(1min);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    const auto fresh = Reauthorized();
+    // `authorize` writes the file while the renewal's request is out.
+    mHttp->on_send = [&] { ASSERT_OK(Store().Save(fresh)); };
+    mHttp->Push(TokenReply("access-2", "refresh-1"));
+
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-new");  // the renewal's tokens are dropped
+    auto saved = Store().Load();
+    ASSERT_OK(saved);
+    EXPECT_EQ(saved->access_token, "access-new");
+    EXPECT_EQ(saved->refresh_token, "refresh-new");
+    EXPECT_EQ(saved->refresh_expires_at, fresh.refresh_expires_at);
+    EXPECT_EQ(auth->RefreshExpiresAt(), fresh.refresh_expires_at);
+
+    // If the file adopted mid-renewal already needs renewing too, AccessToken
+    // renews that authorization before returning.
+    SaveTokens(1min);
+    auto slow = MakeAuth();
+    ASSERT_OK(slow->Load());
+    config::SchwabTokens stale_access = fresh;
+    stale_access.access_expires_at = mNow + 1min;
+    mHttp->on_send = [&] {
+        mHttp->on_send = nullptr;
+        ASSERT_OK(Store().Save(stale_access));
+    };
+    mHttp->Push(TokenReply("access-old-renewed", "refresh-1"));
+    mHttp->Push(TokenReply("access-new-renewed", "refresh-new"));
+    auto renewed_new = slow->AccessToken();
+    ASSERT_OK(renewed_new);
+    EXPECT_EQ(*renewed_new, "access-new-renewed");
+    EXPECT_EQ(FormValue(mHttp->requests.back().body, "refresh_token"),
+              "refresh-new");
+}
+
+TEST_F(SchwabAuthTest, AReauthorizationEndsARefusal) {
+    SaveTokens(1min);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    mHttp->PushStatus(400, R"({"error":"invalid_grant"})");
+    auto refused = auth->AccessToken();
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().category, types::ErrorCategory::kAuth);
+
+    // Another process on the same authorization rotated the refresh token.
+    ASSERT_OK(Store().Save(
+        {"access-sib", "refresh-rotated", mNow + 30min, mNow + 72h}));
+    auto rotated = auth->AccessToken();
+    ASSERT_OK(rotated);
+    EXPECT_EQ(*rotated, "access-sib");
+
+    // Refused again, then ended by a fresh `authorize`.
+    mNow += 26min;
+    mHttp->PushStatus(400, R"({"error":"invalid_grant"})");
+    ASSERT_FALSE(auth->AccessToken().has_value());
+    ASSERT_OK(Store().Save(Reauthorized()));
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-new");
+    EXPECT_EQ(mHttp->requests.size(), 2u);
+}
+
+TEST_F(SchwabAuthTest, AReauthorizationEndsAnExpiredRefreshToken) {
+    SaveTokens(30min, 1h);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    mNow += 2h;
+    ASSERT_FALSE(auth->AccessToken().has_value());
+
+    // A later file whose own refresh token has also expired is not adopted.
+    ASSERT_OK(
+        Store().Save({"access-stale", "refresh-stale", mNow - 1h, mNow - 1s}));
+    auto stale = auth->AccessToken();
+    ASSERT_FALSE(stale.has_value());
+    EXPECT_EQ(stale.error().category, types::ErrorCategory::kAuth);
+    EXPECT_TRUE(mHttp->requests.empty());
+
+    ASSERT_OK(Store().Save(Reauthorized()));
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-new");
+    EXPECT_TRUE(mHttp->requests.empty());
+}
+
+TEST_F(SchwabAuthTest, AnOlderFileIsOverwrittenAsBefore) {
+    SaveTokens(1min);
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    // Another process from the same authorization saved its own renewal: same
+    // deadline, so this renewal still saves over it.
+    ASSERT_OK(
+        Store().Save({"access-other", "refresh-1", mNow + 10min, mNow + 72h}));
+    mHttp->Push(TokenReply("access-2", "refresh-1"));
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-2");
+    auto saved = Store().Load();
+    ASSERT_OK(saved);
+    EXPECT_EQ(saved->access_token, "access-2");
 }
 
 TEST_F(SchwabAuthTest, PastTheRefreshDeadlineNothingIsRequested) {

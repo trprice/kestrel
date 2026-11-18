@@ -51,6 +51,14 @@ types::Result<std::string> SchwabCodeFromRedirect(std::string_view pasted);
 // passes, or Schwab refuses the refresh token, only a new Authorize() (the
 // `authorize` command) helps.
 //
+// `authorize` may run while another process holds tokens from an older
+// authorization. Such a process takes up the newer unexpired one from the
+// token file (one with a later refresh deadline, or a rotated refresh token
+// on the same authorization once ours was refused) before it renews and while
+// its own refresh token is refused or expired, never saves a renewal over a
+// later authorization, and renews once more if a file adopted mid-renewal
+// already needs an access-token refresh.
+//
 // No token, code or secret is ever logged, nor put in an error message.
 class SchwabAuth {
    public:
@@ -98,7 +106,16 @@ class SchwabAuth {
         const std::string& old_refresh_token,
         types::Timestamp refresh_expires_at, types::Timestamp now);
     types::Result<void> Refresh(types::Timestamp now);  // requires mMutex
-    // Saves mTokens; on failure logs and schedules a retry. Requires mMutex.
+    // Replaces mTokens and clears the renewal and save state. Requires mMutex.
+    void Adopt(config::SchwabTokens tokens);
+    // Adopt(), logging that the token file's newer authorization is used.
+    void AdoptFromFile(config::SchwabTokens tokens);
+    // Adopts the token file's tokens if they are unexpired and from a later
+    // authorization (or hold a rotated refresh token after ours was refused).
+    // Requires mMutex and mTokens.
+    bool AdoptNewerAuthorization(types::Timestamp now);
+    // Saves mTokens, or adopts the file's if it holds a newer authorization;
+    // on failure logs and schedules a retry. Requires mMutex.
     void Save(types::Timestamp now);
 
     const config::SchwabCredentials mCredentials;
@@ -115,7 +132,7 @@ class SchwabAuth {
     types::Timestamp mNextAttempt{};
     std::optional<types::Error> mLastError;  // of the last failed renewal
     bool mSavePending = false;  // mTokens is newer than the token file
-    bool mRotated = false;  // ... and holds a refresh token the file lacks
+    bool mRotated = false;      // ... and holds a refresh token the file lacks
     types::Timestamp mNextSave{};  // when to retry a failed save
 };
 

@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <spdlog/spdlog.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -16,6 +17,51 @@ namespace kestrel::config {
 
 using types::ErrorCategory;
 using types::MakeError;
+
+namespace {
+
+// An exclusive flock on the token file's directory for as long as it lives,
+// so a save never lands between another process's (or thread's) check of the
+// file and its write. The directory, not a lock file beside the tokens, so
+// nothing is left behind. If the lock cannot be taken (e.g. a filesystem that
+// refuses directory locks) the save goes ahead unlocked with a warning.
+class DirectoryLock {
+   public:
+    explicit DirectoryLock(const std::filesystem::path& file) {
+        auto dir = file.parent_path();
+        if (dir.empty()) {
+            dir = ".";
+        }
+        mFd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (mFd < 0) {
+            return;
+        }
+        while (::flock(mFd, LOCK_EX) != 0) {
+            if (errno != EINTR) {
+                spdlog::warn("could not lock {}: {}", dir.string(),
+                             std::strerror(errno));
+                break;
+            }
+        }
+    }
+    ~DirectoryLock() {
+        if (mFd >= 0) {
+            ::close(mFd);  // releases the lock
+        }
+    }
+    DirectoryLock(const DirectoryLock&) = delete;
+    DirectoryLock& operator=(const DirectoryLock&) = delete;
+    DirectoryLock(DirectoryLock&&) = delete;
+    DirectoryLock& operator=(DirectoryLock&&) = delete;
+
+   private:
+    int mFd = -1;
+};
+
+types::Result<void> WriteTokens(const std::filesystem::path& path,
+                                const SchwabTokens& t);
+
+}  // namespace
 
 types::Result<SchwabTokens> SchwabTokenStore::Load() const {
     std::ifstream in(mPath);
@@ -51,6 +97,27 @@ types::Result<SchwabTokens> SchwabTokenStore::Load() const {
 }
 
 types::Result<void> SchwabTokenStore::Save(const SchwabTokens& t) const {
+    const DirectoryLock lock(mPath);
+    return WriteTokens(mPath, t);
+}
+
+types::Result<std::optional<SchwabTokens>>
+SchwabTokenStore::SaveUnlessSuperseded(const SchwabTokens& t) const {
+    const DirectoryLock lock(mPath);
+    if (auto file = Load();
+        file && file->refresh_expires_at > t.refresh_expires_at) {
+        return std::optional<SchwabTokens>(std::move(*file));
+    }
+    if (auto written = WriteTokens(mPath, t); !written) {
+        return std::unexpected(written.error());
+    }
+    return std::optional<SchwabTokens>();
+}
+
+namespace {
+
+types::Result<void> WriteTokens(const std::filesystem::path& path,
+                                const SchwabTokens& t) {
     const nlohmann::json j = {
         {"access_token", t.access_token},
         {"refresh_token", t.refresh_token},
@@ -65,7 +132,7 @@ types::Result<void> SchwabTokenStore::Save(const SchwabTokens& t) const {
     // the tokens are never readable by others, and synced before the rename
     // (and the directory after), so a power loss cannot leave it empty.
     static std::atomic<unsigned> counter{0};
-    auto tmp = mPath;
+    auto tmp = path;
     tmp +=
         ".tmp." + std::to_string(::getpid()) + "." + std::to_string(counter++);
     // Removes the temporary file; `error` is the errno of what failed.
@@ -101,12 +168,12 @@ types::Result<void> SchwabTokenStore::Save(const SchwabTokens& t) const {
     if (::close(fd) != 0) {
         return fail("failed writing " + tmp.string(), errno);
     }
-    if (::rename(tmp.c_str(), mPath.c_str()) != 0) {
-        return fail("cannot replace " + mPath.string(), errno);
+    if (::rename(tmp.c_str(), path.c_str()) != 0) {
+        return fail("cannot replace " + path.string(), errno);
     }
     // The rename itself is durable once the directory is synced; a failure
     // here leaves the new file in place, so it is only logged.
-    auto dir = mPath.parent_path();
+    auto dir = path.parent_path();
     if (dir.empty()) {
         dir = ".";
     }
@@ -120,6 +187,8 @@ types::Result<void> SchwabTokenStore::Save(const SchwabTokens& t) const {
     }
     return {};
 }
+
+}  // namespace
 
 SchwabTokenHealth SchwabTokenStore::Check(const SchwabTokens& tokens,
                                           types::Timestamp now) {
