@@ -176,7 +176,9 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Volatility squeeze breakout: Bollinger bands inside Keltner channels,
       entered as they widen (needs `Keltner`)
 - [ ] Pairs trading: the z-score of two symbols' spread (long-only on spot)
-- [ ] `momentum_rotation` ranked and sized by volatility (`Atr` / close)
+- [ ] `momentum_rotation` ranked and sized by volatility (`Atr` / close).
+      Screened in Nov 2026 (docs/strategy-tests.md): neither helped; low
+      priority
 - [ ] Grid trading and dollar-cost averaging
 - [ ] Session VWAP reversion (needs `SessionVwap`)
 - [ ] `mean_reversion`: keep the position across a restart, and a resting

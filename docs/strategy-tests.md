@@ -33,6 +33,7 @@ Unless a test says otherwise:
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
+| Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout, or (the crypto ensemble) halves the drawdown but made 0% |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
 
 ## Market maker (ZEC/USDT)
@@ -488,6 +489,57 @@ bars any long position makes money.
     0.14% a trade on `1h` crypto.
 - Rejected: no variant beats holding the symbol, and the gap adds nothing
   over a plain 3-bar move of the same size.
+
+## Published strategies, screened (Nov 2026)
+
+Five ideas from the literature, screened before building any of them in
+Kestrel, in a daily-bar simulation on the same database bars and costs
+(7 bps a side on crypto; 5 bps a side on ETFs). Prices only, so neither
+side earns dividends. Settings were chosen on a development period, then
+fixed and run once on a holdout, as so many ideas have now been tried on
+the same years:
+
+- **Crypto:** develop on Jan 2022 – Dec 2024, hold out Jan 2025 – Nov
+  2026. Universe: `momentum_rotation`'s 11 USDT pairs, filled at the
+  daily close.
+- **ETFs:** develop on 2016–2022, hold out Jan 2023 – Nov 2026. Idle cash
+  earns BIL (from Sep 2018; SHY, BIL and IEF were fetched for this).
+
+| Idea | Development | Holdout | Benchmark (holdout) |
+|---|---|---|---|
+| Crypto trend ensemble: Donchian breakouts over 5–80 days, volatility-sized | +112%, 36% fall (BTC +130%, 67%) | +0%, 28% fall | BTC −28%, 53% fall; the 11 coins held +89% |
+| `momentum_rotation` ranked by return / volatility | +204% (current: +246%) | +159% (current: +139%) | |
+| ... and sized by inverse volatility | +188% | +17% | |
+| Turn of the month, SPY, day −2 to +3 | +18% (19% invested) | +21%; +7% with idle cash at 0% | SPY +92% |
+| Dual momentum, SPY / EFA, else IEF | +3% (from Oct 2019) | +66% | SPY +92%, the same 19% fall |
+| GTAA-5 (SPY, EFA, EEM, IEF, GLD over the 10-month average) | +8%, 8% fall | +35%, 10% fall | the five held: +50%, 10% fall |
+| IBS < 0.2 over the 200-day average, 9 ETFs, 3 slots, next open | +59%, 18% fall (SPY +90%, 34%) | −5% | SPY +92% |
+
+- **None is worth building.**
+- **The crypto trend ensemble did cut the drawdown, but earned nothing in
+  the holdout.** It fell about half as far as holding BTC in both periods,
+  but made 0% in 2025–2026, or −18% without ZEC. Volatility sizing gave it
+  little of ZEC's rally, as ZEC was the most volatile coin. Other lookbacks
+  and volatility targets did no better (−17% to +17%).
+- **Volatility-adjusted rotation:** the risk-adjusted ranking was worse in
+  development and better in the holdout, which is noise. Inverse-volatility
+  sizing lost in both periods. Rotation's results are still mostly ZEC:
+  without it, today's rotation lost 37% in the holdout.
+- **Turn of the month:** its days earned about twice SPY's daily rate in
+  development, but less than the other days in the holdout. With idle
+  cash at 0% it made +7% to SPY's +92%.
+- **Dual momentum and GTAA lost to holding:** by 26 points and by 15,
+  with the same worst fall. Dual momentum missed 2020's rebound and still
+  fell with SPY in 2022.
+- **IBS lost in the holdout,** as Connors RSI(2) on ETFs suggested (only
+  +0.02% a trade over drift). Low-IBS closes are followed by about
+  +8 bps overnight, against 3–4 bps on an average night, but that is
+  smaller than a 10 bps round trip. Filling the basket at the close or the
+  next open, or dropping the trend filter, made no difference in the
+  holdout (−5% to +4%).
+- **Intraday ideas (opening range on "stocks in play", SPY noise area)**
+  were not tested. They need years of 1-minute bars and, for the first, a
+  scanner across thousands of stocks.
 
 ## Paper runs
 
