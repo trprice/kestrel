@@ -55,6 +55,22 @@ inline types::Result<std::shared_ptr<db::Database>> ConnectTestDatabase() {
     if (auto migrated = shared->Migrate(); !migrated) {
         return std::unexpected(migrated.error());
     }
+    // Migrate's background compression policy would compress the test data's
+    // old chunks (1970, 2023) under tests written for plain ones: only an
+    // uncompressed chunk rejects an upsert batch with a duplicate key, say.
+    // The test database keeps the policies, which a test checks, but never
+    // runs them; a test that wants a compressed chunk compresses it itself.
+    // No-ops on TimescaleDB's Apache build, which has no compression.
+    (void)shared->Query(
+        "SELECT alter_job(job_id, scheduled => false) "
+        "FROM timescaledb_information.jobs "
+        "WHERE proc_name = 'policy_compression' AND scheduled "
+        "AND hypertable_schema = current_schema()");
+    (void)shared->Query(
+        "SELECT decompress_chunk(format('%I.%I', chunk_schema, chunk_name)"
+        "::regclass, if_compressed => true) "
+        "FROM timescaledb_information.chunks "
+        "WHERE is_compressed AND hypertable_schema = current_schema()");
     return shared;
 }
 
