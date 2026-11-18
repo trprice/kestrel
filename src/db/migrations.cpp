@@ -159,8 +159,25 @@ CREATE TABLE strategy_state (
     saved_at TIMESTAMPTZ NOT NULL
 );
 )sql"},
+        // Every quote query names the venue and symbol: quotes_seq_unique
+        // (venue, symbol, received_time, seq) serves the time ranges and
+        // quotes_venue_symbol_seq the last seq, so these two only took space
+        // (over a third of the table's indexes).
+        {10, "drop redundant quote indexes", R"sql(
+DROP INDEX IF EXISTS quotes_venue_symbol_time;
+DROP INDEX IF EXISTS quotes_received_time_idx;
+)sql"},
     };
     return kMigrations;
+}
+
+const std::vector<Compression>& Compressions() {
+    static const std::vector<Compression> kCompressions = {
+        {"quotes", "venue, symbol", "received_time, seq", "2 days"},
+        {"market_trades", "venue, symbol", "trade_time, trade_id", "14 days"},
+        {"bars", "venue, symbol, timeframe", "open_time", "7 days"},
+    };
+    return kCompressions;
 }
 
 }  // namespace kestrel::db

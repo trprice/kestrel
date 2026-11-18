@@ -25,6 +25,60 @@ Then add a `[database]` section to the config; see
 [configuration.md](configuration.md#database). Schema migrations are applied
 automatically on startup (`src/db/migrations.cpp`, append-only).
 
+### Compression
+
+Recorded quotes are the bulk of the database: about 320 MB a session for 33
+Schwab symbols uncompressed. Where TimescaleDB offers compression, each
+migration run turns it on (once) for three hypertables, with a background
+policy that compresses each chunk once its whole range is old enough:
+
+| Table | Compressed after | Segments | Ordered by |
+|---|---|---|---|
+| `quotes` | 2 days (1-day chunks) | venue, symbol | received time, seq |
+| `market_trades` | 14 days (7-day chunks) | venue, symbol | trade time, trade ID |
+| `bars` | 7 days (30-day chunks) | venue, symbol, timeframe | open time |
+
+Compressed chunks still take inserts and upserts (a backfill, or `bars
+--store` re-pulling a range), only more slowly, and read as before; rows
+written into a compressed chunk stay uncompressed until the background policy
+recompresses the chunk.
+
+Compression requires TimescaleDB 2.11 or newer in the community edition.
+Debian's and Ubuntu's `postgresql-NN-timescaledb` package is the Apache-only
+build (`SHOW timescaledb.license` says `apache`), which has none; there (and on
+builds older than 2.11) the tables stay uncompressed and Kestrel works the
+same. To get it, swap in Timescale's own package once packagecloud publishes a
+version for your Ubuntu codename at least as new as the `extversion` already in
+the database (PostgreSQL 18 shown; TimescaleDB cannot downgrade an existing
+extension, and this stops the database briefly):
+
+```sh
+sudo -u postgres psql -X -d kestrel -c 'SELECT extversion FROM pg_extension WHERE extname = '\''timescaledb'\'';'
+sudo mkdir -p /etc/apt/keyrings
+wget -qO- https://packagecloud.io/timescale/timescaledb/gpgkey |
+    sudo gpg --dearmor -o /etc/apt/keyrings/timescaledb.gpg
+echo "deb [signed-by=/etc/apt/keyrings/timescaledb.gpg] https://packagecloud.io/timescale/timescaledb/ubuntu/ $(lsb_release -cs) main" |
+    sudo tee /etc/apt/sources.list.d/timescaledb.list
+sudo apt update
+apt-cache policy timescaledb-2-postgresql-18   # check Candidate >= extversion above
+sudo systemctl stop postgresql
+sudo apt remove postgresql-18-timescaledb   # the files only; the data stays
+sudo apt install timescaledb-2-postgresql-18
+sudo systemctl start postgresql
+# Each database with the extension, first thing after the restart:
+sudo -u postgres psql -X -d kestrel -c 'ALTER EXTENSION timescaledb UPDATE;'
+```
+
+Then `SHOW timescaledb.license` says `timescale`, and the next command that
+opens the database logs `database: compressing quotes chunks older than 2
+days` (and the same for the other two). The policy compresses the existing
+old chunks at its first run; to do it at once:
+
+```sql
+SELECT compress_chunk(c, if_not_compressed => true)
+FROM show_chunks('quotes', older_than => INTERVAL '2 days') c;
+```
+
 ## Tables
 
 | Table / view | Written by | Contents |
@@ -74,8 +128,8 @@ a `seq`, counted per venue and symbol by `QuoteWriter` and continued from the
 database after a restart, so arrival order survives quotes that share a
 millisecond; reads are ordered by it. `bookTicker` updates are frequent:
 expect many rows per symbol per minute. Quotes are the one table that grows
-fast (tens of MB a day per symbol); see the retention item in
-[TODO.md](../TODO.md).
+fast (about 10 MB a session per stock symbol uncompressed, more on busy crypto
+pairs); see the retention item in [TODO.md](../TODO.md).
 
 ### Trade history, for backtests without recorded quotes
 

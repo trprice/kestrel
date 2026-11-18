@@ -3,6 +3,8 @@
 #include <libpq-fe.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <charconv>
 #include <deque>
 #include <string_view>
 
@@ -281,8 +283,109 @@ Result<void> Database::Migrate() {
             return fail(std::move(err));
         }
     }
+    EnableCompression();
     unlock();
     return {};
+}
+
+namespace {
+
+// DML (inserts with ON CONFLICT and upserts) on compressed chunks requires
+// TimescaleDB 2.11+.
+bool CompressionSupportedVersion(std::string_view v) {
+    const auto dot = v.find('.');
+    if (dot == std::string_view::npos) {
+        return false;
+    }
+    int major = 0;
+    int minor = 0;
+    const auto [p1, e1] = std::from_chars(v.data(), v.data() + dot, major);
+    if (e1 != std::errc{} || p1 != v.data() + dot) {
+        return false;
+    }
+    const auto rest = v.substr(dot + 1);
+    const auto end =
+        std::min(rest.find_first_not_of("0123456789"), rest.size());
+    const auto [p2, e2] =
+        std::from_chars(rest.data(), rest.data() + end, minor);
+    if (e2 != std::errc{} || end == 0 || p2 != rest.data() + end) {
+        return false;
+    }
+    return major > 2 || (major == 2 && minor >= 11);
+}
+
+}  // namespace
+
+void Database::EnableCompression() {
+    // Compression is in TimescaleDB's community edition (license
+    // "timescale"); the Apache-only build has none.
+    auto license = Query("SELECT current_setting('timescaledb.license', true)");
+    if (!license) {
+        spdlog::warn(
+            "database: cannot read the TimescaleDB license: {}; "
+            "compression not checked",
+            license.error().ToString());
+        return;
+    }
+    if (license->empty() || license->front().empty() ||
+        license->front().front() != "timescale") {
+        spdlog::debug(
+            "database: TimescaleDB's Apache build has no "
+            "compression; the hypertables stay uncompressed");
+        return;
+    }
+    auto ext_ver = Query(
+        "SELECT extversion FROM pg_extension WHERE extname = "
+        "'timescaledb'");
+    if (!ext_ver || ext_ver->empty() || ext_ver->front().empty() ||
+        !ext_ver->front().front()) {
+        spdlog::warn(
+            "database: cannot read the TimescaleDB version; compression not "
+            "checked");
+        return;
+    }
+    if (!CompressionSupportedVersion(*ext_ver->front().front())) {
+        spdlog::warn(
+            "database: TimescaleDB {} is older than 2.11 (needed for upserts "
+            "into compressed chunks); the hypertables stay uncompressed",
+            *ext_ver->front().front());
+        return;
+    }
+    auto enabled = Query(
+        "SELECT hypertable_name FROM timescaledb_information.hypertables "
+        "WHERE hypertable_schema = current_schema() AND "
+        "compression_enabled");
+    if (!enabled) {
+        spdlog::warn(
+            "database: cannot read which hypertables are "
+            "compressed: {}",
+            enabled.error().ToString());
+        return;
+    }
+    for (const auto& c : Compressions()) {
+        const bool on = std::ranges::any_of(*enabled, [&](const Row& row) {
+            return !row.empty() && row.front() == c.table;
+        });
+        if (on) {
+            continue;
+        }
+        // Constants from migrations.cpp, not input. Bound the lock wait so a
+        // startup never blocks writers behind a long backtest read.
+        const std::string table = c.table;
+        const std::string script =
+            "SET LOCAL lock_timeout = '5s';\nALTER TABLE " + table +
+            " SET (timescaledb.compress, timescaledb.compress_segmentby = '" +
+            c.segment_by + "', timescaledb.compress_orderby = '" + c.order_by +
+            "');\nSELECT add_compression_policy('" + table + "', INTERVAL '" +
+            c.compress_after + "', if_not_exists => true);";
+        if (auto ok = ExecScript(script); !ok) {
+            spdlog::warn("database: cannot turn on compression for {}: {}",
+                         table, ok.error().ToString());
+            continue;
+        }
+        spdlog::info("database: compressing {} chunks older than {}", table,
+                     c.compress_after);
+    }
 }
 
 }  // namespace kestrel::db

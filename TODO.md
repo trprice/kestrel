@@ -965,6 +965,11 @@ the header of the code concerned.
       its universe the account holds as held, so a restarted run sells or
       keeps what the last one bought instead of stranding it (off by
       default: for an account of its own).
+- [x] Database size: migration 10 drops two quote indexes no query used
+      (over a third of the table's indexes, 1.8 to 1.1 GB), and `Migrate`
+      turns on TimescaleDB compression for `quotes`, `market_trades` and
+      `bars` where the community edition is installed (see
+      docs/database.md#compression).
 - [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
       confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
       and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h

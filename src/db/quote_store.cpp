@@ -147,10 +147,33 @@ Result<std::vector<types::Quote>> QuoteStore::Load(const std::string& venue,
 
 Result<std::int64_t> QuoteStore::LastSeq(const std::string& venue,
                                          const types::Symbol& symbol) {
+    // Find the newest timestamp first via ordered ChunkAppend (stops at the
+    // newest chunk for this symbol), then take MAX(seq) over its last hour so
+    // older compressed chunks are pruned instead of decompressed, while small
+    // clock steps across quotes or restarts still count. A clock step > 1 h
+    // could restart seq below an older maximum; rows are still kept (the
+    // conflict key includes received_time), only seq's global monotonicity
+    // across that jump is lost.
+    auto latest = mDatabase->Query(
+        "SELECT received_time - INTERVAL '1 hour', received_time FROM quotes "
+        "WHERE venue = $1 AND symbol = $2 "
+        "ORDER BY received_time DESC, seq DESC LIMIT 1",
+        {venue, symbol});
+    if (!latest) {
+        return std::unexpected(latest.error());
+    }
+    if (latest->empty()) {
+        return 0;
+    }
+    if ((*latest)[0].size() < 2 || !(*latest)[0][0] || !(*latest)[0][1]) {
+        return MakeError(ErrorCategory::kParse,
+                         "quotes: empty latest timestamp row");
+    }
     auto rows = mDatabase->Query(
         "SELECT COALESCE(MAX(seq), 0) FROM quotes WHERE venue = $1 AND "
-        "symbol = $2",
-        {venue, symbol});
+        "symbol = $2 AND received_time >= $3::timestamptz AND "
+        "received_time <= $4::timestamptz",
+        {venue, symbol, *(*latest)[0][0], *(*latest)[0][1]});
     if (!rows) {
         return std::unexpected(rows.error());
     }
