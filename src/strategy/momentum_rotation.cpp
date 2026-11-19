@@ -4,21 +4,15 @@
 #include <stdexcept>
 #include <utility>
 
-#include "kestrel/strategy/orders.hpp"
 #include "kestrel/types/timeframe.hpp"
 
 namespace kestrel::strategy {
 
 using types::Decimal;
-using types::OrderState;
 using types::Rounding;
 using types::Side;
 
 namespace {
-
-bool Closed(OrderState state) {
-    return state == OrderState::kFilled || ClosedUnfilled(state);
-}
 
 std::string Percent(const Decimal& fraction) {
     const Decimal pct =
@@ -26,32 +20,21 @@ std::string Percent(const Decimal& fraction) {
     return (pct.Sign() > 0 ? "+" : "") + pct.ToString() + "%";
 }
 
-}  // namespace
-
-MomentumRotation::MomentumRotation(MomentumRotationParams params)
-    : mParams(std::move(params)) {
-    if (mParams.symbols.size() < 2) {
+// The parameters, checked before the book is built from them.
+const MomentumRotationParams& Checked(const MomentumRotationParams& params) {
+    if (params.symbols.size() < 2) {
         throw std::invalid_argument(
             "momentum_rotation needs two symbols or more");
     }
-    for (const auto& symbol : mParams.symbols) {
-        const auto parts = types::SplitSymbol(symbol);
-        if (!parts || !parts->quote) {
-            throw std::invalid_argument("symbol " + symbol +
-                                        " has no quote asset");
-        }
-        if (!mBase.emplace(symbol, parts->base).second) {
-            throw std::invalid_argument("symbol " + symbol +
-                                        " is listed twice");
-        }
-        if (mQuote.empty()) {
-            mQuote = *parts->quote;
-        } else if (*parts->quote != mQuote) {
-            throw std::invalid_argument(
-                "all symbols must share one quote asset (" + mQuote + ", " +
-                *parts->quote + ")");
-        }
-    }
+    return params;
+}
+
+}  // namespace
+
+MomentumRotation::MomentumRotation(MomentumRotationParams params)
+    : mParams(std::move(params)),
+      mBook(Checked(mParams).symbols, mParams.timeframe),
+      mGate(mParams.symbols.size()) {
     if (mParams.lookback_bars == 0 || mParams.rebalance_bars == 0 ||
         mParams.top_n == 0) {
         throw std::invalid_argument(
@@ -85,22 +68,8 @@ void MomentumRotation::OnBar(Context& context, const types::Symbol& symbol,
         std::ranges::find(mParams.symbols, symbol) == mParams.symbols.end()) {
         return;
     }
-    if (!mPeriod || bar.open_time > *mPeriod) {
-        // A new period: the last one, if a bar of it never came, is ranked
-        // with what did.
-        if (mPeriod && !mDone && !mSeen.empty()) {
-            Period(context, *mPeriod);
-        }
-        mPeriod = bar.open_time;
-        mSeen.clear();
-        mDone = false;
-    } else if (bar.open_time < *mPeriod || mDone) {
-        return;  // a period already ranked
-    }
-    mSeen.insert(symbol);
-    if (mSeen.size() == mParams.symbols.size()) {
-        mDone = true;
-        Period(context, *mPeriod);
+    for (const auto period : mGate.Add(symbol, bar.open_time)) {
+        Period(context, period);
     }
 }
 
@@ -125,99 +94,29 @@ void MomentumRotation::OnSessionOpen(Context& context) {
 void MomentumRotation::OnStart(Context& context) {
     // The coins of the universe the account already holds: with
     // adopt_holdings, counted as held (a restart picks up what the last run
-    // bought); else neither counted nor sold, and said so.
-    auto balances = context.Venue().GetBalances();
-    if (!balances) {
-        if (mParams.adopt_holdings) {
-            context.Log().Warn(
-                "cannot read the account's balances: {}; nothing adopted",
-                balances.error().ToString());
-        }
-        return;
-    }
-    for (const auto& balance : *balances) {
-        for (const auto& [symbol, base] : mBase) {
-            if (balance.asset != base || balance.total.Sign() <= 0) {
-                continue;
-            }
-            const std::string amount = balance.total.Normalized().ToString();
-            if (!mParams.adopt_holdings) {
-                context.Log().Warn(
-                    "the account holds {} {}, which this run did not buy: it "
-                    "is not counted, and not sold (adopt_holdings counts it)",
-                    amount, base);
-            } else if (balance.available.Sign() > 0) {
-                // What is free to sell: a part locked in an order is not.
-                mHeld[symbol] = balance.available;
-                context.Log().Info(
-                    "adopting {} {} the account holds: held from now on, "
-                    "sold if ranked out",
-                    balance.available.Normalized().ToString(), base);
-            }
-        }
-    }
-}
-
-bool MomentumRotation::Reconcile(Context& context) {
-    // An order whose closing update never came (a missed poll) would hold up
-    // every rebalance: ask the venue.
-    for (auto it = mOrders.begin(); it != mOrders.end();) {
-        auto status = context.Venue().GetOrder(it->first);
-        const bool gone = (status && Closed(status->state)) ||
-                          (!status && status.error().category ==
-                                          types::ErrorCategory::kNotFound);
-        if (gone) {
-            context.Log().Warn("order {} had closed unnoticed", it->first);
-            const types::Symbol sym = status && !status->symbol.empty()
-                                          ? status->symbol
-                                          : it->second.symbol;
-            if (status && status->filled_quantity > it->second.filled &&
-                !sym.empty()) {
-                const Decimal delta =
-                    status->filled_quantity - it->second.filled;
-                Decimal& held = mHeld[sym];
-                held = it->second.sell ? std::max(held - delta, Decimal())
-                                       : held + delta;
-                mCounted[it->first] += delta;
-            }
-            if (it->second.sell && !sym.empty()) {
-                mSelling.erase(sym);
-            }
-            it = mOrders.erase(it);
-        } else {
-            ++it;
-        }
-    }
-    return mOrders.empty();
-}
-
-Decimal MomentumRotation::Sellable(Context& context,
-                                   const types::Symbol& symbol) const {
-    const auto it = mHeld.find(symbol);
-    if (it == mHeld.end() || it->second.Sign() <= 0) {
-        return Decimal();
-    }
-    auto info = context.SymbolInfo(symbol);
-    if (!info) {
-        return Decimal();
-    }
-    const Decimal quantity =
-        it->second.RoundToIncrement(info->lot_size, Rounding::kDown);
-    if (quantity < info->min_order_size ||
-        (info->min_notional.Sign() > 0 && LastClose(context, symbol) &&
-         quantity * *LastClose(context, symbol) < info->min_notional)) {
-        return Decimal();  // dust: as good as not held
-    }
-    return quantity;
+    // bought, and sells it if it is ranked out); else neither counted nor
+    // sold, and said so.
+    mBook.AdoptHoldings(context, mParams.adopt_holdings);
 }
 
 void MomentumRotation::Rebalance(Context& context) {
-    if (!mOrders.empty() && !Reconcile(context)) {
-        context.Log().Warn(
-            "{} order(s) from the last rebalance still out; skipping this one",
-            mOrders.size());
-        return;
+    if (mBook.OrdersOut()) {
+        for (const auto& closed : mBook.Reconcile(context)) {
+            if (closed.sell && !closed.symbol.empty()) {
+                mSelling.erase(closed.symbol);
+            }
+        }
+        if (mBook.OrdersOut()) {
+            context.Log().Warn(
+                "{} order(s) from the last rebalance still out; skipping this "
+                "one",
+                mBook.OrderCount());
+            return;  // its buys wait on its sells
+        }
     }
+    // Buys queued by an earlier rebalance are superseded by this one, even
+    // when it ends without trading.
+    mEntries.clear();
     // Momentum of each symbol with a bar for the ranked period and one
     // lookback_bars of time before it.
     const auto step = *types::FixedDuration(mParams.timeframe);
@@ -286,7 +185,7 @@ void MomentumRotation::Rebalance(Context& context) {
     // (and keeps its slot) until it can be.
     std::size_t kept = 0;
     for (const auto& symbol : mParams.symbols) {
-        const Decimal quantity = Sellable(context, symbol);
+        const Decimal quantity = mBook.Sellable(context, symbol);
         if (quantity.Sign() <= 0) {
             continue;
         }
@@ -294,19 +193,19 @@ void MomentumRotation::Rebalance(Context& context) {
             ++kept;
             continue;
         }
-        if (Place(context, symbol, Side::kSell, quantity)) {
-            mSelling[symbol] = mHeld[symbol] - quantity;
+        if (mBook.Place(context, symbol, Side::kSell, quantity)) {
+            mSelling[symbol] = mBook.Held(symbol) - quantity;
         } else {
             ++kept;  // still held
         }
     }
     // Buy what entered it, into the slots left, once those sells are done.
-    mEntries.clear();
     for (const auto& [momentum, symbol] : ranked) {
         if (kept + mEntries.size() >= mParams.top_n) {
             break;
         }
-        if (targets.contains(symbol) && Sellable(context, symbol).IsZero()) {
+        if (targets.contains(symbol) &&
+            mBook.Sellable(context, symbol).IsZero()) {
             mEntries.push_back(symbol);
         }
     }
@@ -314,19 +213,14 @@ void MomentumRotation::Rebalance(Context& context) {
 }
 
 void MomentumRotation::TryEnter(Context& context) {
-    if (mEntries.empty()) {
-        return;
-    }
-    if (std::ranges::any_of(
-            mOrders, [](const auto& order) { return order.second.sell; })) {
-        return;  // a sell is still out
+    if (mEntries.empty() || mBook.SellOut()) {
+        return;  // nothing to buy, or a sell is still out
     }
     for (const auto& [symbol, after] : mSelling) {
-        const auto it = mHeld.find(symbol);
         // Its fill not seen yet (equity would count it twice); dust left by
         // the sell is as good as sold.
-        if (it != mHeld.end() && it->second > after &&
-            Sellable(context, symbol).Sign() > 0) {
+        if (mBook.Held(symbol) > after &&
+            mBook.Sellable(context, symbol).Sign() > 0) {
             return;
         }
     }
@@ -336,30 +230,25 @@ void MomentumRotation::TryEnter(Context& context) {
 
 void MomentumRotation::Enter(Context& context) {
     const auto entries = std::exchange(mEntries, {});
-    const auto equity = Equity(context);
-    auto balances = context.Venue().GetBalances();
-    if (!equity || !balances) {
+    const auto equity = mBook.Equity(context);
+    auto cash = mBook.FreeCash(context);
+    if (!equity || !cash) {
         context.Log().Warn("cannot value the account; no buys");
         return;
-    }
-    Decimal cash;
-    for (const auto& balance : *balances) {
-        if (balance.asset == mQuote) {
-            cash = balance.available;
-        }
     }
     const Decimal slot = Decimal::Divide(
         *equity * mParams.invest_fraction,
         Decimal::FromInt(static_cast<std::int64_t>(mParams.top_n)), 8,
         Rounding::kDown);
     for (const auto& symbol : entries) {
-        const auto price = LastClose(context, symbol);
+        const auto price = mBook.LastClose(context, symbol);
         auto info = context.SymbolInfo(symbol);
         if (!price || price->Sign() <= 0 || !info) {
             continue;
         }
         // Room for fees and for the price moving before the fill.
-        const Decimal notional = std::min(slot, cash * mParams.invest_fraction);
+        const Decimal notional =
+            std::min(slot, *cash * mParams.invest_fraction);
         const Decimal quantity =
             Decimal::Divide(notional, *price, 8, Rounding::kDown)
                 .RoundToIncrement(info->lot_size, Rounding::kDown);
@@ -367,103 +256,17 @@ void MomentumRotation::Enter(Context& context) {
             quantity * *price < info->min_notional) {
             context.Log().Info("{} {} of {} is too small to buy",
                                notional.Rescale(2, Rounding::kDown).ToString(),
-                               mQuote, symbol);
+                               mBook.Quote(), symbol);
             continue;
         }
-        if (Place(context, symbol, Side::kBuy, quantity)) {
-            cash = cash - quantity * *price;
+        if (mBook.Place(context, symbol, Side::kBuy, quantity)) {
+            *cash = *cash - quantity * *price;
         }
     }
-}
-
-std::optional<Decimal> MomentumRotation::LastClose(
-    Context& context, const types::Symbol& symbol) const {
-    const auto bars = context.Bars(symbol, mParams.timeframe);
-    if (bars.empty()) {
-        return std::nullopt;
-    }
-    return bars.back().close;
-}
-
-std::optional<Decimal> MomentumRotation::Equity(Context& context) const {
-    auto balances = context.Venue().GetBalances();
-    if (!balances) {
-        return std::nullopt;
-    }
-    Decimal equity;
-    for (const auto& balance : *balances) {
-        if (balance.asset == mQuote) {
-            equity = balance.total;
-        }
-    }
-    for (const auto& [symbol, held] : mHeld) {
-        if (held.Sign() > 0) {
-            const auto price = LastClose(context, symbol);
-            if (!price) {
-                return std::nullopt;
-            }
-            equity += held * *price;
-        }
-    }
-    return equity;
-}
-
-std::optional<std::string> MomentumRotation::Place(Context& context,
-                                                   const types::Symbol& symbol,
-                                                   Side side,
-                                                   const Decimal& quantity) {
-    types::OrderRequest request;
-    request.symbol = symbol;
-    request.side = side;
-    request.type = types::OrderType::kMarket;
-    request.quantity = quantity;
-    const auto ack =
-        Submit(context, request,
-               std::string(types::ToString(side)) + " " + quantity.ToString());
-    if (!ack) {
-        return std::nullopt;
-    }
-    context.Log().Info("{} {} {} (order {}, {})", types::ToString(side),
-                       quantity.ToString(), symbol, ack->order_id,
-                       types::ToString(ack->state));
-    if (!Closed(ack->state)) {
-        mOrders[ack->order_id] = OrderInfo{side == Side::kSell, symbol, {}};
-    }
-    return ack->order_id;
 }
 
 void MomentumRotation::OnFill(Context& context, const types::Fill& fill) {
-    const auto base = mBase.find(fill.symbol);
-    if (base == mBase.end()) {
-        return;
-    }
-    if (const auto ord = mOrders.find(fill.order_id); ord != mOrders.end()) {
-        ord->second.filled += fill.quantity;
-    }
-    // A fill of an order Reconcile counted from its status: not again.
-    Decimal quantity = fill.quantity;
-    if (const auto counted = mCounted.find(fill.order_id);
-        counted != mCounted.end()) {
-        const Decimal skip = std::min(quantity, counted->second);
-        quantity -= skip;
-        counted->second -= skip;
-        if (counted->second.Sign() <= 0) {
-            mCounted.erase(counted);
-        }
-    }
-    Decimal& held = mHeld[fill.symbol];
-    if (fill.side == Side::kBuy) {
-        held += quantity;
-    } else {
-        held -= quantity;
-    }
-    // A fee in the base asset (Binance.US takes a buy's fee in what was
-    // bought) leaves less held than was filled; selling the full amount would
-    // be refused for the balance.
-    if (fill.fee_asset == base->second) {
-        held -= fill.fee;
-    }
-    held = std::max(held, Decimal());
+    mBook.OnFill(fill);
     if (fill.side == Side::kSell) {
         TryEnter(context);
     }
@@ -471,25 +274,18 @@ void MomentumRotation::OnFill(Context& context, const types::Fill& fill) {
 
 void MomentumRotation::OnOrderUpdate(Context& context,
                                      const types::OrderStatus& status) {
-    if (!Closed(status.state)) {
+    const auto done = mBook.OnOrderUpdate(status);
+    if (!done) {
         return;
     }
-    const auto it = mOrders.find(status.order_id);
-    if (it == mOrders.end()) {
-        return;
-    }
-    const bool sell = it->second.sell;
-    const types::Symbol sym =
-        !status.symbol.empty() ? status.symbol : it->second.symbol;
-    mOrders.erase(it);
-    if (status.state != OrderState::kFilled) {
-        context.Log().Warn("order {} for {} closed: {}", status.order_id, sym,
-                           types::ToString(status.state));
-        if (sell) {
-            mSelling.erase(sym);  // no more of it will sell
+    if (!done->filled) {
+        context.Log().Warn("order {} for {} closed: {}", status.order_id,
+                           done->symbol, types::ToString(status.state));
+        if (done->sell) {
+            mSelling.erase(done->symbol);  // no more of it will sell
         }
     }
-    if (sell) {
+    if (done->sell) {
         TryEnter(context);  // once the sells are done and seen: the cash is in
     }
 }

@@ -272,6 +272,17 @@ std::optional<BollingerBands> Bollinger(std::span<const types::Bar> bars,
                                         const types::Decimal& width = {2, 0},
                                         std::size_t back = 0);
 
+// The sample standard deviation of the last `period` close-to-close
+// returns (close / previous close - 1), times the square root of
+// `periods_per_year` to annualize it (365 for daily crypto bars; 1 leaves it
+// per bar), to 8 places. Needs period + 1 bars and period of at least 2;
+// nullopt also for a close that is not positive, or periods_per_year of
+// zero.
+std::optional<types::Decimal> Volatility(std::span<const types::Bar> bars,
+                                         std::size_t period,
+                                         std::size_t periods_per_year = 1,
+                                         std::size_t back = 0);
+
 // MACD: the `fast` EMA of closes less the `slow` one (the line), the
 // `signal`-period EMA of that line (seeded with the average of its first
 // `signal` values), and the line less the signal (the histogram). The line

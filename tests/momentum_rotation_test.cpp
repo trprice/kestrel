@@ -353,6 +353,29 @@ TEST(MomentumRotation, BuysOnlyOnceTheSellsFillHasBeenSeen) {
     EXPECT_EQ(buy.quantity, D("72.2"));
 }
 
+// A rebalance skipped for a sell still out leaves the last one's buys
+// queued: B is bought once the sell of A, still open on day 5, fills.
+TEST(MomentumRotation, ARebalanceSkippedForASellStillOutKeepsItsBuys) {
+    Live live;
+    live.BuyA();
+    live.strategy.OnFill(live.context,
+                         FillOf("order-1", "A/USD", Side::kBuy, "10", "12"));
+    live.strategy.OnOrderUpdate(live.context, Filled("order-1", "A/USD"));
+    live.context.Close(live.strategy, 4);
+    ASSERT_EQ(live.context.venue.orders.size(), 2u);  // the sell of A
+    types::OrderStatus open;
+    open.order_id = "order-2";
+    open.state = types::OrderState::kNew;
+    live.context.venue.order_states["order-2"] = open;
+    live.context.Close(live.strategy, 5);  // skipped: the sell is out
+    EXPECT_EQ(live.context.venue.orders.size(), 2u);
+    live.context.Cash("1140");
+    live.strategy.OnFill(live.context,
+                         FillOf("order-2", "A/USD", Side::kSell, "10", "14"));
+    ASSERT_EQ(live.context.venue.orders.size(), 3u);
+    EXPECT_EQ(live.context.venue.orders[2].symbol, "B/USD");
+}
+
 // A held symbol without a bar for the ranked period is kept, not sold.
 TEST(MomentumRotation, KeepsAHoldingThatCouldNotBeRanked) {
     auto series = Rotating();

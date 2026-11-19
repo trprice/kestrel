@@ -384,9 +384,25 @@ class ConfigParser {
         return c;
     }
 
-    // A scalar TOML value as the text a strategy parses.
+    // A scalar TOML value as the text a strategy parses; an array of whole
+    // numbers as them joined with commas ("5,10,20").
     static Result<std::string> ParamText(const toml::node& node,
                                          const std::string& name) {
+        if (const auto* array = node.as_array()) {
+            std::string text;
+            for (const auto& element : *array) {
+                const auto v = element.is_integer()
+                                   ? element.value<std::int64_t>()
+                                   : std::nullopt;
+                if (!v || *v < 0) {
+                    return MakeError(
+                        ErrorCategory::kInvalidArgument,
+                        name + " must be an array of whole numbers");
+                }
+                text += (text.empty() ? "" : ",") + std::to_string(*v);
+            }
+            return text;
+        }
         if (const auto s = node.value<std::string>()) {
             return *s;
         }
@@ -401,7 +417,9 @@ class ConfigParser {
             return d->ToString();
         }
         return MakeError(ErrorCategory::kInvalidArgument,
-                         name + " must be a string, a number or a boolean");
+                         name +
+                             " must be a string, a number, a boolean or an "
+                             "array of whole numbers");
     }
 
     static Result<std::optional<Decimal>> RiskAmount(const toml::table& t,

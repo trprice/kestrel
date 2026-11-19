@@ -106,6 +106,8 @@ add_library(kestrel
   src/strategy/ma_crossover.cpp
   src/strategy/mean_reversion.cpp
   src/strategy/momentum_rotation.cpp
+  src/strategy/spot_book.cpp
+  src/strategy/trend_ensemble.cpp
   src/strategy/orders.cpp
   src/strategy/single_order_position.cpp
   src/strategy/patterns.cpp
@@ -248,6 +250,8 @@ if(KESTREL_BUILD_TESTS)
     tests/ma_crossover_test.cpp
     tests/mean_reversion_test.cpp
     tests/momentum_rotation_test.cpp
+    tests/trend_ensemble_test.cpp
+    tests/spot_book_test.cpp
     tests/single_order_position_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp

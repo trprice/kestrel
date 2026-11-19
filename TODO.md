@@ -980,6 +980,13 @@ the header of the code concerned.
       authorization, running processes take up a newer unexpired one before
       renewing (or while refused or expired), and the streamer waits for
       re-authorization instead of stopping on an expired or refused token.
+- [x] `trend_ensemble`: Zarattini, Pagani and Barbon's crypto trend
+      ensemble (nine Donchian models per coin, sized to 25% volatility,
+      a 20% rebalance threshold), long only on spot; see
+      docs/strategies/trend-ensemble.md. `momentum_rotation`'s order
+      bookkeeping moved into `SpotBook`, which both use; `Volatility` in
+      `patterns.hpp`; `[strategy]` takes arrays of whole numbers.
+      Backtest 2022–2026: +33% then +3% in the holdout, at 7–8% volatility.
 - [x] Volume confirmation (`volume_ratio`, `volume_bars`) for entries
       confirmed on a close, and a moving stop: breakeven (`breakeven_r`)
       and trailing (`trail_bars`). From Kraken's day-trading guide. Range 1h

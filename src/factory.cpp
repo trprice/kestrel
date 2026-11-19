@@ -19,6 +19,7 @@
 #include "kestrel/strategy/market_maker.hpp"
 #include "kestrel/strategy/mean_reversion.hpp"
 #include "kestrel/strategy/momentum_rotation.hpp"
+#include "kestrel/strategy/trend_ensemble.hpp"
 #include "kestrel/trading/binanceus_trading_venue.hpp"
 #include "kestrel/trading/kraken_trading_venue.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
@@ -322,6 +323,42 @@ class ParamReader {
             return Bad(key, "a positive integer");
         }
         return value;
+    }
+
+    // An optional list of positive whole numbers, from a TOML array (or the
+    // same written as "5,10,20").
+    Result<std::vector<std::size_t>> Counts(
+        const std::string& key, const std::vector<std::size_t>& fallback) {
+        auto it = mParams.find(key);
+        if (it == mParams.end()) {
+            return fallback;
+        }
+        mUsed.insert(key);
+        std::vector<std::size_t> values;
+        std::string_view rest = it->second;
+        while (!rest.empty()) {
+            const auto comma = rest.find(',');
+            const auto item = rest.substr(0, comma);
+            std::size_t value = 0;
+            const auto [end, ec] =
+                std::from_chars(item.data(), item.data() + item.size(), value);
+            if (ec != std::errc() || end != item.data() + item.size() ||
+                value == 0) {
+                return Bad(key, "an array of positive whole numbers");
+            }
+            values.push_back(value);
+            if (comma == std::string_view::npos) {
+                break;
+            }
+            rest.remove_prefix(comma + 1);
+            if (rest.empty()) {
+                return Bad(key, "an array of positive whole numbers");
+            }
+        }
+        if (values.empty()) {
+            return Bad(key, "an array of positive whole numbers");
+        }
+        return values;
     }
 
     Result<void> Finish() const {
@@ -662,6 +699,36 @@ Result<StrategyPtr> BuildMomentumRotation(ParamReader& p) {
     }
 }
 
+Result<StrategyPtr> BuildTrendEnsemble(ParamReader& p) {
+    strategy::TrendEnsembleParams params;
+    params.symbols = p.Universe();
+    std::optional<types::Error> error;
+    Take(p.Timeframe("timeframe", params.timeframe), params.timeframe, error);
+    Take(p.Counts("lookbacks", params.lookbacks), params.lookbacks, error);
+    Take(p.Count("vol_bars", params.vol_bars), params.vol_bars, error);
+    Take(p.Number("target_vol", params.target_vol), params.target_vol, error);
+    Take(p.Number("max_weight", params.max_weight), params.max_weight, error);
+    Take(p.Number("rebalance_threshold", params.rebalance_threshold),
+         params.rebalance_threshold, error);
+    Take(p.Number("invest_fraction", params.invest_fraction),
+         params.invest_fraction, error);
+    Take(p.Flag("adopt_holdings", params.adopt_holdings), params.adopt_holdings,
+         error);
+    if (error) {
+        return std::unexpected(*error);
+    }
+    if (auto ok = p.Finish(); !ok) {
+        return std::unexpected(ok.error());
+    }
+    try {
+        return StrategyPtr(
+            std::make_unique<strategy::TrendEnsemble>(std::move(params)));
+    } catch (const std::invalid_argument& e) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         std::string("[strategy] ") + e.what());
+    }
+}
+
 Result<StrategyPtr> BuildMeanReversion(ParamReader& p) {
     strategy::MeanReversionParams params;
     std::optional<types::Error> error;
@@ -708,6 +775,7 @@ constexpr StrategyEntry kStrategies[] = {
     {"market_maker", BuildMarketMaker},
     {"breakout", BuildBreakout},
     {"momentum_rotation", BuildMomentumRotation},
+    {"trend_ensemble", BuildTrendEnsemble},
     {"mean_reversion", BuildMeanReversion},
 };
 

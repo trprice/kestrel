@@ -34,6 +34,7 @@ Unless a test says otherwise:
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
+| `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
 
 ## Market maker (ZEC/USDT)
@@ -537,7 +538,9 @@ been tried on the same years:
     volatile coin. Other lookbacks and volatility targets made −17% to +17%
     in the holdout.
   - Still the best candidate for a lower-risk crypto allocation, judged
-    against 60% BTC and 40% cash.
+    against 60% BTC and 40% cash. Built as `trend_ensemble` on the
+    paper's own rules, which did better; see
+    [Trend ensemble in Kestrel](#trend-ensemble-in-kestrel).
 - **Volatility-adjusted rotation:** the risk-adjusted ranking was worse in
   development and better in the holdout, which is noise. Inverse-volatility
   sizing lost in both periods. Rotation's results are still mostly ZEC:
@@ -568,6 +571,53 @@ been tried on the same years:
   holdout, which was BIL's mid-month rise without its monthly drops.
   Another model's review found both.
 
+## Trend ensemble in Kestrel
+
+`trend_ensemble` ([trend-ensemble.md](strategies/trend-ensemble.md)) follows
+Zarattini, Pagani and Barbon's rules, which differ from the variant screened
+above: an entry on the highest close (not a break of the highest high), a
+trailing stop at the channel's midpoint that only rises (not the lowest
+low of half the lookback), nine lookbacks from 5 to 360 days, and each model
+sized to 25% volatility over 90 days (not a portfolio-wide reference).
+These are the paper's settings, not tuned here. Same 11 USDT pairs and
+periods as the screen, 1,000 USDT, 2 bps taker fee and 5 bps slippage a
+side, filled at the next price after each daily close. Binance.US has
+about 850 daily bars before Jan 2022 for most of these pairs, so the
+models start with that much history, not the 1,081 bars a live run asks
+for:
+
+| 1,000 USDT | Jan 2022 – Dec 2024 | Holdout, Jan 2025 – Nov 2026 |
+|---|---|---|
+| `trend_ensemble` | +32.7%, 6.9% fall, Sharpe 1.26 | +2.8%, 5.9% fall, Sharpe 0.26 |
+| ... without ZEC | +36.4%, 7.6% fall, Sharpe 1.33 | −1.6%, 8.0% fall |
+| The same rules in the daily screen | +35% | +4%; −2% without ZEC |
+| 20% BTC, 80% cash (the same risk) | +26%, 15% fall | −6%, 13% fall |
+| Hold BTC | +130%, 67% fall | −28%, 53% fall |
+
+- **The backtest matches the screen** within 2.5 points in each period,
+  so the strategy does what the screen did.
+- **A first run of it was wrong in 2022–2023:** with XRP/USDT delisted
+  (no bars from Jan 2021 to Jul 2023), every day waited for XRP's bar and
+  completed only on the next day's first bar, ADA's, so ADA was never
+  traded and the rest traded a day late. Its models also joined XRP's 2021
+  and 2023 prices. Both are fixed (a symbol that misses a period is no
+  longer waited for, and a gap of more than 7 bars and a week restarts
+  its models); the totals moved by under half a point. Another model's
+  review found it.
+- **It runs at about 7–8% volatility**, a quarter of the variant above, so
+  it is compared with 20% BTC and 80% cash. It beat that in both periods,
+  without ZEC too (−1.6% against −6% in the holdout), with about half the
+  fall. That is the first holdout in this file to beat a benchmark of the
+  same risk without ZEC, though only by about 4 points over two years of
+  falling prices.
+- **It made about 10% a year in 2022–2024 and 1.5% a year since,**
+  against the paper's 18% over 2015–2025. Its weight per coin is small at
+  25% volatility: on average 10% of equity was in coins, at most 40%.
+- **Turnover was about five times equity a year:** 5,251 fills in under five
+  years, most of them a few USDT as one model of nine changed, which is
+  why the account needs to be large enough for Binance.US's 1 USDT minimum.
+- Paper-trading on 1,000 USDT from Nov 18 2026 (run 44; see Paper runs).
+
 ## Paper runs
 
 - **Market maker, Binance.US:** an 8-hour paper session (traded, recorded
@@ -587,3 +637,8 @@ been tried on the same years:
   - BTC/USDT has no trend filter. It is there to exercise live orders,
     fills, stops and exits now, while the market is below its averages.
     Expect a small loss: unfiltered, range 1h lost 0.05% a trade.
+- **`trend_ensemble`, the 11 USDT pairs (run 44, from Nov 18 2026):** the
+  paper's defaults on a 1,000 USDT paper account, large enough for its
+  small orders to clear Binance.US's 1 USDT minimum. Judge it against 20%
+  BTC and 80% cash over the same days, not against holding BTC; months of
+  it will mostly show whether the orders and restarts work.

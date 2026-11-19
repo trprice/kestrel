@@ -615,6 +615,52 @@ TEST(Config, StrategyParametersKeepTheirText) {
     EXPECT_FALSE(config::BinanceUSConfiguration::Parse(
                      WithTables("[strategy]\nsymbol=['a']\n"), NoEnv())
                      .has_value());
+    // An array of whole numbers is joined with commas.
+    auto list = config::BinanceUSConfiguration::Parse(
+        WithTables("[strategy]\nlookbacks=[5, 10, 360]\n"), NoEnv());
+    ASSERT_OK(list);
+    EXPECT_EQ(list->GetStrategyParams().at("lookbacks"), "5,10,360");
+    EXPECT_FALSE(config::BinanceUSConfiguration::Parse(
+                     WithTables("[strategy]\nlookbacks=[5, 1.5]\n"), NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::BinanceUSConfiguration::Parse(
+                     WithTables("[strategy]\nlookbacks=[[5]]\n"), NoEnv())
+                     .has_value());
+}
+
+TEST(Factory, CreateStrategyBuildsTrendEnsembleFromParameters) {
+    auto make = [](const std::string& params) {
+        auto cfg = config::BinanceUSConfiguration::Parse(
+            WithTables("[strategy]\n" + params), NoEnv());
+        if (!cfg) {
+            return types::Result<std::unique_ptr<strategy::Strategy>>(
+                std::unexpected(cfg.error()));
+        }
+        return CreateStrategy("trend_ensemble", *cfg);
+    };
+    auto defaults = make("");
+    ASSERT_OK(defaults);
+    const auto needs = (*defaults)->Needs();
+    EXPECT_EQ(needs.symbols,
+              (std::vector<types::Symbol>{"BTC/USD", "ETH/USD"}));
+    EXPECT_EQ(needs.warmup_bars, 1081u);  // 3 x the 360-day channel, + 1
+    auto shorter = make(
+        "lookbacks=[5, 20]\nvol_bars=30\ntarget_vol=0.5\nmax_weight=0.5\n"
+        "rebalance_threshold=0.1\ninvest_fraction=0.9\n"
+        "adopt_holdings=true\n");
+    ASSERT_OK(shorter);
+    EXPECT_EQ((*shorter)->Needs().warmup_bars, 61u);
+    EXPECT_TRUE(make("lookbacks='5,20'\n").has_value());  // the same, as text
+    EXPECT_FALSE(make("lookbacks=[5, 0]\n").has_value());
+    EXPECT_FALSE(make("lookbacks='5,'\n").has_value());
+    EXPECT_FALSE(make("lookbacks=[]\n").has_value());
+    EXPECT_FALSE(make("lookbacks=[-5]\n").has_value());
+    EXPECT_FALSE(make("lookbacks=[5, 5]\n").has_value());  // a repeat
+    EXPECT_FALSE(make("lookbacks=[1]\n").has_value());     // under 2
+    EXPECT_FALSE(make("max_weight=2\n").has_value());      // no leverage
+    EXPECT_FALSE(make("target_vol=0\n").has_value());
+    EXPECT_FALSE(make("vol_bars=1\n").has_value());
+    EXPECT_FALSE(make("lookback=5\n").has_value());  // misspelled
 }
 
 TEST(Factory, CreateStrategyBuildsMaCrossoverFromParameters) {

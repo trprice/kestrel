@@ -182,8 +182,10 @@ acts up to a bar later than it would in `run`.
 
 ## `[strategy]`
 
-The parameters of the strategy named on the command line. Unknown parameters
-are errors, and the symbol must be listed in `[general] symbols`.
+The parameters of the strategy named on the command line: strings, numbers,
+`true` or `false`, or (where a strategy takes a list) an array of whole
+numbers. Unknown parameters are errors, and the symbol must be listed in
+`[general] symbols`.
 
 Each strategy's document lists its parameters:
 
@@ -192,6 +194,7 @@ Each strategy's document lists its parameters:
 | `breakout` | [strategies/breakout.md](strategies/breakout.md#parameters) |
 | `market_maker` | [strategies/market-maker.md](strategies/market-maker.md#parameters) |
 | `momentum_rotation` | [strategies/momentum-rotation.md](strategies/momentum-rotation.md#parameters) |
+| `trend_ensemble` | [strategies/trend-ensemble.md](strategies/trend-ensemble.md#parameters) |
 | `mean_reversion` | [strategies/mean-reversion.md](strategies/mean-reversion.md#parameters) |
 | `ma_crossover` | [strategies/ma-crossover.md](strategies/ma-crossover.md#parameters) |
 

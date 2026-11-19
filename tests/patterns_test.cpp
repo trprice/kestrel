@@ -858,6 +858,29 @@ TEST(Indicators, Atr) {
     ExpectNear(Atr(Series(), 14, 2), "17.87650514");
 }
 
+TEST(Indicators, Volatility) {
+    // Returns +10% and -10%: mean 0, sample variance 0.02.
+    const auto bars = Closes({"100", "110", "99"});
+    EXPECT_EQ(Volatility(bars, 2), D("0.14142136"));
+    EXPECT_EQ(Volatility(bars, 2, 4), D("0.28284271"));  // 2 x per bar
+    // The last two returns only, of a longer series; and `back`.
+    const auto longer = Closes({"50", "100", "110", "99"});
+    EXPECT_EQ(Volatility(longer, 2), D("0.14142136"));
+    EXPECT_EQ(Volatility(longer, 2, 1, 1), D("0.63639610"));  // +100%, +10%
+    const auto flat = Closes({"5", "5", "5"});
+    EXPECT_EQ(Volatility(flat, 2), D("0"));
+    EXPECT_FALSE(Volatility(bars, 3));     // needs period + 1 bars
+    EXPECT_FALSE(Volatility(bars, 1));     // a deviation needs two returns
+    EXPECT_FALSE(Volatility(bars, 2, 0));  // no periods a year
+    EXPECT_FALSE(Volatility(Closes({"1", "0", "1"}), 2));
+    // Half a basis point a bar, annualized over a year of 1-minute bars,
+    // keeps its digits: returns +0.000050000 and -0.000049998.
+    EXPECT_EQ(Volatility(Closes({"100", "100.005", "100"}), 2, 525600),
+              D("0.05126300"));
+    // A 1,000-fold jump neither overflows nor fails.
+    EXPECT_TRUE(Volatility(Closes({"1", "1000", "1"}), 2, 525600));
+}
+
 TEST(Indicators, Bollinger) {
     // Mean 5, population deviation exactly 2.
     const auto bars = Closes({"2", "4", "4", "4", "5", "5", "7", "9"});

@@ -2,11 +2,10 @@
 
 #include <cstddef>
 #include <map>
-#include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
+#include "kestrel/strategy/spot_book.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/types/decimal.hpp"
 
@@ -58,47 +57,15 @@ class MomentumRotation : public Strategy {
     void TryEnter(Context& context);
     // Buys mEntries.
     void Enter(Context& context);
-    // Drops orders the venue has closed without an update reaching us;
-    // whether none is left.
-    bool Reconcile(Context& context);
-    // What of `symbol` can be sold: held, to the lot size; zero for dust
-    // under the minimum order.
-    types::Decimal Sellable(Context& context,
-                            const types::Symbol& symbol) const;
-    // The quote balance plus holdings at their last close.
-    std::optional<types::Decimal> Equity(Context& context) const;
-    std::optional<types::Decimal> LastClose(Context& context,
-                                            const types::Symbol& symbol) const;
-    // Places a market order; its ID if the venue took it and it is active.
-    std::optional<std::string> Place(Context& context,
-                                     const types::Symbol& symbol,
-                                     types::Side side,
-                                     const types::Decimal& quantity);
 
     MomentumRotationParams mParams;
-    std::string mQuote;                          // the shared quote asset
-    std::map<types::Symbol, std::string> mBase;  // each symbol's base asset
-    // The period being collected: its bars' open time, and the symbols with
-    // a bar for it so far.
-    std::optional<types::Timestamp> mPeriod;
-    std::set<types::Symbol> mSeen;
-    bool mDone = false;        // the period has been counted
+    SpotBook mBook;
+    PeriodGate mGate;
     std::size_t mPeriods = 0;  // periods counted, for rebalance_bars
     // The period of the last ranking: a symbol without a bar for it sits the
     // ranking out.
     types::Timestamp mRanked;
     bool mDue = false;  // a rebalance waits for the market to open
-    std::map<types::Symbol, types::Decimal> mHeld;  // bought, not yet sold
-    struct OrderInfo {
-        bool sell = false;
-        types::Symbol symbol;
-        types::Decimal filled;
-    };
-    // Active orders by ID.
-    std::map<std::string, OrderInfo> mOrders;
-    // Of orders found closed by Reconcile, what was counted from their status
-    // and not yet seen as fills: those fills are not counted again.
-    std::map<std::string, types::Decimal> mCounted;
     std::vector<types::Symbol> mEntries;  // to buy once the sells are done
     // Symbols being sold, and what is left held once the sell has filled.
     std::map<types::Symbol, types::Decimal> mSelling;

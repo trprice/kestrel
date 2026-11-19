@@ -34,8 +34,11 @@ half the symbols ranked there is no rebalance.
 first. Once those sells have filled and their fills have been seen (or the
 sells closed), it buys what entered the top at market into the slots left,
 sized from equity then and capped by the cash available. Symbols still in the
-top are kept as they are, not resized. Orders still out at a rebalance are
-checked with the venue; if one is still open, that rebalance is skipped.
+top are kept as they are, not resized. An order counts as out until its
+fills have been seen, even one the venue reports filled at once. Orders
+still out at a rebalance are checked with the venue; if one is still open,
+that rebalance is skipped, and the last one's buys still go once its sells
+fill.
 While the market is closed (daily stock bars), a rebalance waits for the next
 session's open.
 

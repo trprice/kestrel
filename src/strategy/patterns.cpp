@@ -803,6 +803,67 @@ std::optional<BollingerBands> Bollinger(std::span<const types::Bar> bars,
                           .deviation = Out(deviation)};
 }
 
+std::optional<Decimal> Volatility(std::span<const types::Bar> bars,
+                                  std::size_t period,
+                                  std::size_t periods_per_year,
+                                  std::size_t back) {
+    // period + 1 bars, written so a huge period cannot wrap.
+    if (period < 2 || periods_per_year == 0 || !Holds(bars, period, back) ||
+        bars.size() - back == period) {
+        return std::nullopt;
+    }
+    const auto window = Window(bars, back).last(period + 1);
+    // In 128-bit integers: returns to 9 places, so a quiet 1-minute bar
+    // (half a basis point) keeps five digits, and their squares to 18,
+    // annualized before the root, so nothing is rounded away first. Even a
+    // 1,000-fold return over 10,000 bars a year of 1-minute periods stays
+    // far inside 128 bits.
+    constexpr int kPlaces = 9;
+    std::vector<i128> returns;
+    returns.reserve(period);
+    i128 sum = 0;
+    for (std::size_t i = 1; i < window.size(); ++i) {
+        if (window[i - 1].close.Sign() <= 0 || window[i].close.Sign() <= 0) {
+            return std::nullopt;
+        }
+        const Decimal r = Decimal::Divide(window[i].close, window[i - 1].close,
+                                          kPlaces, Rounding::kNearest) -
+                          Decimal::FromInt(1);
+        i128 m = r.Mantissa();
+        for (int s = r.Scale(); s < kPlaces; ++s) {
+            m *= 10;
+        }
+        returns.push_back(m);
+        sum += m;
+    }
+    const auto n = static_cast<i128>(period);
+    const i128 mean = sum / n;  // within a billionth
+    i128 squares = 0;
+    for (const i128 r : returns) {
+        squares += (r - mean) * (r - mean);
+    }
+    // The sample variance, annualized, at 18 places; its root at 9.
+    const i128 denominator = n - 1;
+    const auto variance = static_cast<u128>(
+        (squares * static_cast<i128>(periods_per_year) + denominator / 2) /
+        denominator);
+    auto root =
+        static_cast<u128>(std::sqrt(static_cast<long double>(variance)));
+    while (root > 0 && root * root > variance) {
+        --root;
+    }
+    while ((root + 1) * (root + 1) <= variance) {
+        ++root;
+    }
+    if (variance - root * root > root) {  // past (root + 0.5)^2
+        ++root;
+    }
+    if (root > static_cast<u128>(INT64_MAX)) {
+        return std::nullopt;  // a volatility past 9 x 10^9: no real series
+    }
+    return Out(Decimal(static_cast<std::int64_t>(root), kPlaces));
+}
+
 std::optional<MacdValue> Macd(std::span<const types::Bar> bars,
                               std::size_t fast, std::size_t slow,
                               std::size_t signal, std::size_t back) {
