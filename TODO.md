@@ -186,6 +186,54 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Position sizing helpers: fixed fractional, volatility-targeted
 - [ ] Indicators: `Keltner`, `Adx`, `Supertrend` and `SessionVwap` in
       `patterns.hpp`
+- [ ] `ma_crossover` trades only on the bar of a cross. A cross that comes
+      while an order is working (`Busy()`), or an order the venue refuses,
+      is not tried again until the averages cross back and over again: a
+      missed buy can sit flat through a whole up-trend, and a missed sell
+      stay long through a down-trend. The rule it follows (Brock,
+      Lakonishok and LeBaron 1992; docs/strategies/ma-crossover.md) holds
+      the position while the fast average is above the slow: buy whenever
+      flat with fast above slow, sell whenever long with fast below. Low
+      priority: it is the worked example, not a strategy to trade
+- [ ] `breakout`, intraday on a market that closes: a target due on the
+      bar that closes with the market (the 15:30 bar, at 16:00) is not
+      remembered, as orders are refused while closed (`LongBar` keeps
+      `mExitDue` only for daily bars). The next session's first bar checks
+      again, so if it closes under the target the exit never happens and
+      the trade rides on its stop. Keep the due exit intraday too and sell
+      at the open (`OnSessionOpen`), as daily bars do
+- [ ] `breakout` with `flatten_at_close`: the closing hook flattens only
+      a long. A market entry still out at the hook (`kEntering`, after a
+      `confirm = "closes"` signal) that fills after it, or an exit that
+      closes unfilled after it, leaves the position held overnight
+- [ ] `breakout`: a stop or one-cancels-other pair whose placement got no
+      answer, and that the venue's own lookup could not find either, is
+      not tracked. The next bar places another, so if the first was live
+      there are two sells for one position (Binance.US then refuses the
+      second for the balance, which also marks the target refused for the
+      rest of the trade). Track it as a stray, or look it up before placing
+      again
+- [ ] `momentum_rotation` on stock daily bars: the lookback finds its bar
+      by time (`lookback_bars` periods of 24 hours back), and stock bars
+      skip weekends and holidays. A lookback not a multiple of 7 can land on
+      a weekend, and a holiday on the lookback day leaves every symbol
+      unranked, so that rebalance is skipped. Count the lookback in bars on
+      markets that close (24/7 crypto can keep time, which stops a gap
+      lengthening it)
+- [ ] `market_maker`: an exit (a stop or cap closing the position at
+      market) reported filled whose fill never arrives keeps `mExit` set,
+      so both sides stay paused for good and the position is never booked.
+      Quotes have a reconcile path for missing fills
+      (`ReconcileUnconfirmed`); exits need one too
+- [ ] `market_maker`: a quote that is crossed, locked or missing a side
+      returns before `Protect`, so while the book stays that way resting
+      quotes are left in place and the stop loss, caps and stand-downs are
+      not checked. Pull the quotes and run the protection on the last good
+      mid
+- [ ] `mean_reversion`: the RSI exit at `overbought` cannot be turned off
+      (it must be under 100), so Connors's RSI(2), which exits only at the
+      5-day average, can only be approximated (`overbought = 90` or 99).
+      Allow 0 (or 100) for no RSI exit
 
 #### Market maker
 Every item here is done (Nov 2026; see Done). The Nov 2026 replays found

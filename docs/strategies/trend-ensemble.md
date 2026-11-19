@@ -139,8 +139,15 @@ The paper's results come from a decade with three crypto bull markets and a
 universe chosen with hindsight; Kestrel's universe is chosen with hindsight
 too. Expect less: in Kestrel's backtest of 2022–2026 it made 6.7% a year,
 about a third of the paper's, at a Sharpe ratio near the paper's in
-2022–2024 (1.29) and a far lower one in 2025–2026 (0.26; see
+2022–2024 (1.26) and a far lower one in 2025–2026 (0.26; see
 [strategy-tests.md](../strategy-tests.md#trend-ensemble-in-kestrel)).
+On Bitcoin alone in the paper's period, on Kraken's prices, the rules
+match the paper's risk-adjusted results (a Sharpe ratio of 1.53 at 10 bps
+against the paper's 1.56, a 19.5% worst fall against 19%), and Kestrel's
+backtest matches those rules exactly (from Sep 2016, where Kraken's data
+first covers its warm-up). The shortfall is the later, weaker period, not
+the implementation (see
+[Checked against the paper](../strategy-tests.md#checked-against-the-paper-btc-on-kraken-20152025)).
 
 ## Parameters
 

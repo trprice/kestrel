@@ -1,14 +1,77 @@
 # Breakout
 
 `breakout` trades the break out of a bar pattern, after Fidelity's
-"Identifying Chart Patterns" deck (Kirkpatrick). It waits for a setup, enters
-when the price breaks above the setup's high, protects the trade with a stop
-below the setup's low, and takes profit at the setup's height above the
-entry. With `direction = "short"` it does all of this upside down.
+"Identifying Chart Patterns with Technical Analysis" webinar deck, with
+Charles D. Kirkpatrick II
+([PDF](https://media.fidelity.com/assets/Fidelity.com_VMS/904/347/TA_Session_3_Identifying_Chart_Patterns.pdf)),
+which draws on Kirkpatrick and Dahlquist, *Technical Analysis: The Complete
+Resource for Financial Market Technicians* (2nd ed.). It waits for a setup,
+enters when the price breaks above the setup's high, protects the trade with
+a stop below the setup's low, and takes profit at the setup's height above
+the entry. With `direction = "short"` it does all of this upside down.
 
 Source: `include/kestrel/strategy/breakout.hpp`, `src/strategy/breakout.cpp`;
 the pattern detectors are in `include/kestrel/strategy/patterns.hpp`. Results
 are in [strategy-tests.md](../strategy-tests.md): [crypto](../strategy-tests.md#breakout-on-crypto-mayoct-2026) and [stocks](../strategy-tests.md#breakout-on-stocks).
+
+## The method in the deck
+
+**Breakouts.** A breakout is the price going through a trend line, a
+support or resistance level, or an earlier turning point. It signals that
+buyers and sellers have changed their behaviour, and the start or end of a
+trend.
+- *Confirmation:* a filter decides whether a breakout has happened. The
+  deck lists five: within the bar, a number of closes beyond the level, a
+  time, a percentage or a number of points, and an amount of money.
+- *Entry:* a buy-stop order enters once the price breaks out.
+- *Protective stop:* set before the entry, so the risk is known. It goes
+  beyond the trend line or the support level, with a filter (a percentage,
+  points or money).
+- *False and failed breakouts:* a false breakout goes through the level and
+  comes straight back. A failed one (a trap) then breaks out the other way.
+  The deck trades both sides: enter on the breakout with a protective stop
+  just beyond the breakout bar's other end, and an entry stop the other way
+  at the same price, a stop-and-reverse.
+- *Throwbacks:* after a breakout up, the price often comes back to the
+  level (a throwback; after a breakout down, a pullback). Waiting for one
+  gets a better price, but throwbacks do not always come, and performance
+  can suffer.
+- *Targets:* most patterns' price target is the pattern's height added to
+  the breakout price.
+
+**The patterns** (with their targets):
+- *Double and triple bottoms:* two or three troughs at about one price,
+  separated by peaks; complete on a break above the peaks. The target is
+  the height from the troughs to the highest peak, added to the breakout
+  price (for a triple, to the highest peak).
+- *Rectangles:* a range between support and resistance, with many false
+  breakouts. A shortfall (a swing that turns before reaching the other
+  side) often shows the breakout's direction. The target is the range's
+  height beyond the line broken.
+- *Triangles:* symmetrical (a falling upper line and a rising lower one,
+  each touched at least twice), ascending (flat top, rising bottom) and
+  descending (falling top, flat bottom). Each can break either way; the
+  target is the height from the highest peak to the lowest trough, from
+  the breakout price.
+- *Head and shoulders:* for a bottom, three troughs with the middle one
+  lowest, complete on a break of the neckline through the peaks between
+  them. The target is the head's distance from the neckline, from the
+  neckline.
+- *Cup and handle:* a rounded (not V-shaped) bottom between two lips, then
+  a small handle, complete on a break above the lips. The target is the
+  depth from the right lip, added to the breakout price.
+- *Pipe bottom:* two wide bars at the end of a long fall, the first ideally
+  closing at its low and the second in the upper half of its range; more
+  reliable on weekly bars. Entry is on a break above the second bar; the
+  target is the pair's height (the higher high to the lower low) added to
+  the higher high.
+- *Narrow range (NR4) and inside bars:* low volatility before a move. An NR4
+  is a bar narrower than the three before it, traded on a break of its high
+  or low. An inside bar, within the range of the bar before, is bought on
+  the next bar's open above the inside bar's close.
+- *Also covered:* wedges, flags and pennants, gaps (the "explosion gap
+  pivot", bought above the gap bar's high after a throwback that does not
+  fill the gap), and candlestick patterns.
 
 ## How a trade goes
 
@@ -42,16 +105,15 @@ for two sell orders. The `max_hold_bars`-th whole bar held does the same, and
 so does the session's closing hook with `flatten_at_close`.
 
 **Resting target.** With `resting_target`, the target rests at the venue as a
-sell limit paired with the stop, one-cancels-other
-(`TradingVenue::PlaceOco`). Whichever fills first, the venue closes the
-other. If the target fills only in part, the pair is taken down and the rest
-sold at market. The paper venue and Binance.US have such pairs. On a venue
-without them, or when the venue refuses the pair (the price already past the
-target, or a risk limit the pair's two orders break), the stop rests alone and
-the target is left to the close for the rest of the trade. A pair whose
-placement got no answer may be resting, so nothing else is placed until the
-next bar; a pair that came back half closed is taken down and tried again
-then.
+sell limit paired with the stop, one-cancels-other (`TradingVenue::PlaceOco`).
+Whichever fills first, the venue closes the other. If the target fills only in
+part, the pair is taken down and the rest sold at market. The paper venue,
+Binance.US and Schwab have such pairs. On a venue without them, or when the
+venue refuses the pair (the price already past the target, or a risk limit the
+pair's two orders break), the stop rests alone and the target is left to the
+close for the rest of the trade. A pair whose placement got no answer may be
+resting, so nothing else is placed until the next bar; a pair that came back
+half closed is taken down and tried again then.
 
 **Moving the stop.** With `breakeven_r` or `trail_bars`, a close that is not
 an exit can raise the stop. The resting stop is cancelled and placed again at
@@ -73,8 +135,9 @@ needs `confirm = "closes"` or `entry = "throwback"`.
 
 - An entry that closes unfilled returns to flat; one that closes partly
   filled (a live venue) is held as a smaller long, with its stop.
-- A protective stop that closes unfilled, or could not be placed, is placed
-  again at the next bar.
+- A protective stop that closes unfilled (cancelled, rejected or expired) is
+  placed again at once; one that could not be placed is tried again at the
+  next bar.
 - An entry whose cancel fails stays armed, and the cancel is retried each bar.
 - When the stop or the exit sells out the position, the other is cancelled.
 
@@ -84,9 +147,12 @@ On a market that closes (Schwab), with intraday bars:
 
 - Nothing is armed while the market is closed, and an armed entry is
   cancelled in the closing hook, so a setup never carries into the next
-  session's open.
+  session's open. A watch for `confirm = "closes"` or a throwback is
+  dropped there too: closes do not count across the night.
 - A target or time exit due on a bar that closes with the market (the 15:30
-  bar, at 16:00) waits for the next bar, the stop resting meanwhile.
+  bar, at 16:00) is not remembered: the next bar checks again, the stop
+  resting meanwhile. A time exit is still due then; a target sells only if
+  that bar also closes at or above it (see TODO.md).
 
 Daily (and longer) bars all close after the market:
 
@@ -117,13 +183,17 @@ strategy enters the other direction at once at market. The new stop is
 the setup's height times `target_multiple` away. A reversed trade does not
 reverse again, and a raised or trailed stop, a target or a time exit never
 reverses. A late fill of the failed trade's orders after a reversal is logged
-and ignored.
+and ignored. A reversed trade is sized as any entry (with `risk_per_trade`,
+from the last close) but skips the entry filters: `trend_sma`, volume and
+`confirm`. Reversing a long sells short, so it needs a venue that can: on
+Binance.US the short is refused and the strategy stays flat.
 
 ## The setups
 
-Each setup arms a buy-stop one tick above the level shown, with the protective
-stop `stop_buffer_bps` below the low shown and the target the height shown
-above the fill.
+Each setup arms an entry one tick above the level shown (a buy-stop, or with
+`confirm = "closes"` or `entry = "throwback"` a watch for closes above it),
+with the protective stop `stop_buffer_bps` below the low shown and the target
+the height shown above the fill.
 
 | Setup | Pattern | Level | Low | Height |
 |---|---|---|---|---|
@@ -162,14 +232,34 @@ Its entry lasts `arm_bars` bars like any other. For the usual opening range
 breakout, set `arm_bars` to the session's remaining bars and
 `flatten_at_close = true`.
 
-**Departures from the deck.** Every setup, the inside bar included, triggers
-one tick above its high; the deck buys an inside bar on an open above the
-inside bar's close. The target is measured from the entry's fill price rather
-than the breakout level, so an open gapping through the trigger raises the
-target with it.
+**Backtests.** A bar-only backtest walks each bar as open, the extreme nearer
+the open, the other extreme, then the close, and the strategy runs at each
+point. The entry, the stop and a resting target fill inside the bar at their
+own prices, or at the open when it gaps through them. A stop, the entry's
+included, pays the paper venue's slippage; a resting limit (a throwback or a
+resting target) fills at its price as a maker. Fills inside a bar depend on
+that assumed path (see `RunBacktest`).
 
-**Backtests.** A bar-only backtest fills the entry, the stop and a resting
-target inside the bar at their own prices (see `RunBacktest`).
+## How it differs from the deck
+
+| | The deck | Kestrel |
+|---|---|---|
+| Patterns | the list above | no wedges, flags, pennants, gaps or candlestick patterns. The short side mirrors the long, so a descending triangle broken upward and an ascending one broken downward are not traded |
+| Setups not in the deck | not covered | `range` (a channel breakout of the last `range_bars` bars), `fvg` (a three-bar fair value gap, a retail trading pattern, not the deck's explosion gap pivot) and `opening_range` (the opening range breakout, after Toby Crabel) |
+| Inside bar | bought on the next bar's open above the inside bar's close | a buy-stop one tick above its high, as every setup |
+| Targets | the height from the breakout price (a triple bottom's from its highest peak, a pipe bottom's from the higher of its two highs) | the height from the entry's fill, so an open gapping through the trigger raises the target with it |
+| Confirmation | within the bar, closes, time, percentage or points, money | within the bar (`none`), `closes` or `percent`; no time or money filter. A volume filter (`volume_ratio`) is Kestrel's own |
+| Protective stop | beyond the support or trend line, with a filter | `stop_buffer_bps` under the setup's low, which is the deck's line with a filter in basis points; or, with `atr_stop`, a number of ATRs under the level broken |
+| Stop-and-reverse | the stop just beyond the breakout bar, and the reverse entry at the same price, so a false breakout is caught quickly | `reverse` enters the other way at market when the stop under the whole setup fills (a failed long sells short, a failed short buys), which is later and further from the breakout |
+| Throwbacks | waited for, with the warning that they do not always come | `entry = "throwback"`: once a close confirms the breakout, a post-only limit at the level broken, for `throwback_bars` bars. If the venue refuses the limit (the price is already back at the level, so it would take), the setup is dropped |
+| Pattern details | rules of thumb on charts read by eye | each pattern made exact, with thresholds the deck does not give (see [the setups](#the-setups)): a pipe bottom's first bar closing in the lower quarter of its range, a head and shoulders' shoulders at least half the height below the neckline, at least two-fifths of a cup's bars with lows in its bottom third. Double bottoms need no fall before them, though the deck says a triple does best after one |
+| Moving the stop, exits | not covered | breakeven, trailing, time and session exits, and a resting target paired with the stop, all optional |
+
+The deck's notes on which patterns do best come from Kirkpatrick and
+Dahlquist's book. In Kestrel's backtests most setups lost on crypto. On
+daily stocks several made money, but none beat holding the same stock over
+the same days with confidence (see
+[strategy-tests.md](../strategy-tests.md#summary)).
 
 ## Parameters
 

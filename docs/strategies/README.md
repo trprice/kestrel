@@ -8,6 +8,9 @@ backtests and paper runs are in [strategy-tests.md](../strategy-tests.md);
 writing a new strategy is covered in
 [writing-strategies.md](../writing-strategies.md).
 
+Each document describes the strategy as its source has it, with a link to
+the source, and then how Kestrel's version differs from it.
+
 | Strategy | Document | What it does |
 |---|---|---|
 | `breakout` | [breakout.md](breakout.md) | trades the break out of a bar pattern (a range, a double bottom, a triangle, a cup-and-handle and others), long or short |

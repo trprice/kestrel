@@ -616,7 +616,49 @@ for:
 - **Turnover was about five times equity a year:** 5,251 fills in under five
   years, most of them a few USDT as one model of nine changed, which is
   why the account needs to be large enough for Binance.US's 1 USDT minimum.
-- Paper-trading on 1,000 USDT from Nov 18 2026 (run 44; see Paper runs).
+- Paper-trading on 1,000 USDT from Nov 19 2026 (run 45; see Paper runs).
+
+### Checked against the paper: BTC on Kraken, 2015–2025
+
+To check that the rules are the paper's, they were run on Bitcoin alone
+over its period (Jan 1 2015 to Mar 19 2025), on Kraken's daily XBT/USD
+bars from Oct 2013 (Kraken's downloadable OHLCVT archive; the paper used
+coinmarketcap's prices). A Python replication of the paper's formulas
+gave:
+
+| BTC, Jan 2015 – Mar 2025 | CAGR | Vol. | Sharpe | Worst fall |
+|---|---|---|---|---|
+| Paper, Table 1 Combo (no costs) | 30% | 17% | 1.58 | 19% |
+| Replication, no costs | 27.4% | 16.3% | 1.57 | 18.9% |
+| Paper, Table 3 BTC (10 bps, 20% threshold) | 30% | 17% | 1.56 | 19% |
+| Replication, 10 bps, 20% threshold | 27.3% | 16.6% | 1.53 | 19.5% |
+| ... at 50 bps | 24.3% | 16.7% | 1.39 | 23.2% |
+| Hold BTC | 73.1% | 70.5% | 1.13 | 83.6% |
+
+- **The replication matches the paper's risk-adjusted results:** Sharpe
+  within 0.03 and worst fall within a point for the ensemble, and within
+  about 0.1 of Sharpe for each of the nine lookbacks alone. Returns are 2–3
+  points a year lower throughout, which looks like the different price
+  source (Kraken's thin 2013–2015 market against an index of exchanges).
+- **Leverage never mattered on BTC:** its 90-day volatility never fell
+  under 26% in the period, so 25% / volatility never reached 100%, and the
+  paper's 200% cap and Kestrel's 100% give the same results.
+- **Costs matter little:** the 20% threshold keeps turnover to about six
+  times equity a year, so even 50 bps a trade leaves a Sharpe of 1.39.
+- **Kestrel's `trend_ensemble` gives the same result as the replication.**
+  It was run as a Kestrel backtest on the same bars (BTC/USD alone,
+  100,000 USD, 10 bps a trade, filled at the close, `invest_fraction` 1).
+  It starts on Sep 23 2016, the first day with Kestrel's 1,081 bars of
+  warm-up in Kraken's data. From then to Mar 19 2025 both made 28.6% a
+  year at 16.4% volatility, a Sharpe of 1.61 and a 19.5% worst fall
+  (holding BTC: 79.5% a year, an 83.6% fall). It averaged 20% of equity in
+  BTC, and at most 83%.
+- **So the lower results above are the period, not the implementation.**
+  The same rules on BTC alone, spot, at 10 bps made 34.4% a year (Sharpe
+  1.78) in 2015–2021, 16.4% (Sharpe 1.09) in Jan 2022 – Dec 2024, and
+  −3.6% (Sharpe −0.28) from Jan 2025 to Sep 2026, when holding BTC made
+  −6.2%. The paper's decade includes three crypto bull markets, and our
+  test periods include none.
 
 ## Paper runs
 
@@ -637,8 +679,10 @@ for:
   - BTC/USDT has no trend filter. It is there to exercise live orders,
     fills, stops and exits now, while the market is below its averages.
     Expect a small loss: unfiltered, range 1h lost 0.05% a trade.
-- **`trend_ensemble`, the 11 USDT pairs (run 44, from Nov 18 2026):** the
+- **`trend_ensemble`, the 11 USDT pairs (run 45, from Nov 19 2026):** the
   paper's defaults on a 1,000 USDT paper account, large enough for its
   small orders to clear Binance.US's 1 USDT minimum. Judge it against 20%
   BTC and 80% cash over the same days, not against holding BTC; months of
-  it will mostly show whether the orders and restarts work.
+  it will mostly show whether the orders and restarts work. Run 44 (from
+  23:35 UTC Nov 18) held cash until it was restarted as run 45 at 02:06
+  UTC Nov 19 on the build with the second Gemini review's fixes.
