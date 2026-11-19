@@ -9,6 +9,7 @@ provider's own details are in its document:
 | `binanceus` | below, under [Binance.US](#binanceus) | crypto spot | yes |
 | `kraken` | below, under [Kraken](#kraken) | crypto spot | written; `run` off until `[kraken] live_trading = true` |
 | `schwab` | [schwab.md](schwab.md) | US stocks and ETFs | market orders checked live; off until `[schwab] live_trading = true` |
+| `databento` | [databento.md](databento.md) | US stocks and ETFs (historical) | no (`databento` import + `backtest` only) |
 
 The config file's `[general] provider` picks the provider and `[general]
 mode` picks `paper` or `live` (see

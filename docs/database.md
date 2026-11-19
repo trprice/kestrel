@@ -83,12 +83,13 @@ FROM show_chunks('quotes', older_than => INTERVAL '2 days') c;
 
 | Table / view | Written by | Contents |
 |---|---|---|
-| `bars` | `bars --store`, `stream-bars --store`, and `backtest` (the bars it had to fetch) | hypertable keyed by venue, symbol, timeframe, open_time |
-| `quotes` | `stream --store` | hypertable chunked per day: one row per delivered quote |
+| `bars` | `bars --store`, `stream-bars --store`, `databento --store` (OHLCV schemas and rollups), and `backtest` (the bars it had to fetch) | hypertable keyed by venue, symbol, timeframe, open_time |
+| `quotes` | `stream --store`, `databento --store` (`bbo-1s`, `bbo-1m`, `tbbo`, `mbp-1`) | hypertable chunked per day: one row per delivered quote |
 | `runs`, `fills`, `pnl_snapshots`, `pnl_totals`, `venue_latency` | `run` with `[recording]` | one run's record; see below |
 | `account_fills` | `account --store` | the account's whole trade history; see below |
 | `strategy_state` | `run`, for a strategy that keeps state | one row per key (provider, mode, strategy and symbol, e.g. `binanceus/live/market_maker/ZEC/USDT`): the strategy's saved state as JSON, and when it was saved. `DELETE` a row, or set the strategy's `reset_state`, to start it afresh |
-| `market_trades` | `trades --store` | hypertable chunked per week: every public trade on the venue, keyed by venue, symbol, trade ID; see below |
+| `market_trades` | `trades --store`, `databento --store` (`trades`) | hypertable chunked per week: every public trade on the venue, keyed by venue, symbol, trade ID; see below |
+| `databento_imports` | `databento --store` over HTTP | the import ledger: one row per finished slice, keyed by venue, dataset, symbol, target (the schema, or `rollup:` and a timeframe) and the slice's start and end; a resumed import skips what it records. Delete its rows along with the bars, quotes or trades they cover, or the import will not fetch them again (see [venues/databento.md](venues/databento.md)) |
 | `schema_migrations` | every command that opens the database | which migrations have been applied |
 
 ## Market data

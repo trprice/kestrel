@@ -75,6 +75,8 @@ class MarketHours {
     bool Extended() const { return mExtended; }
     // The same calendar, counting the regular session alone.
     MarketHours Regular() const { return MarketHours(mCalendar, false); }
+    // The market's local calendar date at `t` (UTC date when always open).
+    std::chrono::year_month_day DateAt(Timestamp t) const;
     bool IsOpen(Timestamp t) const;
 
     // The session open at `t`, or else the next one to open after it, as

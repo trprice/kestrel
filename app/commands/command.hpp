@@ -40,5 +40,6 @@ void AddRunCommand(CLI::App& app, CommandSlot& slot);
 void AddBacktestCommand(CLI::App& app, CommandSlot& slot);
 void AddTradesCommand(CLI::App& app, CommandSlot& slot);
 void AddAuthorizeCommand(CLI::App& app, CommandSlot& slot);
+void AddDatabentoCommand(CLI::App& app, CommandSlot& slot);
 
 }  // namespace kestrel::app

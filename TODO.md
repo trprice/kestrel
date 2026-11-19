@@ -1020,6 +1020,17 @@ the header of the code concerned.
       turns on TimescaleDB compression for `quotes`, `market_trades` and
       `bars` where the community edition is installed (see
       docs/database.md#compression).
+- [x] Databento historical US equity importer (`provider = "databento"`,
+      `kestrel_app databento`; see docs/venues/databento.md): HTTP pulls
+      against `hist.databento.com/v0` with a required `metadata.get_cost`
+      guard (`--dry-run` or `--max-cost --store`) and resumable `databento_imports`
+      ledger, plus bounded-memory `--file` streaming for portal CSV batch
+      archives; supports `ohlcv-1m` (with session-aligned `--rollup`),
+      `ohlcv-1h`, `ohlcv-1d`, `bbo-1s`/`1m`, `tbbo`, `mbp-1` and `trades`,
+      with `seq` / `trade_id` from each record's nanosecond timestamp, kept
+      unique within its millisecond, so out-of-order backfills keep
+      `QuoteStore::Load` chronological and re-imports skip duplicates
+      however they were sliced.
 - [x] Schwab re-authorization while a process runs: a `stream` or `run`
       started before `authorize` saved its older tokens over the new ones
       at its next access-token renewal, so the authorization was undone

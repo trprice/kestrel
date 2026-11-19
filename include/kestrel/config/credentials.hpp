@@ -23,4 +23,8 @@ struct SchwabCredentials {
     std::string app_secret;  // OAuth client secret
 };
 
+struct DatabentoCredentials {
+    std::string api_key;
+};
+
 }  // namespace kestrel::config

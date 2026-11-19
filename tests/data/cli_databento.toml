@@ -1,0 +1,4 @@
+[general]
+provider = "databento"
+mode     = "paper"
+symbols  = ["SPY"]

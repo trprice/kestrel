@@ -20,7 +20,7 @@
 namespace kestrel::config {
 
 enum class Mode { kPaper, kLive };
-enum class Provider { kSchwab, kKraken, kBinanceUS };
+enum class Provider { kSchwab, kKraken, kBinanceUS, kDatabento };
 
 std::string_view ToString(Mode);
 std::string_view ToString(Provider);
@@ -75,7 +75,7 @@ struct CommonSettings {
 // Base class for per-provider configuration, loaded from a TOML file:
 //
 //   [general]
-//   provider = "kraken"          # schwab | kraken | binanceus
+//   provider = "kraken"          # schwab | kraken | binanceus | databento
 //   mode     = "paper"           # paper | live
 //   symbols  = ["BTC/USD"]
 //
@@ -290,6 +290,42 @@ class SchwabConfiguration : public Configuration {
     std::chrono::milliseconds mTakeoverReconnect{0};
     std::string mAccountNumber;
     bool mLiveTrading = false;
+};
+
+class DatabentoConfiguration : public Configuration {
+   public:
+    static types::Result<DatabentoConfiguration> Load(
+        const std::filesystem::path& path);
+    static types::Result<DatabentoConfiguration> Parse(
+        std::string_view toml_text, const LoadOptions& options);
+
+    Provider GetProvider() const override { return Provider::kDatabento; }
+    const std::string& RestUrl() const { return mRestUrl; }
+    const std::string& Dataset() const { return mDataset; }
+    // [databento] extended_hours: keep intraday bars, quotes and trades in the
+    // extended session (07:00 to 09:30 and the close to 20:00 New York time)
+    // as well as the regular one. Default false.
+    bool ExtendedHours() const { return mExtendedHours; }
+    // Env: KESTREL_DATABENTO_API_KEY, or [databento] api_key in the secrets
+    // file. Only HTTP pulls need it; `backtest` and `databento --file` do not.
+    const std::optional<DatabentoCredentials>& Credentials() const {
+        return mCredentials;
+    }
+
+   private:
+    DatabentoConfiguration(CommonSettings c, std::string rest_url,
+                           std::string dataset, bool extended_hours,
+                           std::optional<DatabentoCredentials> creds)
+        : Configuration(std::move(c)),
+          mRestUrl(std::move(rest_url)),
+          mDataset(std::move(dataset)),
+          mExtendedHours(extended_hours),
+          mCredentials(std::move(creds)) {}
+    friend class ConfigParser;
+    std::string mRestUrl;
+    std::string mDataset;
+    bool mExtendedHours = false;
+    std::optional<DatabentoCredentials> mCredentials;
 };
 
 // Reads [general] provider from the file and returns the matching subclass.

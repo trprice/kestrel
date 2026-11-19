@@ -1,7 +1,8 @@
 # Kestrel
 
 A C++23 library for gathering stock and cryptocurrency prices and trading on
-them. Providers: **Schwab**, **Kraken**, **Binance.US**.
+them. Providers: **Schwab**, **Kraken**, **Binance.US**, and **Databento**
+for historical US equity data to backtest on.
 
 Market data and order execution are separate interfaces (`data::DataSource`,
 `trading::TradingVenue`). Only the execution side changes between paper and

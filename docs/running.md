@@ -57,6 +57,7 @@ for the config file.
 | `order <buy\|sell> <symbol> <quantity> [--limit P \| --stop P] [--tif gtc\|ioc\|fok\|day] [--post-only] [--client-id ID] [--no-risk] (--test \| --confirm)` | one order on the live venue, checked against the `[risk]` limits that apply to one order; Binance.US refuses `day`, and a stop order must be `gtc` (the default); `--post-only` makes a limit order refused rather than take liquidity |
 | `cancel <order_id> \| --all --confirm` | cancels one order, or every open order on the configured symbols, on the live venue |
 | `authorize [--status]` | Schwab only: authorizes Kestrel to use the account and saves its tokens; `--status` shows when they expire |
+| `databento --schema <S> (--from <date> --to <date> (--dry-run \| --max-cost <USD> --store) \| --file <path\|-> [--store]) [--dataset D] [--rollup TFS] [--force]` | Databento only: imports historical US equity bars (`ohlcv-1m`/`1h`/`1d`), quotes (`bbo-1s`/`1m`, `tbbo`, `mbp-1`) or `trades` over HTTP (checking `metadata.get_cost` first) or from a CSV stream; see [venues/databento.md](venues/databento.md) |
 
 `--store` writes what a command fetches to the `[database]`; see
 [database.md](database.md).

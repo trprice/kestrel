@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "kestrel/data/binanceus_data_source.hpp"
+#include "kestrel/data/databento_data_source.hpp"
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
@@ -152,6 +153,23 @@ Result<Components> BuildSchwab(const config::SchwabConfiguration& cfg) {
     return Components{ds,
                       std::make_unique<trading::SchwabTradingVenue>(
                           std::move(trader_api), ds, std::move(venue_options))};
+}
+
+std::shared_ptr<data::DatabentoDataSource> MakeDatabentoDataSource(
+    const config::DatabentoConfiguration& cfg) {
+    data::DatabentoDataSource::Options options;
+    options.extended_hours = cfg.ExtendedHours();
+    return std::make_shared<data::DatabentoDataSource>(options);
+}
+
+Result<Components> BuildDatabento(const config::DatabentoConfiguration& cfg) {
+    auto ds = MakeDatabentoDataSource(cfg);
+    if (cfg.GetMode() == config::Mode::kPaper) {
+        return Components{ds, MakePaper(cfg, ds)};
+    }
+    return MakeError(ErrorCategory::kNotImplemented,
+                     "databento is a historical market-data provider and has "
+                     "no live trading venue");
 }
 
 using StrategyPtr = std::unique_ptr<strategy::Strategy>;
@@ -804,6 +822,9 @@ std::optional<std::string> NoLiveVenue(const config::Configuration& cfg) {
             return "live trading on kraken is off until the venue has been "
                    "checked on a real account; set [kraken] live_trading = "
                    "true to turn it on";
+        case config::Provider::kDatabento:
+            return "databento is a historical market-data provider and has no "
+                   "live trading venue";
     }
     return "live trading on " +
            std::string(config::ToString(cfg.GetProvider())) +
@@ -855,6 +876,10 @@ Result<std::shared_ptr<data::DataSource>> CreateDataSource(
             }
             return std::shared_ptr<data::DataSource>(std::move(*ds));
         }
+        case config::Provider::kDatabento:
+            return MakeDatabentoDataSource(
+                dynamic_cast<const config::DatabentoConfiguration&>(
+                    configuration));
     }
     return MakeError(ErrorCategory::kInternal, "unknown provider");
 }
@@ -1086,6 +1111,10 @@ Result<Components> CreateComponents(
         case config::Provider::kSchwab:
             return BuildSchwab(dynamic_cast<const config::SchwabConfiguration&>(
                 configuration));
+        case config::Provider::kDatabento:
+            return BuildDatabento(
+                dynamic_cast<const config::DatabentoConfiguration&>(
+                    configuration));
     }
     return MakeError(ErrorCategory::kInternal, "unknown provider");
 }

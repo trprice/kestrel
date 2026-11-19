@@ -159,6 +159,13 @@ std::optional<MarketHours::Session> MarketHours::SessionOf(
                      : Session{day->open, day->close};
 }
 
+std::chrono::year_month_day MarketHours::DateAt(Timestamp t) const {
+    if (!mCalendar) {
+        return year_month_day{floor<days>(t)};
+    }
+    return mCalendar->DateAt(t);
+}
+
 bool MarketHours::IsOpen(Timestamp t) const {
     if (!mCalendar) {
         return true;

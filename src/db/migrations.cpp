@@ -167,6 +167,18 @@ CREATE TABLE strategy_state (
 DROP INDEX IF EXISTS quotes_venue_symbol_time;
 DROP INDEX IF EXISTS quotes_received_time_idx;
 )sql"},
+        {11, "create databento import ledger", R"sql(
+CREATE TABLE databento_imports (
+    venue       TEXT        NOT NULL,
+    dataset     TEXT        NOT NULL,
+    symbol      TEXT        NOT NULL,
+    target      TEXT        NOT NULL,
+    slice_start TIMESTAMPTZ NOT NULL,
+    slice_end   TIMESTAMPTZ NOT NULL,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (venue, dataset, symbol, target, slice_start, slice_end)
+);
+)sql"},
     };
     return kMigrations;
 }

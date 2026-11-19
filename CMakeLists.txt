@@ -80,11 +80,14 @@ add_library(kestrel
   src/data/binanceus_errors.cpp
   src/data/binanceus_quote_stream.cpp
   src/data/binanceus_bar_stream.cpp
+  src/data/databento_client.cpp
+  src/data/databento_data_source.cpp
   src/db/database.cpp
   src/db/migrations.cpp
   src/db/bar_store.cpp
   src/db/quote_store.cpp
   src/db/account_fill_store.cpp
+  src/db/databento_import_store.cpp
   src/db/market_trade_store.cpp
   src/db/strategy_state_store.cpp
   src/db/trade_store.cpp
@@ -154,6 +157,7 @@ if(KESTREL_BUILD_APP)
     app/commands/backtest.cpp
     app/commands/trades.cpp
     app/commands/authorize.cpp
+    app/commands/databento.cpp
   )
   target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
@@ -166,6 +170,7 @@ if(KESTREL_BUILD_APP)
     enable_testing()
     set(_good ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_backtest.toml)
     set(_live ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_live_no_risk.toml)
+    set(_databento ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_databento.toml)
     # name | config | exit code | message | arguments (comma-separated)
     set(_cli_cases
       "no_subcommand|${_good}|106|A subcommand is required|"
@@ -188,7 +193,15 @@ if(KESTREL_BUILD_APP)
       "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
       "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
       "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
-      "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,ma_crossover")
+      "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,ma_crossover"
+      "databento_wrong_provider|${_good}|2|provider = \"databento\"|databento,--schema,ohlcv-1m,--file,/tmp/x.csv"
+      "databento_bad_schema|${_databento}|105|unknown Databento schema|databento,--schema,mbo,--file,/tmp/x.csv"
+      "databento_needs_cost_guard|${_databento}|2|--dry-run|databento,--schema,ohlcv-1m,--from,2025-01-02,--to,2025-01-03"
+      "databento_both_cost_flags|${_databento}|2|exactly one of --dry-run|databento,--schema,ohlcv-1m,--from,2025-01-02,--to,2025-01-03,--dry-run,--max-cost,1.00,--store"
+      "databento_http_needs_store|${_databento}|2|must pass --store|databento,--schema,ohlcv-1m,--from,2025-01-02,--to,2025-01-03,--max-cost,1.00"
+      "databento_zst_file|${_databento}|2|uncompressed CSV|databento,--schema,bbo-1s,--file,batch.csv.zst"
+      "databento_bad_rollup|${_databento}|2|schema ohlcv-1m|databento,--schema,bbo-1s,--file,/tmp/x.csv,--rollup,5m"
+      "databento_force_dry_run_no_db|${_databento}|1|API key|databento,--schema,ohlcv-1m,--from,2025-01-02,--to,2025-01-03,--force,--dry-run")
     foreach(_case IN LISTS _cli_cases)
       string(REPLACE "|" ";" _fields "${_case}")
       list(GET _fields 0 _name)
@@ -222,6 +235,7 @@ if(KESTREL_BUILD_TESTS)
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp
     tests/binanceus_bar_stream_test.cpp
+    tests/databento_test.cpp
     tests/bar_store_test.cpp
     tests/quote_store_test.cpp
     tests/account_fill_store_test.cpp

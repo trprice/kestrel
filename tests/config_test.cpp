@@ -358,6 +358,56 @@ TEST(Config, SchwabSettings) {
                      .has_value());
 }
 
+TEST(Config, DatabentoSettingsAndCredentials) {
+    const std::string base =
+        "[general]\nprovider='databento'\nsymbols=['spy','brk.b']\n";
+    auto cfg = config::DatabentoConfiguration::Parse(base, NoEnv());
+    ASSERT_OK(cfg);
+    EXPECT_EQ(cfg->GetProvider(), config::Provider::kDatabento);
+    EXPECT_EQ(cfg->GetSymbols(), (std::vector<types::Symbol>{"SPY", "BRK.B"}));
+    EXPECT_EQ(cfg->Dataset(), "EQUS.MINI");
+    EXPECT_EQ(cfg->RestUrl(), "https://hist.databento.com");
+    EXPECT_FALSE(cfg->ExtendedHours());
+    EXPECT_FALSE(cfg->Credentials().has_value());
+
+    auto custom = config::DatabentoConfiguration::Parse(
+        base +
+            "[databento]\ndataset='XNAS.ITCH'\nrest_url='https://example.test'"
+            "\nextended_hours=true\n",
+        NoEnv({{"KESTREL_DATABENTO_API_KEY", "db-secret"}}));
+    ASSERT_OK(custom);
+    EXPECT_EQ(custom->Dataset(), "XNAS.ITCH");
+    EXPECT_EQ(custom->RestUrl(), "https://example.test");
+    EXPECT_TRUE(custom->ExtendedHours());
+    ASSERT_TRUE(custom->Credentials().has_value());
+    EXPECT_EQ(custom->Credentials()->api_key, "db-secret");
+
+    // Secrets in the main file and unknown keys are refused.
+    EXPECT_FALSE(config::DatabentoConfiguration::Parse(
+                     base + "[databento]\napi_key='leaked'\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::DatabentoConfiguration::Parse(
+                     base + "[databento]\ndataset=''\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::DatabentoConfiguration::Parse(
+                     base + "[databento]\nextended_hours='yes'\n", NoEnv())
+                     .has_value());
+    EXPECT_FALSE(config::DatabentoConfiguration::Parse(
+                     base + "[databento]\nunknown_key=1\n", NoEnv())
+                     .has_value());
+
+    // Paper components build without credentials; live mode is refused.
+    ASSERT_OK(CreateComponents(*cfg));
+    auto live = config::DatabentoConfiguration::Parse(
+        "[general]\nprovider='databento'\nmode='live'\nsymbols=['SPY']\n",
+        NoEnv());
+    ASSERT_OK(live);
+    auto live_components = CreateComponents(*live);
+    ASSERT_FALSE(live_components.has_value());
+    EXPECT_EQ(live_components.error().category,
+              types::ErrorCategory::kNotImplemented);
+}
+
 TEST(Config, LoadConfigurationDispatchesOnProvider) {
     const auto dir =
         std::filesystem::temp_directory_path() / "kestrel-config-dispatch";

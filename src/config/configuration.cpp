@@ -28,6 +28,8 @@ std::string_view ToString(Provider p) {
             return "kraken";
         case Provider::kBinanceUS:
             return "binanceus";
+        case Provider::kDatabento:
+            return "databento";
     }
     return "unknown";
 }
@@ -646,8 +648,8 @@ class ConfigParser {
     // The tables a config may have (every provider's, whichever this is).
     static Result<void> RejectUnknownTables(const toml::table& root) {
         static constexpr std::string_view kTables[] = {
-            "general", "database", "risk",   "strategy",  "recording",
-            "http",    "paper",    "kraken", "binanceus", "schwab"};
+            "general", "database", "risk",      "strategy", "recording", "http",
+            "paper",   "kraken",   "binanceus", "schwab",   "databento"};
         for (const auto& [key, node] : root) {
             if (std::find(std::begin(kTables), std::end(kTables), key.str()) ==
                 std::end(kTables)) {
@@ -1070,6 +1072,73 @@ Result<SchwabConfiguration> SchwabConfiguration::Load(
     return Parse(*text, ConfigParser::ForFile(path));
 }
 
+Result<DatabentoConfiguration> DatabentoConfiguration::Parse(
+    std::string_view text, const LoadOptions& raw) {
+    const auto options = ConfigParser::WithDefaults(raw);
+    auto root = ConfigParser::ParseToml(text, "config");
+    if (!root) {
+        return std::unexpected(root.error());
+    }
+    auto common = ConfigParser::Common(*root, Provider::kDatabento, options);
+    if (!common) {
+        return std::unexpected(common.error());
+    }
+    const auto* section = (*root)["databento"].as_table();
+    if (auto ok = ConfigParser::RejectSecrets(section, "databento"); !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (auto ok = ConfigParser::RejectUnknownKeys(
+            section, "databento", {"rest_url", "dataset", "extended_hours"});
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    auto secrets = ConfigParser::Secrets(*root, options);
+    if (!secrets) {
+        return std::unexpected(secrets.error());
+    }
+    std::optional<DatabentoCredentials> creds;
+    if (auto key =
+            ConfigParser::Secret(options, *secrets, "databento", "api_key",
+                                 "KESTREL_DATABENTO_API_KEY")) {
+        creds = DatabentoCredentials{std::move(*key)};
+    }
+    auto rest_url = ConfigParser::Str(section, "databento", "rest_url",
+                                      "https://hist.databento.com");
+    if (!rest_url) {
+        return std::unexpected(rest_url.error());
+    }
+    auto dataset =
+        ConfigParser::Str(section, "databento", "dataset", "EQUS.MINI");
+    if (!dataset) {
+        return std::unexpected(dataset.error());
+    }
+    if (dataset->empty()) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "[databento] dataset must not be empty");
+    }
+    bool extended_hours = false;
+    if (const auto* node = section ? section->get("extended_hours") : nullptr) {
+        if (!node->is_boolean()) {
+            return MakeError(
+                ErrorCategory::kInvalidArgument,
+                "[databento] extended_hours must be true or false");
+        }
+        extended_hours = node->value_or(false);
+    }
+    return DatabentoConfiguration(std::move(*common), std::move(*rest_url),
+                                  std::move(*dataset), extended_hours,
+                                  std::move(creds));
+}
+
+Result<DatabentoConfiguration> DatabentoConfiguration::Load(
+    const std::filesystem::path& path) {
+    auto text = ReadFile(path);
+    if (!text) {
+        return std::unexpected(text.error());
+    }
+    return Parse(*text, ConfigParser::ForFile(path));
+}
+
 Result<std::unique_ptr<Configuration>> LoadConfiguration(
     const std::filesystem::path& path) {
     auto text = ReadFile(path);
@@ -1103,9 +1172,12 @@ Result<std::unique_ptr<Configuration>> LoadConfiguration(
     if (*provider == "schwab") {
         return wrap(SchwabConfiguration::Parse(*text, options));
     }
+    if (*provider == "databento") {
+        return wrap(DatabentoConfiguration::Parse(*text, options));
+    }
     return MakeError(ErrorCategory::kInvalidArgument,
                      "unknown provider '" + *provider +
-                         "' (expected schwab, kraken or binanceus)");
+                         "' (expected schwab, kraken, binanceus or databento)");
 }
 
 }  // namespace kestrel::config

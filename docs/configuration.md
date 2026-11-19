@@ -22,7 +22,7 @@ keys depend on the strategy.
 
 | Key | Meaning |
 |---|---|
-| `provider` | `kraken`, `binanceus` or `schwab` |
+| `provider` | `kraken`, `binanceus`, `schwab` or `databento` |
 | `mode` | `paper` (simulated venue, no credentials) or `live` |
 | `symbols` | the symbols to trade and stream |
 | `secrets_file` | where the secrets file is (default: `secrets.toml` next to the config, if present) |
@@ -41,6 +41,7 @@ warns if other users can read it):
 | Kraken | `KESTREL_KRAKEN_API_KEY`, `KESTREL_KRAKEN_API_SECRET` | `[kraken] api_key`, `api_secret` |
 | Binance.US | `KESTREL_BINANCEUS_API_KEY`, `KESTREL_BINANCEUS_API_SECRET` | `[binanceus] api_key`, `api_secret` |
 | Schwab | `KESTREL_SCHWAB_APP_KEY`, `KESTREL_SCHWAB_APP_SECRET` | `[schwab] app_key`, `app_secret` |
+| Databento | `KESTREL_DATABENTO_API_KEY` | `[databento] api_key` |
 | Database | `KESTREL_DATABASE_PASSWORD` | `[database] password` |
 
 Environment variables win over the file, and a key and its secret must both be
@@ -101,6 +102,13 @@ trade; otherwise it is the first.
 Live, the runner polls Schwab for fills every 5 seconds, and only orders and
 fills on `[general] symbols` are Kestrel's: orders on other symbols are left
 alone, at startup and by the risk gate's kill switch.
+
+`[databento]` takes `dataset` (default `EQUS.MINI`), `rest_url` (default
+`https://hist.databento.com`), and `extended_hours` (default `false`, keeping
+07:00 to 20:00 New York time when `true`); see
+[venues/databento.md](venues/databento.md). `backtest` and `databento --file`
+need no API key; HTTP pulls use `KESTREL_DATABENTO_API_KEY` or `[databento]
+api_key` in `secrets.toml`.
 
 ## `[paper]`
 
