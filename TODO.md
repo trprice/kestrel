@@ -190,6 +190,45 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Run several strategies in one process, sharing data subscriptions
 - [ ] Quote `seq` is numbered per process: two recorders of one symbol
       interleave. Check the stored maximum at each flush, or number in SQL.
+- [ ] **GitHub releases and a run-environment container.** The current
+      `Dockerfile` is a testbed (`kestrel-entrypoint` compiles `/src` from
+      scratch on each `docker run`, runs `ctest` against `kestrel_test` and
+      exits; mounting a persistent volume over PostgreSQL's data directory
+      hides the cluster created at build time, and Ubuntu's
+      `postgresql-18-timescaledb` lacks compression). Make running Kestrel in
+      a container straightforward without compiling C++:
+      - **GitHub release workflow** (`.github/workflows/release.yml` on `v*`
+        tags): run the test suite, build the stripped Ubuntu 26.04 Release
+        `kestrel_app` (as `ci.yml` already does for short-lived workflow
+        artifacts), and publish a versioned tarball plus `SHA256SUMS` to
+        GitHub Releases. Bundle everything a person or AI agent needs to
+        configure, verify and run Kestrel without cloning the source tree:
+        `kestrel_app`, `README.md`, `docs/` (configuration, venues,
+        strategies, database, running, strategy-tests), `config/*.example.toml`
+        (including `secrets.example.toml`), `scripts/setup_database.sh`, the
+        run-container files, and a short operator/agent setup guide covering
+        directory layout, environment variables, one-shot vs long-running
+        commands (`init-db`, `authorize`, `bars --store`, `databento`,
+        `backtest`, `run`), and live-trading prerequisites (`[risk]`,
+        `live_trading = true`).
+      - **Run-environment `Dockerfile`** (e.g. `docker/Dockerfile.run` and
+        entrypoint, plus an optional `docker-compose.yml`): start from Ubuntu
+        26.04 (matching the release binary's shared-library ABI in
+        `docs/running.md`), install only the runtime packages (`ca-certificates`,
+        `tzdata`, `curl`, `libcpr1`, `libpq5`, `libspdlog1.15`, `libfmt10`,
+        `libtomlplusplus3t64`, `libssl3t64`, `zlib1g`) plus PostgreSQL 18 and
+        TimescaleDB (Timescale's community package with compression once
+        published for 26.04, falling back to Ubuntu's Apache build until then),
+        and fetch and SHA-256-verify the GitHub release archive into
+        `/opt/kestrel` (`ARG KESTREL_VERSION`). On first start with an empty
+        data volume, the entrypoint should initialize the PostgreSQL cluster
+        with `shared_preload_libraries = 'timescaledb'`, start it, run
+        `setup_database.sh` and `kestrel_app init-db` for the `kestrel` role
+        and database (unless pointed at an external `[database] host`), run
+        `kestrel_app` as a non-root user against mounted `/config` (writable
+        for Schwab's renewed `tokens.json`), and forward `SIGINT`/`SIGTERM` so
+        `kestrel_app` cancels resting orders and flushes `RunRecorder` before
+        PostgreSQL stops.
 
 ### Backtesting and research
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
