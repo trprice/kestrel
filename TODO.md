@@ -12,8 +12,37 @@ the reference sections, Known limitations and Done.
 
 ## Priorities
 
-Empty for now: the next work is being decided. The code review's items
-(Nov 5 2026) are done (see Done) or moved to their sections under Projects.
+From the Nov 20 2026 reviews of this list (GLM-5.3, then Gemini, checked
+against the code by Claude). Each step's details are in its item under
+Projects; the live checks are under In progress.
+
+1. Live-safety fixes, Binance.US and `breakout` (Venues, Strategies):
+   a 2xx body that fails to parse counted as "may have been placed", one
+   shared "may have taken effect" test for venues and strategies, and an
+   unanswered stop or one-cancels-other pair adopted from `GetOpenOrders`
+   before placing again. Then `breakout` `risk_fraction` (Strategies),
+   which touches the same code.
+2. `market_maker`: protection on a crossed, locked or one-sided book, and a
+   reconcile for exits (Strategies). Not trading now (parked after the Nov
+   2026 replays), so these gate its next live run.
+3. CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
+   stream code lands.
+4. Alerts when the kill switch trips, a stream stays down or a venue keeps
+   failing, e.g. expired authorization (Operations). Before any live run is
+   left unattended.
+5. The real-account checks for Kraken and Schwab, then `live_trading` on by
+   default (In progress), when live trading there is planned.
+6. Shared unknown-outcome recovery and a stream-callback guard, a WebSocket
+   host shared within Binance.US only, and the small engineering items
+   (Engineering); then pushed executions: Binance.US first, then Schwab
+   `ACCT_ACTIVITY` and Kraken `executions` (Venues, In progress).
+7. Kestrel's order IDs recorded per run (Operations), then quote retention
+   by venue, after the `Migrate()` failure tests, and continuous crypto
+   recording (Operations).
+8. Research: backtest-against-live checks, `backtest --sweep`, the pair
+   scanner (Backtesting and research).
+
+Not now: new strategies, the indicator backlog, MSVC, paper shorting fees.
 
 ## In progress
 
@@ -71,6 +100,16 @@ Sections in priority order: safety first, then what is in use.
       reports that use them
 
 ### Venues
+- [ ] Binance.US: a 2xx body that does not parse (`kParse` from
+      `BinanceUSApi`, or `ParseOrder` failing on valid JSON) is returned as
+      a refusal, since `OutcomeUnknown` counts only network, timeout and
+      5xx errors. Kraken counts `kParse` as well. It affects `PlaceOrder`,
+      `PlaceOco` and `CancelOrder`: look the order up by client ID as for a
+      timeout. `breakout` makes it worse: an OCO error it does not count as
+      "may exist" goes to its refused branch, which places a plain stop at
+      once, so a pair that was placed gets a second sell beside it. Give
+      venues and strategies one shared "may have taken effect" test instead
+      of each listing categories
 - [ ] Schwab pushed executions: `ACCT_ACTIVITY` behind
       `SchwabTradingVenue::StreamExecutions`, on `SchwabStreamer`'s one
       connection. Until then fills and order changes are polled, every 5 s.
@@ -94,27 +133,29 @@ Sections in priority order: safety first, then what is in use.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 
 ### Operations
-- [ ] Record quotes continuously: `stream --store` under systemd (a loop
-      that restarts it) on the server, for several pairs. Recordings so far
-      were runs of a few days started by hand. Mind the retention item below.
-- [ ] **Data retention for the database** (from the 10 minute paper run,
-      2026-10-28; nothing is configured yet, no compression or retention
-      policy exists on either hypertable). `quotes` is the only table that
-      grows fast: about 6,400 to 12,000 rows an hour for one symbol, roughly
-      520 bytes a row with its indexes, so 80 to 150 MB a day (29 to 55 GB a
-      year) per symbol. The disk had 23 GB free, so one symbol fills it in
-      about 5 to 9 months and each extra symbol shortens that. Proposed policy,
-      as a migration:
-      - `quotes`: compress chunks older than 7 days (segment by venue and
-        symbol, order by `received_time`) and drop chunks older than 90 days.
-        The expected 10x compression is a typical figure, not measured here;
-        try it on the existing chunks first. Backtests mostly need recent
-        quotes. Decide whether 90 days is enough before dropping anything, and
-        make the ages configurable or at least documented.
-      - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever. They are small
-        (1-minute bars for 15 symbols grow about 1.7 GB a year; a day of P&L
-        snapshots is about 360 kB).
-      - `venue_latency`: keep 1 year, then review (about 1 MB a day live).
+- [ ] Record crypto quotes continuously: `stream --store` under systemd (a
+      loop that restarts it) on the server, for several pairs. Crypto
+      recordings so far were runs of a few days started by hand; Schwab's
+      equity quotes and bars are recorded every weekday session by cron
+      (`~/.local/share/kestrel-recorder`). Do the retention item below first.
+- [ ] **Quote retention by venue.** Compression is on (see Done and
+      docs/database.md#compression): on Nov 20 2026 the compressed `quotes`
+      chunks held 1,836 MB in 71 MB (about 26x), the whole table was 714 MB
+      (mostly the uncompressed recent days), and the disk had 59 GB free. So
+      dropping old quotes is not urgent until 24/7 crypto recording starts.
+      Before adding any:
+      - Do not use `drop_chunks` or `add_retention_policy` on `quotes` or
+        `market_trades`: they drop whole time ranges across every venue, and
+        would delete paid Databento imports (stored in `quotes`) while
+        `databento_imports` still lists them as imported. Delete by venue
+        (and age) instead, or drop only chunks holding no `databento` rows.
+      - Test `Migrate()`'s failure paths first (Engineering), since a
+        migration that deletes data should not prove itself on the real
+        database.
+      - Make the ages configurable or documented; decide whether 90 days of
+        recorded crypto quotes is enough.
+      - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever (small).
+        `venue_latency`: keep 1 year, then review (about 1 MB a day live).
       - Add a check that warns at startup when the disk is nearly full.
 - [ ] Use `account_fills` for the cost basis of what the account holds at the
       start of a run, so selling a starting holding realizes a real profit or
@@ -140,8 +181,10 @@ Sections in priority order: safety first, then what is in use.
       Kestrel's own orders with their final state, not the venue's whole order
       history: a market maker cancels most of what it places (about 125k
       orders a day at the paper run's pace), which would outgrow `quotes`.
-- [ ] Alerts (email, webhook or push) when the kill switch trips or a stream
-      stays down
+- [ ] Alerts (email, webhook or push) when the kill switch trips, a stream
+      stays down, or a venue keeps failing (an authorization that expired
+      mid-run leaves the process up but unable to trade, with only repeated
+      warnings in its log)
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
 - [ ] Run several strategies in one process, sharing data subscriptions
@@ -183,7 +226,16 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Session VWAP reversion (needs `SessionVwap`)
 - [ ] `mean_reversion`: keep the position across a restart, and a resting
       stop order instead of the check at the close
-- [ ] Position sizing helpers: fixed fractional, volatility-targeted
+- [ ] `breakout` `risk_fraction`: risk a share of the account (e.g. 0.02)
+      instead of `risk_per_trade`'s fixed amount, read from the quote
+      asset's balance when the entry is sized (it arms only while flat),
+      exclusive with `risk_per_trade`, at most 0.1, and no entry if the
+      balance cannot be read. On Schwab the balance is the whole account's
+      cash, so an `allocation` cap would be needed there. Percentage
+      `[risk]` limits are a separate change in the risk gate.
+      (`trend_ensemble` and `momentum_rotation` already size from equity.)
+- [ ] Position sizing helpers: volatility-targeted, for the strategies that
+      do not size from equity yet
 - [ ] Indicators: `Keltner`, `Adx`, `Supertrend` and `SessionVwap` in
       `patterns.hpp`
 - [ ] `ma_crossover` trades only on the bar of a cross. A cross that comes
@@ -211,8 +263,10 @@ Sections in priority order: safety first, then what is in use.
       not tracked. The next bar places another, so if the first was live
       there are two sells for one position (Binance.US then refuses the
       second for the balance, which also marks the target refused for the
-      rest of the trade). Track it as a stray, or look it up before placing
-      again
+      rest of the trade). `AddStray` cannot cover it, as it cancels by
+      exchange order ID and none came back: before placing again, look in
+      `GetOpenOrders` for a sell on the symbol it does not track and adopt
+      or cancel it. See also the Binance.US `kParse` item under Venues
 - [ ] `momentum_rotation` on stock daily bars: the lookback finds its bar
       by time (`lookback_bars` periods of 24 hours back), and stock bars
       skip weekends and holidays. A lookback not a multiple of 7 can land on
@@ -247,8 +301,14 @@ four recorded days. Check a change's markouts, not only "vs hold".
   - Paper venue: reserve a buy-stop for the spread as well as slippage; a
     helper for the lock/ProcessPending/ExpireDayOrders prologue its public
     methods repeat.
-  - Binance.US: share the unknown-outcome recovery of PlaceOrder and
-    PlaceOco; a shared WebSocket host for the bar and quote streams.
+  - Share the unknown-outcome recovery (look the order up by client ID)
+    across `PlaceOrder` and `PlaceOco` and the three live venues, with the
+    "may have taken effect" test from the Binance.US `kParse` item.
+  - Binance.US: a shared WebSocket host for its bar, quote and (later)
+    user-data streams. Within Binance.US only: Kraken's v2 channels and
+    Schwab's one streamer connection share little with it.
+  - Stream callbacks are kept from throwing into the socket thread by
+    convention only: wrap them once, so a new stream cannot forget.
   - Kraken's quote stream: a silence watchdog like Schwab's.
   - `MakeTimedHttpClient` builds a connection pool per call.
   - `Secrets()` reads the secrets file twice per load.
@@ -264,7 +324,10 @@ four recorded days. Check a change's markouts, not only "vs hold".
       perhaps changed files only) and the ASan/UBSan and TSan builds. TSan is
       worth having, since the runner and venues are multithreaded.
 - [ ] The database tests share fixture rows, so they cannot run in parallel
-      (`ctest -j` fails them); give each test its own venue name or schema
+      (`ctest -j` fails them); give each test its own venue name or schema.
+      Without `KESTREL_TEST_DBNAME` they skip, so a local `ctest` looks green
+      while testing nothing in the database (CI sets it in Docker): say so
+      loudly
 - [ ] Sanitize the Docker image's build as well, and run TSan against a long
       paper run (`kestrel_app run`), which the unit tests do not cover
 - [ ] Integration tests against venue sandboxes or recorded responses
