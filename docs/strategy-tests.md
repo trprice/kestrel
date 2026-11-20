@@ -36,6 +36,7 @@ Unless a test says otherwise:
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
+| Turtle breakout (20/10 and 55/20, 2 ATR stop) | 10 macro ETFs + BTC (2016–2026), and 11 USDT pairs (2022–2026) | No timing edge on ETFs (+1.90 to −1.91 bps/day against exposure-matched holding, \|t\| < 2); the published 5-asset result comes from up to 5.8× CFD leverage and BTC. Likely edge on BTC (t = 2.33, `breakout` PF 4.32). On 11 coins at the same ~7.8% volatility, Turtle led `trend_ensemble` in the holdout but not significantly (p ≥ 0.085), and `trend_ensemble` with `lookbacks = [20, 55]` covers it |
 
 ## Market maker (ZEC/USDT)
 
@@ -659,6 +660,124 @@ gave:
   −3.6% (Sharpe −0.28) from Jan 2025 to Sep 2026, when holding BTC made
   −6.2%. The paper's decade includes three crypto bull markets, and our
   test periods include none.
+
+## Turtle breakout screen
+
+Tested from a [HowToTrade guide](https://howtotrade.com/wp-content/uploads/2024/10/The-Turtle-Trading-strategy.pdf)
+and a modified long-only Turtle video: buy on a break of the 20-day high
+(or 55-day for System 2), exit at whichever comes first of a fixed
+`2 · ATR(20)` stop below entry or a trailing 10-day low (20-day for System
+2), no profit target, no pyramiding. Single-asset runs use Kestrel's
+`breakout` (`setup = "range"`, `atr_stop = 2`, `atr_bars = 20`, `trail_bars =
+10` or `20`, `target_multiple = 0`); multi-asset runs simulate a shared
+account with Kestrel's intra-bar OHLC walk at 5 bps a side for ETFs and 7 bps
+for crypto:
+
+| 5-asset portfolio (SPY, QQQ, GLD, SLV, BTC/USD), Jan 2016 – Sep 2026 | Return | CAGR | Vol. | Sharpe | Worst fall | Avg / peak exposure |
+|---|---|---|---|---|---|---|
+| Video rules on CFDs: 2% of high-water mark, uncapped (5%/yr swap) | +2,957% | +37.5% | 31.9% | 1.16 | −40.9% | 181% / 584% |
+| 1× spot: 2% of high-water mark, first-come to 100% cash | +306% | +13.9% | 15.5% | 0.92 | −22.5% | 67% / 100% |
+| 1× spot: 2% of equity, capped at 25% per asset | +578% | +19.5% | 14.2% | 1.32 | −18.2% | 52% / 100% |
+| Hold the same 5 assets equally (rebalanced yearly, 1×) | +2,991% | +37.6% | 25.5% | 1.38 | −40.5% | 100% |
+| Hold 45% in the 5 assets + 55% cash (same volatility) | +564% | +19.3% | 13.8% | 1.34 | −27.1% | 45% |
+
+- **The video's returns come from hidden CFD leverage and Bitcoin, not ETF
+  timing:**
+  - A `2 · ATR(20)` stop on SPY or GLD is ~2% wide, so risking 2% of the
+    high-water mark puts ~100% of equity into a single ETF and peaks at
+    5.8× notional exposure across the five assets (paying ~$759k in swap
+    fees on 100,000 USD, with 2018, 2021 and 2022 down and BTC at a 2.98 profit
+    factor, matching the video's 3.01). The video's 16:30–18:00 ET flatten
+    merely dodges the 17:00 ET CFD rollover fee; spot ETFs and spot BTC pay
+    no swap fee.
+  - At 1× spot, holding the same five assets equally matched the 5.8× CFD
+    return (+37.6% CAGR, Sharpe 1.38), and a 45/55 asset/cash mix matched
+    1× spot Turtle (+19.3% against +19.5% CAGR, Sharpe 1.34 against 1.32),
+    with Turtle only trimming the worst fall (−18.2% against −27.1%).
+- **Zero timing edge on ETFs; likely edge on BTC (`kestrel_app backtest
+  breakout`, 2016–2026):**
+  - SPY (67 trades, PF 2.97), QQQ (76, PF 1.86), GLD (63, PF 2.07) and SLV
+    (70, PF 1.28) look profitable only because sitting long 34–53% of days
+    captures upward drift. Tested individually against `exposure × hold`,
+    none of 10 macro ETFs (SPY, QQQ, GLD, SLV, TLT, DBC, USO, EFA, EEM, UUP)
+    beat drift with confidence (+1.90 bps/day on USO, t = +0.83, down to
+    −1.91 bps/day on EFA, t = −1.91; |t| ≤ 0.86 on the other eight; a
+    20-day block bootstrap gives the same t-values within 0.15). Filling
+    daily levels on `30m` bars (`--fill-timeframe 30m`, Mar–Nov 2026) gave
+    the same trades and within 1 bp of `1d` fills.
+  - Without BTC, the 4-ETF 1× spot portfolio trailed `50% 4-ETFs + 50% cash`
+    on Sharpe in both 2016–2022 (0.54 against 0.72) and the 2023–2026
+    holdout (1.22 against 1.38). A 9-ETF macro basket (SPY, QQQ, EFA, EEM,
+    TLT, GLD, SLV, DBC, UUP) also trailed passive holding on Sharpe in both
+    periods across System 1 (`20/10`), System 2 (`55/20`) and 4-unit
+    pyramiding (which fell to +7.9% total in 2016–2022).
+  - **BTC/USD** (Kraken, 2016–Sep 2026) was the one asset to beat
+    exposure-matched holding (+12.46 against +5.66 bps/day, +6.80 bps/day;
+    t = 2.37 on daily returns and 2.33 with a 20-day block bootstrap, so the
+    trades' runs of days do not inflate it; but it is one of 11 assets
+    tested, so treat it as likely rather than proven, as the crypto trend
+    literature also suggests): PF 4.32 on `20/10`
+    (79 trades) and 7.82 on `55/20` (42 trades), already runnable as
+    single-symbol `breakout`.
+- **11 Binance.US USDT pairs (Jan 2022 – Dec 2024 vs Jan 2025 – Nov 14 2026
+  holdout, risk-matched against `trend_ensemble`):**
+  - The Python Turtle simulation was checked coin by coin against
+    `kestrel_app backtest breakout` over 2022–2026 (10,000 USDT, fixed 100
+    USDT risk): 10 of 11 coins matched exact trade counts and first-entry
+    dates, with returns within 0.7 percentage points (BNB: 43 trades against
+    42, and 1.0 point apart). This checks the entry, stop and exit rules; the
+    shared account's sizing and per-coin caps are the simulation's own.
+  - **Inside Kestrel (`kestrel_app backtest trend_ensemble`, 1,000 USDT, 7
+    bps a side):** `lookbacks = [20]`, `[55]` and `[20, 55]` beat the
+    default nine lookbacks on Sharpe in the holdout, with and without ZEC,
+    and `[20]` and `[20, 55]` in 2022–2024 too (`[55]` trailed there), at
+    4–10× fewer fills. Fewer lookbacks diversify less, so they ran at about
+    9–10% volatility against 7–8%, and which single lookback did best
+    flipped between the periods:
+
+    | `trend_ensemble` in C++ | 2022–2024 (11 coins) | Holdout 2025–2026 | Holdout without ZEC | Fills, both periods |
+    |---|---|---|---|---|
+    | Default 9 lookbacks | +32.0%, 7.0% fall, Sharpe 1.23 (7.8% vol) | +2.1%, 5.7% fall, Sharpe 0.20 | −2.6%, 8.1% fall, Sharpe −0.17 | 5,274 |
+    | `lookbacks = [20]` | +51.0%, 8.9% fall, Sharpe 1.44 (9.9% vol) | +8.4%, 8.4% fall, Sharpe 0.54 | +1.6%, 13.1% fall, Sharpe 0.14 | 1,000 |
+    | `lookbacks = [55]` | +37.9%, 11.0% fall, Sharpe 1.14 (9.9% vol) | +11.1%, 5.3% fall, Sharpe 0.70 | +4.1%, 8.9% fall, Sharpe 0.29 | 504 |
+    | `lookbacks = [20, 55]` | +43.4%, 9.9% fall, Sharpe 1.31 (9.5% vol) | +10.1%, 5.1% fall, Sharpe 0.67 | +3.1%, 10.8% fall, Sharpe 0.24 | 1,241 |
+
+  - **Volatility-matched Turtle vs `trend_ensemble` (paired 20-day circular
+    block bootstrap, 10,000 replicates):** calibrating Turtle's `risk_pct` on
+    2022–2024 to match `trend_ensemble`'s 7.8% volatility (`0.153%` for
+    `20/10`, `0.154%` for `55/20`, `max_weight` 9%, locked for 2025–2026;
+    same period benchmarks: BTC −26.9% / 53% fall, 20% BTC + 80% cash −5.4% /
+    13.3% fall) gives the same drawdowns as `trend_ensemble` (−6.3% to −7.1%
+    in 2022–2024; −3.6% to −7.2% in the holdout). In the holdout `20/10` made
+    +15.9% (−7.0% fall, Sharpe 1.09) with ZEC and +3.5% (−7.2% fall, Sharpe
+    0.39) without ZEC (`55/20`: +14.4% and +2.3%, −3.6% fall), ahead on point
+    estimates, but no Sharpe gap is significant at 5% (holdout ΔSharpe for
+    `20/10` +0.89, 95% CI [−0.08, +1.94], p = 0.085 with ZEC; +0.56, 95% CI
+    [−0.28, +1.27], p = 0.15 without ZEC; `55/20` p = 0.20 and 0.24;
+    2022–2024 p = 0.22–0.87). The bootstrap pairs each day's returns of
+    the two strategies (correlation 0.7–0.9); a first run paired each
+    `trend_ensemble` day with the next day's Turtle return (the equity
+    CSV stamps a daily bar at its close) and gave p = 0.11–0.91.
+  - **Parameter grid (8 lookback pairs from `10/5` to `80/40` × 3 risk
+    levels = 24 cells):** without ZEC, 2022–2024 Sharpe ranged from +0.84 to
+    +1.43 (median +1.17) and 2025–2026 holdout Sharpe from −0.13 to +0.43
+    (median +0.26, 19/24 positive); with ZEC the holdout ranged from +0.27
+    to +1.16 (median +0.97, all 24 positive). Which cells did best did not
+    persist between periods (Spearman ρ = −0.04 with ZEC, +0.07 without).
+  - **Why not build a separate multi-coin Turtle:** at the same risk its
+    drawdowns match `trend_ensemble`'s and no Sharpe gap is significant,
+    ZEC drives most of its holdout gain, which lookbacks do best does not
+    persist between periods (ρ ≈ 0), and Kestrel already runs the Turtle on
+    one coin with `breakout` and 20- and 55-day channels on many with
+    `trend_ensemble` (`lookbacks = [20, 55]`; its entry on the highest
+    close, midpoint stop and volatility sizing differ from the Turtle's).
+  - **What it does suggest:** every check here (risk-matched Turtle, the
+    24-cell grid, and `trend_ensemble` with fewer lookbacks) did better
+    than the default nine lookbacks in the 2025–2026 holdout, on point
+    estimates. Choosing lookbacks after seeing the holdout would be fitting
+    it, so the paper's defaults stay in the paper run; a test on Kraken's
+    longer history (2016 on) would show whether the shortest and longest
+    channels are a drag outside this sample.
 
 ## Paper runs
 
