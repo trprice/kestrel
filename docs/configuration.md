@@ -23,7 +23,7 @@ keys depend on the strategy.
 | Key | Meaning |
 |---|---|
 | `provider` | `kraken`, `binanceus`, `schwab` or `databento` |
-| `mode` | `paper` (simulated venue, no credentials) or `live` |
+| `mode` | `paper` (simulated venue; no credentials except Schwab's for market data) or `live` |
 | `symbols` | the symbols to trade and stream |
 | `secrets_file` | where the secrets file is (default: `secrets.toml` next to the config, if present) |
 
@@ -152,7 +152,7 @@ omit one to leave it unchecked. Amounts are in the quote asset.
 | `allowed_symbols` | the only symbols that may be traded |
 | `max_price_age_ms` | refuse orders valued at a reference price older than this |
 | `max_orders_per_day` | then only position-reducing orders |
-| `max_consecutive_losses` | losing sells in a row; resets on a win or a new UTC day |
+| `max_consecutive_losses` | closing fills in a row that lost (net of fees); resets on one that did not, break-even included, or a new UTC day |
 | `max_drawdown` | fall from peak equity (realized + unrealized), measured at each order and each price (at most once a second; every 10 seconds in live mode, or 30 seconds on Kraken, where each measurement reads the venue's fills); then only position-reducing orders. Does not reset at midnight |
 | `max_drawdown_close` | the same fall, at which the gate halts, cancels every open order and closes every position at market; trading stays halted until the next run, and what is still held is closed again each minute while the fall stands. Set it above `max_drawdown`, or alone |
 | `max_loss_per_position` | one position's unrealized loss from its average cost, measured the same way; the gate cancels that symbol's orders, closes the position at market, and refuses new positions in the symbol for the rest of the UTC day. A backstop for the strategy's own stop |

@@ -21,7 +21,9 @@ cp config/kestrel.example.toml config/kestrel.toml
 ./build/kestrel_app -c config/kestrel.toml run ma_crossover   # paper mode
 ```
 
-Requires CMake 3.25+ and GCC 12+ or Clang 16+. Paper mode needs no credentials.
+Requires CMake 3.25+ and GCC 12+ or Clang 16+. Paper mode on Kraken or
+Binance.US needs no credentials; Schwab's market data needs its app key and
+tokens even in paper mode.
 
 ## Documentation
 

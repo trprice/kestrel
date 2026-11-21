@@ -2,7 +2,7 @@
 # use KESTREL_<PROVIDER>_<FIELD> environment variables or secrets.toml.
 
 [general]
-provider = "kraken"            # schwab | kraken | binanceus
+provider = "kraken"            # schwab | kraken | binanceus | databento (history only, no run)
 mode     = "paper"             # paper | live
 symbols  = ["BTC/USD", "ETH/USD"]
 # secrets_file = "secrets.toml"  # default: secrets.toml next to this file (if present)

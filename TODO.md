@@ -18,8 +18,9 @@ Projects; the live checks are under In progress.
 
 1. ~~Live-safety fixes, Binance.US and `breakout`, and `breakout`
    `risk_fraction`~~ — done (see Done).
-2. `market_maker`: protection on a crossed, locked or one-sided book, and a
-   reconcile for exits (Strategies). Not trading now (parked after the Nov
+2. `market_maker`: protection on a crossed, locked or one-sided book, a
+   reconcile for exits, and a `cancel_raced` that cannot stick
+   (Strategies). Not trading now (parked after the Nov
    2026 replays), so these gate its next live run.
 3. CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
    stream code lands.
@@ -81,6 +82,14 @@ for `order --test`, `CancelOrder`, symbol-scoped `CancelAll`, `OpenOrders`,
       `oflags=fciq`), a crossing `post_only` limit, a fill read back through
       `TradesHistory`, and `BalanceEx` with balances (and Kraken Rewards `.F`
       ones if used); then default `[kraken] live_trading` on.
+- [ ] `CancelOrder` answers `kCancelled` when Kraken replies `pending: true`
+      (kraken_trading_venue.cpp, `CancelOrder`), though the order may still
+      be open and fill; the runner, the risk gate and `market_maker` then
+      treat it as gone. Confirm with `GetOrder` (or answer that it is not
+      settled yet) before live trading, and see what a real cancel returns.
+      Also: the unknown-outcome lookup reads only the first page of
+      `ClosedOrders` (it misses only past 50 orders closed in its 5-minute
+      window).
 - [ ] Kraken WebSocket v2 `executions` channel behind
       `KrakenTradingVenue::StreamExecutions`, so fills and order changes are
       pushed instead of polled every 15 s.
@@ -108,13 +117,11 @@ Sections in priority order: safety first, then what is in use.
       reconnect, and the event time against ours for the fill-visibility
       latency. Check the current Binance.US docs first: Binance.com has been
       moving from listen keys to a WebSocket API subscription. Until it lands
-      the venue is polled, and polling `GetFills` (weight 10) and
-      `GetOpenOrders` (weight 3) every second uses about 780 of the 2400
-      weight per minute the client keeps to, per symbol, so a live run on
-      several symbols needs a longer `fill_poll_interval`.
-- [ ] Re-verify the timeframe lists for Kraken and Binance.US against each
-      provider's docs. The lists in the code and docs/design.md came from
-      memory.
+      the venue is polled, and polling `GetFills` (weight 20 with a symbol,
+      since Jul 30 2026) and `GetOpenOrders` (weight 3) every second uses
+      about 1,380 of the 2400 weight per minute the client keeps to, per
+      symbol, so a live run on two or more symbols needs a longer
+      `fill_poll_interval`.
 - [ ] A stop-limit order type, if a venue needs one.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 
@@ -301,6 +308,13 @@ Sections in priority order: safety first, then what is in use.
       quotes are left in place and the stop loss, caps and stand-downs are
       not checked. Pull the quotes and run the protection on the last good
       mid
+- [ ] `market_maker`: a cancel answered `kAlreadyFilled` sets the quote's
+      `cancel_raced`, which only the order's closed update clears
+      (`OnOrderUpdate`). If the runner forgets the order instead (a
+      `GetOrder` answering `kNotFound`), the update never comes, `Pull` keeps
+      returning false, `PullAll` fails, and an exit is never sent: the stop
+      loss silently stops working. Clear it once its fills cover the order
+      or after a timeout
 - [ ] `mean_reversion`: the RSI exit at `overbought` cannot be turned off
       (it must be under 100), so Connors's RSI(2), which exits only at the
       5-day average, can only be approximated (`overbought = 90` or 99).
@@ -315,8 +329,14 @@ four recorded days. Check a change's markouts, not only "vs hold".
 - [ ] From the Nov 2026 project review, not yet done:
   - Value BNB (and other third-asset) fees at their price, not 1:1 with
     the quote asset.
-  - Paper venue: reserve a buy-stop for the spread as well as slippage; a
-    helper for the lock/ProcessPending/ExpireDayOrders prologue its public
+  - Paper venue: a buy-stop reserves `stop_price` × (1 + slippage) but
+    fills at the ask, so one that gaps through its trigger by more than the
+    free balance covers is cancelled at fill time ("insufficient funds at
+    fill time") rather than filled: an entry is lost, or a short's
+    protective stop is dropped. `breakout` with `risk_fraction` spends up to
+    99% of the balance, so a gap of about 1% is enough (likely on equity
+    opens, rare on crypto quotes). Reserve for the gap or fill what the
+    balance covers; and a helper for the lock/ProcessPending/ExpireDayOrders prologue its public
     methods repeat.
   - Share the unknown-outcome recovery (look the order up by client ID)
     across `PlaceOrder` and `PlaceOco` and the three live venues, using
@@ -324,8 +344,12 @@ four recorded days. Check a change's markouts, not only "vs hold".
   - Binance.US: a shared WebSocket host for its bar, quote and (later)
     user-data streams. Within Binance.US only: Kraken's v2 channels and
     Schwab's one streamer connection share little with it.
-  - Stream callbacks are kept from throwing into the socket thread by
-    convention only: wrap them once, so a new stream cannot forget.
+  - Stream callbacks: each stream (Kraken and Binance.US quotes, the
+    Binance.US bar stream, Schwab's streamer) wraps its own dispatch in a
+    `catch (const std::exception&)`, so nothing makes a new stream do the
+    same, and a throw of anything else still reaches the socket thread
+    (the paper venue's `Deliver` also catches `...`). Wrap them once in
+    the shared dispatch.
   - Kraken's quote stream: a silence watchdog like Schwab's.
   - `MakeTimedHttpClient` builds a connection pool per call.
   - `Secrets()` reads the secrets file twice per load.
@@ -757,6 +781,9 @@ the header of the code concerned.
 ## Done
 
 ### Overall
+- [x] Timeframe lists checked against Kraken's and Binance.US's docs (Nov 21
+      2026 review): Kraken OHLC 1, 5, 15, 30, 60, 240, 1440, 10080 and 21600
+      minutes; Binance.US klines 1m to 1M, without Binance.com's 1s
 - [x] Build system, `Decimal`, shared types, `Error` / `std::expected`
 - [x] `DataSource` / `TradingVenue` interfaces, `Configuration`, factory
 - [x] `PaperTradingVenue` (works with any `DataSource`)
