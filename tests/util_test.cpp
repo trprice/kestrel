@@ -27,6 +27,27 @@ TEST(Hmac, Rfc4231Vectors) {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 }
 
+TEST(Error, MayHaveTakenEffectClassifiesUncertainCategories) {
+    const auto check = [](types::ErrorCategory category) {
+        return types::MakeError(category, "x").error().MayHaveTakenEffect();
+    };
+    EXPECT_TRUE(check(types::ErrorCategory::kNetwork));
+    EXPECT_TRUE(check(types::ErrorCategory::kTimeout));
+    EXPECT_TRUE(check(types::ErrorCategory::kServer));
+    EXPECT_TRUE(check(types::ErrorCategory::kParse));
+
+    EXPECT_FALSE(check(types::ErrorCategory::kInvalidArgument));
+    EXPECT_FALSE(check(types::ErrorCategory::kRateLimit));
+    EXPECT_FALSE(check(types::ErrorCategory::kAuth));
+    EXPECT_FALSE(check(types::ErrorCategory::kRejected));
+    EXPECT_FALSE(check(types::ErrorCategory::kWouldTake));
+    EXPECT_FALSE(check(types::ErrorCategory::kInsufficientFunds));
+    EXPECT_FALSE(check(types::ErrorCategory::kNotFound));
+    EXPECT_FALSE(check(types::ErrorCategory::kUnsupported));
+    EXPECT_FALSE(check(types::ErrorCategory::kNotImplemented));
+    EXPECT_FALSE(check(types::ErrorCategory::kInternal));
+}
+
 TEST(Base64, RoundTrip) {
     for (const std::string& s : std::vector<std::string>{
              "", "f", "fo", "foo", "foob", std::string("\x00\xff\x10", 3)}) {

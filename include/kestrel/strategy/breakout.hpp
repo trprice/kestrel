@@ -73,6 +73,19 @@ struct BreakoutParams {
     // Zero: every entry buys `quantity`. Else at most this much to lose
     // between the entry and the stop, so `quantity` is a cap.
     types::Decimal risk_per_trade;
+    // Share of the available quote-asset balance (at most 0.1) to risk per
+    // trade instead of a fixed `risk_per_trade`. Exclusive with
+    // `risk_per_trade`; the entry also costs at most 99% of the available
+    // balance (or `allocation`), leaving room for costs, and `quantity` caps
+    // it.
+    types::Decimal risk_fraction;
+    // Optional cap on the quote-asset balance that `risk_fraction` sizes from
+    // and spends (for accounts such as Schwab where cash is the whole
+    // account's).
+    types::Decimal allocation;
+    // Quote asset for symbols without one (equities); USD in live mode, or
+    // `[paper] default_quote_asset` in paper mode.
+    std::string default_quote_asset = "USD";
 };
 
 // Breakout of a bar setup, long or short; how it trades is described in
@@ -129,6 +142,15 @@ class Breakout : public Strategy {
         kMarket,     // a market buy after confirming closes
         kThrowback,  // the throwback's limit
     };
+    // What an unanswered PlaceStop or Exit call tried to place, so
+    // GetOpenOrders can adopt or clear it before another closing order is sent.
+    enum class UnansweredCloser { kNone, kStop, kOco, kExit };
+    enum class ReconcileOutcome { kClear, kDeferred };
+    enum class StopPlacement { kPlaced, kDeferred, kRefused };
+    struct SizingBudget {
+        types::Decimal risk;
+        std::optional<types::Decimal> max_notional;
+    };
 
     std::optional<Levels> FindSetup(Context& context,
                                     std::span<const types::Bar> bars) const;
@@ -139,16 +161,42 @@ class Breakout : public Strategy {
     // so what they call for is done at the next open.
     bool CarriesOver() const;
     void ArmThrowback(Context& context);
+    // Quote-asset risk and optional notional cap for the next entry from
+    // `risk_per_trade` or `risk_fraction` (capped by `allocation`). nullopt
+    // (logged) when the quote balance cannot be read or none is available.
+    std::optional<SizingBudget> EntryBudget(Context& context) const;
     // The entry's size, buying at `entry` with the stop at `stop`: quantity,
-    // or with risk_per_trade what loses that much at the stop, rounded down
-    // to the lot. nullopt (logged) if that is under the venue's minimum.
+    // or with risk_per_trade / risk_fraction what loses that much at the stop
+    // (and with risk_fraction costs at most 99% of the available or
+    // allocated quote balance), rounded down to the lot. nullopt (logged) if
+    // that is under the venue's minimum or the balance cannot be read.
     std::optional<types::Decimal> EntrySize(Context& context,
                                             const types::Decimal& entry,
                                             const types::Decimal& stop) const;
     // Closes above the trigger that confirm the breakout.
     std::size_t ClosesNeeded() const;
-    void EnterAtMarket(Context& context);
-    void PlaceStop(Context& context);
+    void EnterAtMarket(
+        Context& context,
+        std::optional<types::Decimal> reference_price = std::nullopt);
+    // Resolves an earlier unanswered stop, OCO or exit via GetOpenOrders:
+    // adopts a matching order or pair (calling Context::TrackOrder), or
+    // cancels any other open closing orders when the market is open. Returns
+    // kDeferred if the venue could not be read, an exit was adopted into
+    // kExiting, the market is closed with unadoptable orders, or a cancel/fill
+    // is still settling.
+    ReconcileOutcome ReconcileUnansweredClosers(Context& context);
+    // Places the protective stop (or target+stop OCO pair with resting_target)
+    // for mHeld at mLevels->stop. Outcomes:
+    //   kPlaced   resting (or adopted from GetOpenOrders, then moved if
+    //             mStopMoved was set), or filled at once
+    //   kDeferred unanswered (MayHaveTakenEffect), rate-limited, half-placed,
+    //             or still reconciling an earlier unanswered closer
+    //   kRefused  definitively rejected or closed unfilled on arrival
+    StopPlacement PlaceStop(Context& context);
+    // Whether the venue still shows the long's mHeld: the symbol's position,
+    // else the base asset's balance. False when it cannot tell (no position
+    // or base balance listed, or the reads fail).
+    bool StillHeld(Context& context) const;
     // Long, on a close that is no exit: raises mLevels->stop as breakeven_r
     // and trail_bars say, and marks the stop to be moved.
     void RaiseStop(Context& context, const types::Bar& bar);
@@ -178,6 +226,9 @@ class Breakout : public Strategy {
     void AddStray(const std::string& id);
     void RetryStrays(Context& context);
     const char* StateName() const;
+    // Converts `request` from the trade's terms to the venue's (for a short,
+    // flips the side and negates the prices).
+    types::OrderRequest ToVenueTerms(types::OrderRequest request) const;
     // Places an order; the ID if the venue took it and it is still active.
     // `request` is in the trade's terms: mirrored for a short.
     std::optional<std::string> Place(Context& context,
@@ -194,9 +245,10 @@ class Breakout : public Strategy {
     types::Bar Mirror(const types::Bar& bar) const;
     // The symbol's bars, in the trade's terms.
     std::span<const types::Bar> Bars(Context& context) const;
-    // reverse: after the stop closed the trade with `failed` levels, the
-    // other way at market.
-    void Reverse(Context& context, const Levels& failed);
+    // reverse: after the stop closed the trade at `stop_fill_price` with
+    // `failed` levels, the other way at market.
+    void Reverse(Context& context, const Levels& failed,
+                 const types::Decimal& stop_fill_price);
 
     BreakoutParams mParams;
     State mState = State::kFlat;
@@ -233,10 +285,14 @@ class Breakout : public Strategy {
     types::Decimal mEntryFilled;    // gross entry quantity filled so far
     types::Decimal mEntryQuantity;  // what the entry out (or last) buys
     std::string mBaseAsset;         // base asset of mParams.symbol
+    std::string mQuoteAsset;        // quote asset of mParams.symbol
     bool mBaseFeePaid = false;      // whether a buy paid a base-asset fee
     std::optional<types::Decimal> mTarget;
     Due mDue = Due::kStop;
-    // kLong, daily bars: an exit called for while closed, made at the open.
+    UnansweredCloser mUnansweredCloser = UnansweredCloser::kNone;
+    std::size_t mReconcileFailures = 0;
+    // kLong: an exit due at the next open (daily bars), or deferred because an
+    // unanswered closer or stop cancel has not settled yet.
     const char* mExitDue = nullptr;
     std::string mEntryId;
     std::string mStopId;

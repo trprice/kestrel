@@ -30,7 +30,9 @@ class RecordingVenue : public trading::TradingVenue {
             return types::MakeError(*reject_category, "no");
         }
         if (reject_type && request.type == *reject_type) {
-            return types::MakeError(types::ErrorCategory::kRejected, "no");
+            return types::MakeError(
+                reject_type_category.value_or(types::ErrorCategory::kRejected),
+                "no");
         }
         orders.push_back(request);
         return types::OrderAcknowledgement{
@@ -157,6 +159,9 @@ class RecordingVenue : public trading::TradingVenue {
     bool reject_orders = false;
     std::optional<types::ErrorCategory> reject_category;  // refuse with this
     std::optional<types::OrderType> reject_type;  // refuse orders of this type
+    // How reject_type refuses (default kRejected), e.g. kTimeout for an
+    // order of that type that gets no answer.
+    std::optional<types::ErrorCategory> reject_type_category;
     types::OrderState ack_state = types::OrderState::kNew;
     bool fail_reads = false;  // positions and open orders
     bool fail_open_orders = false;

@@ -14,6 +14,13 @@ std::string BaseAsset(const types::Symbol& symbol) {
     return {};
 }
 
+std::string QuoteAsset(const types::Symbol& symbol, std::string_view fallback) {
+    if (const auto parts = types::SplitSymbol(symbol); parts && parts->quote) {
+        return *parts->quote;
+    }
+    return std::string(fallback);
+}
+
 bool ClosedUnfilled(OrderState state) {
     return state == OrderState::kCancelled || state == OrderState::kRejected ||
            state == OrderState::kExpired;

@@ -14,6 +14,10 @@ namespace kestrel::strategy {
 // split into one.
 std::string BaseAsset(const types::Symbol& symbol);
 
+// The quote asset of a symbol ("USD" of "BTC/USD"), or `fallback` when the
+// symbol has none (an equity such as "AAPL").
+std::string QuoteAsset(const types::Symbol& symbol, std::string_view fallback);
+
 // Closed without filling completely (perhaps partly): cancelled, rejected or
 // expired.
 bool ClosedUnfilled(types::OrderState state);

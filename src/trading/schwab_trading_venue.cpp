@@ -57,13 +57,6 @@ constexpr std::size_t kTransactionsTrusted = 1000;
 // one; past this the window is widened instead.
 constexpr std::size_t kMaxOrderLookups = 8;
 
-// Whether Schwab may have acted on a request that failed.
-bool OutcomeUnknown(ErrorCategory category) {
-    return category == ErrorCategory::kNetwork ||
-           category == ErrorCategory::kTimeout ||
-           category == ErrorCategory::kServer;
-}
-
 std::string MaskAccountNumber(std::string_view account_number) {
     if (account_number.size() <= 4) {
         return "****";
@@ -1772,7 +1765,7 @@ Result<OrderAcknowledgement> SchwabTradingVenue::PlaceOrder(
     if (!response) {
         types::Error err = FormatSchwabError(
             response.error(), "place order " + prepared->conformed.symbol);
-        if (OutcomeUnknown(err.category)) {
+        if (err.MayHaveTakenEffect()) {
             if (auto recovered = RecoverPlacedOrder(*hash, prepared->conformed,
                                                     placed_at, known_before);
                 recovered && *recovered) {
@@ -2098,7 +2091,7 @@ Result<types::OcoAcknowledgement> SchwabTradingVenue::PlaceOco(
     if (!response) {
         types::Error err =
             FormatSchwabError(response.error(), "place OCO " + *symbol);
-        if (OutcomeUnknown(err.category)) {
+        if (err.MayHaveTakenEffect()) {
             auto recovered =
                 RecoverPlacedOco(*hash, *conformed_limit, *conformed_stop,
                                  placed_at, known_before);
@@ -2202,13 +2195,12 @@ Result<CancelOutcome> SchwabTradingVenue::CancelOrder(
     types::Error err =
         FormatSchwabError(response.error(), "cancel order " + order_id);
     if (err.category == ErrorCategory::kNotFound ||
-        err.category == ErrorCategory::kRejected ||
-        OutcomeUnknown(err.category)) {
+        err.category == ErrorCategory::kRejected || err.MayHaveTakenEffect()) {
         if (auto current = GetOrder(order_id)) {
             if (current->state == OrderState::kFilled) {
                 return CancelOutcome::kAlreadyFilled;
             }
-            if (OutcomeUnknown(err.category) &&
+            if (err.MayHaveTakenEffect() &&
                 current->state == OrderState::kCancelled) {
                 return CancelOutcome::kCancelled;
             }

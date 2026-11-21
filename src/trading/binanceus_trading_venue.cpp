@@ -49,13 +49,6 @@ bool ValidClientOrderId(const std::string& id) {
     });
 }
 
-// A failure after which the request may or may not have taken effect.
-bool OutcomeUnknown(const types::Error& error) {
-    return error.category == ErrorCategory::kNetwork ||
-           error.category == ErrorCategory::kTimeout ||
-           error.category == ErrorCategory::kServer;
-}
-
 // `value`, a multiple of `increment`, written with the increment's decimals
 // and no more: Binance refuses a price or quantity with more decimals than the
 // asset allows (-1111), however many of them are zeros.
@@ -483,53 +476,64 @@ Result<types::OrderAcknowledgement> BinanceUSTradingVenue::PlaceOrder(
     mOrderLimiter.Acquire();
     auto body = mApi.Signed(net::HttpMethod::kPost, "/api/v3/order", *params,
                             kNewOrderWeight, false);
+    std::optional<types::Error> send_error;
     if (!body) {
-        if (!OutcomeUnknown(body.error())) {
+        if (!body.error().MayHaveTakenEffect()) {
             return std::unexpected(body.error());  // refused: nothing placed
         }
-        // It may have been placed: find out rather than send it again.
-        spdlog::warn(
-            "binanceus: placing {} ended without an answer ({}); "
-            "looking it up",
-            client_id, body.error().ToString());
-        std::optional<types::Error> lookup_failure;
-        for (int look = 0; look < 2; ++look) {
-            if (look > 0) {
-                mSleep(kLookupPause);
+        send_error = body.error();
+    } else {
+        auto order = ParseOrder(*body);
+        if (order) {
+            Remember(order->order_id, order->symbol);
+            types::OrderAcknowledgement ack{order->order_id,
+                                            order->client_order_id,
+                                            order->state, order->updated_time};
+            if (auto time = IntegerMember(*body, "transactTime"); time) {
+                ack.time = types::FromEpochMillis(*time);
             }
-            auto found = LookupClientOrder(native, client_id);
-            if (found) {
-                // Its creation time is the transactTime a direct answer
-                // would have carried.
-                return types::OrderAcknowledgement{
-                    found->order_id, found->client_order_id, found->state,
-                    found->created_time};
-            }
-            if (found.error().category != ErrorCategory::kNotFound) {
-                lookup_failure = found.error();
-                break;
-            }
+            return ack;
         }
-        types::Error error = body.error();
-        error.message +=
-            lookup_failure
-                ? " (order " + client_id + " could not be looked up either: " +
-                      lookup_failure->ToString() + "; it may exist)"
-                : " (order " + client_id +
-                      " was not found afterwards, but may still appear)";
-        return std::unexpected(std::move(error));
+        // HTTP 2xx, so Binance may have placed the order even though its body
+        // lacked a required field: force kParse (FromBinanceUSSymbol returns
+        // kInvalidArgument) and look it up by client ID before failing.
+        types::Error parse_error = order.error();
+        parse_error.category = ErrorCategory::kParse;
+        send_error = std::move(parse_error);
     }
-    auto order = ParseOrder(*body);
-    if (!order) {
-        return std::unexpected(order.error());
+
+    // It may have been placed: find out rather than report a refusal or send
+    // it again.
+    spdlog::warn("binanceus: placing {} {} ({}); looking it up", client_id,
+                 body ? "returned an unreadable 2xx response"
+                      : "ended without an answer",
+                 send_error->ToString());
+    std::optional<types::Error> lookup_failure;
+    for (int look = 0; look < 2; ++look) {
+        if (look > 0) {
+            mSleep(kLookupPause);
+        }
+        auto found = LookupClientOrder(native, client_id);
+        if (found) {
+            // Its creation time is the transactTime a direct answer would have
+            // carried.
+            return types::OrderAcknowledgement{
+                found->order_id, found->client_order_id, found->state,
+                found->created_time};
+        }
+        if (found.error().category != ErrorCategory::kNotFound) {
+            lookup_failure = found.error();
+            break;
+        }
     }
-    Remember(order->order_id, order->symbol);
-    types::OrderAcknowledgement ack{order->order_id, order->client_order_id,
-                                    order->state, order->updated_time};
-    if (auto time = IntegerMember(*body, "transactTime"); time) {
-        ack.time = types::FromEpochMillis(*time);
-    }
-    return ack;
+    types::Error error = std::move(*send_error);
+    error.message +=
+        lookup_failure
+            ? " (order " + client_id + " could not be looked up either: " +
+                  lookup_failure->ToString() + "; it may exist)"
+            : " (order " + client_id +
+                  " was not found afterwards, but may still appear)";
+    return std::unexpected(std::move(error));
 }
 
 namespace {
@@ -632,7 +636,7 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
     auto body = mApi.Signed(net::HttpMethod::kPost, "/api/v3/order/oco", params,
                             kNewOrderWeight, false);
     if (!body) {
-        if (!OutcomeUnknown(body.error())) {
+        if (!body.error().MayHaveTakenEffect()) {
             return std::unexpected(body.error());  // refused: nothing placed
         }
         spdlog::warn(
@@ -706,8 +710,9 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
         auto found_limit = LookupClientOrder(native, limit_id);
         auto found_stop = LookupClientOrder(native, stop_id);
         if (!found_limit || !found_stop) {
-            // Not tracked without both legs: take it down, and say it is not
-            // placed (a server failure: the caller tries again later).
+            // Not tracked without both legs: take it down. kServer tells the
+            // caller the pair may still rest if the cancel failed, so a
+            // strategy reconciles GetOpenOrders before placing again.
             return MakeError(
                 ErrorCategory::kServer,
                 "binanceus: OCO " + list_id +
@@ -769,7 +774,7 @@ Result<CancelOutcome> BinanceUSTradingVenue::CancelOrder(
         // -2011: not open any more (or never was). Which is it?
         return CancelOutcomeOf(order_id);
     }
-    if (OutcomeUnknown(body.error())) {
+    if (body.error().MayHaveTakenEffect()) {
         auto order = GetOrder(order_id);
         if (order && order->state == types::OrderState::kCancelled) {
             return CancelOutcome::kCancelled;

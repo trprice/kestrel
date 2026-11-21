@@ -333,6 +333,7 @@ class Runner : private Context {
         const override {
         return mHours->CurrentOrNext(mClock());
     }
+    void TrackOrder(const types::OrderStatus& order) override;
 
     std::shared_ptr<data::DataSource> mData;
     std::shared_ptr<const types::MarketHours> mHours;

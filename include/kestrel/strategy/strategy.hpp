@@ -74,6 +74,11 @@ class Context {
     // otherwise, as in a backtest, where every run starts afresh.
     virtual StateStore* State() { return nullptr; }
 
+    // Starts tracking an active order the strategy adopted from GetOpenOrders
+    // (after an unanswered placement), so its later state changes reach
+    // OnOrderUpdate just like an order acknowledged by PlaceOrder or PlaceOco.
+    virtual void TrackOrder(const types::OrderStatus&) {}
+
     // The strategy's structured log context (its name, symbol and any
     // run-specific fields).
     virtual const LogContext& Log() const {
@@ -110,8 +115,9 @@ class Strategy {
     // once. The runner finds fills by polling the venue, so they can arrive
     // some time after the order was accepted.
     virtual void OnFill(Context&, const types::Fill&) {}
-    // An order the strategy placed, and that was still active when the venue
-    // acknowledged it, changed state or filled further. Its last call for an
+    // An order the strategy placed (and that was still active when the venue
+    // acknowledged it) or adopted with Context::TrackOrder changed state or
+    // filled further. Its last call for an
     // order has a closed state (filled, cancelled, rejected or expired), so a
     // strategy waiting on an order learns of an asynchronous rejection or an
     // expiry here, and of a cancel it asked for. The runner finds updates by

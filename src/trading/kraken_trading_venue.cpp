@@ -29,15 +29,6 @@ constexpr auto kClosedLookupSlack = std::chrono::minutes(5);
 constexpr std::size_t kTradesPageSize = 100;
 constexpr std::size_t kRememberedOrders = 10'000;
 
-// After a write has been sent, a transport failure, a 5xx or an unparseable
-// 2xx body leaves whether Kraken acted on it unknown.
-bool OutcomeUnknown(const types::Error& error) {
-    return error.category == ErrorCategory::kNetwork ||
-           error.category == ErrorCategory::kTimeout ||
-           error.category == ErrorCategory::kServer ||
-           error.category == ErrorCategory::kParse;
-}
-
 bool IsUnknownOrderError(const types::Error& error) {
     return error.category == ErrorCategory::kNotFound ||
            (error.provider_code &&
@@ -693,7 +684,7 @@ Result<types::OrderAcknowledgement> KrakenTradingVenue::PlaceOrder(
     auto result = PostPrivate("AddOrder", *params, kOrderCall, false);
     std::optional<types::Error> send_error;
     if (!result) {
-        if (!OutcomeUnknown(result.error())) {
+        if (!result.error().MayHaveTakenEffect()) {
             return std::unexpected(result.error());
         }
         send_error = result.error();
@@ -927,7 +918,7 @@ Result<CancelOutcome> KrakenTradingVenue::CancelOrder(
     if (IsUnknownOrderError(result.error())) {
         return CancelOutcomeOf(order_id);
     }
-    if (OutcomeUnknown(result.error())) {
+    if (result.error().MayHaveTakenEffect()) {
         auto order = GetOrder(order_id);
         if (order && order->state == types::OrderState::kCancelled) {
             return CancelOutcome::kCancelled;

@@ -127,6 +127,14 @@ class OrderTracker : public trading::TradingVenue {
         std::lock_guard lock(mMutex);
         mActive.erase(order_id);
     }
+    void Track(const types::OrderStatus& status) {
+        if (status.order_id.empty() || !types::IsActive(status.state)) {
+            return;
+        }
+        std::lock_guard lock(mMutex);
+        mActive.try_emplace(status.order_id,
+                            Seen{status.state, status.filled_quantity});
+    }
 
    private:
     // An order only moves forward: more filled, or from new to partially
@@ -185,6 +193,10 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
 }
 
 Runner::~Runner() { StopPoller(); }
+
+void Runner::TrackOrder(const types::OrderStatus& order) {
+    mTracker->Track(order);
+}
 
 void Runner::Push(Event event) {
     {

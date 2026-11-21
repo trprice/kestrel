@@ -940,6 +940,10 @@ TEST(Factory, CreateStrategyBuildsBreakoutFromParameters) {
     EXPECT_EQ((*atr)->Needs().warmup_bars, 61u);  // 6 * 10 + 1
     EXPECT_FALSE(make("atr_stop=-1\n").has_value());
     EXPECT_FALSE(make("atr_stop=1\natr_bars=0\n").has_value());
+    EXPECT_TRUE(make("risk_fraction=0.02\nallocation=5000\n").has_value());
+    EXPECT_FALSE(make("risk_fraction=0.11\n").has_value());
+    EXPECT_FALSE(make("risk_per_trade=10\nrisk_fraction=0.02\n").has_value());
+    EXPECT_FALSE(make("allocation=5000\n").has_value());
     // Unknown words, bad numbers and typos are errors.
     EXPECT_FALSE(make("entry='pullback'\n").has_value());
     EXPECT_FALSE(make("entry='throwback'\nthrowback_bars=0\n").has_value());

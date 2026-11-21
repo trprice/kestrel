@@ -16,12 +16,8 @@ From the Nov 20 2026 reviews of this list (GLM-5.3, then Gemini, checked
 against the code by Claude). Each step's details are in its item under
 Projects; the live checks are under In progress.
 
-1. Live-safety fixes, Binance.US and `breakout` (Venues, Strategies):
-   a 2xx body that fails to parse counted as "may have been placed", one
-   shared "may have taken effect" test for venues and strategies, and an
-   unanswered stop or one-cancels-other pair adopted from `GetOpenOrders`
-   before placing again. Then `breakout` `risk_fraction` (Strategies),
-   which touches the same code.
+1. ~~Live-safety fixes, Binance.US and `breakout`, and `breakout`
+   `risk_fraction`~~ — done (see Done).
 2. `market_maker`: protection on a crossed, locked or one-sided book, and a
    reconcile for exits (Strategies). Not trading now (parked after the Nov
    2026 replays), so these gate its next live run.
@@ -100,16 +96,6 @@ Sections in priority order: safety first, then what is in use.
       reports that use them
 
 ### Venues
-- [ ] Binance.US: a 2xx body that does not parse (`kParse` from
-      `BinanceUSApi`, or `ParseOrder` failing on valid JSON) is returned as
-      a refusal, since `OutcomeUnknown` counts only network, timeout and
-      5xx errors. Kraken counts `kParse` as well. It affects `PlaceOrder`,
-      `PlaceOco` and `CancelOrder`: look the order up by client ID as for a
-      timeout. `breakout` makes it worse: an OCO error it does not count as
-      "may exist" goes to its refused branch, which places a plain stop at
-      once, so a pair that was placed gets a second sell beside it. Give
-      venues and strategies one shared "may have taken effect" test instead
-      of each listing categories
 - [ ] Schwab pushed executions: `ACCT_ACTIVITY` behind
       `SchwabTradingVenue::StreamExecutions`, on `SchwabStreamer`'s one
       connection. Until then fills and order changes are polled, every 5 s.
@@ -265,14 +251,6 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Session VWAP reversion (needs `SessionVwap`)
 - [ ] `mean_reversion`: keep the position across a restart, and a resting
       stop order instead of the check at the close
-- [ ] `breakout` `risk_fraction`: risk a share of the account (e.g. 0.02)
-      instead of `risk_per_trade`'s fixed amount, read from the quote
-      asset's balance when the entry is sized (it arms only while flat),
-      exclusive with `risk_per_trade`, at most 0.1, and no entry if the
-      balance cannot be read. On Schwab the balance is the whole account's
-      cash, so an `allocation` cap would be needed there. Percentage
-      `[risk]` limits are a separate change in the risk gate.
-      (`trend_ensemble` and `momentum_rotation` already size from equity.)
 - [ ] Position sizing helpers: volatility-targeted, for the strategies that
       do not size from equity yet
 - [ ] Indicators: `Keltner`, `Adx`, `Supertrend` and `SessionVwap` in
@@ -297,15 +275,15 @@ Sections in priority order: safety first, then what is in use.
       a long. A market entry still out at the hook (`kEntering`, after a
       `confirm = "closes"` signal) that fills after it, or an exit that
       closes unfilled after it, leaves the position held overnight
-- [ ] `breakout`: a stop or one-cancels-other pair whose placement got no
-      answer, and that the venue's own lookup could not find either, is
-      not tracked. The next bar places another, so if the first was live
-      there are two sells for one position (Binance.US then refuses the
-      second for the balance, which also marks the target refused for the
-      rest of the trade). `AddStray` cannot cover it, as it cancels by
-      exchange order ID and none came back: before placing again, look in
-      `GetOpenOrders` for a sell on the symbol it does not track and adopt
-      or cancel it. See also the Binance.US `kParse` item under Venues
+- [ ] `breakout`: if a market `Exit` fails without an answer
+      (`MayHaveTakenEffect`), actually filled on the venue, and its fill has
+      not yet arrived in `GetFills` by the next bar, `GetOpenOrders` is empty
+      and `Exit` sends a second market sell (refused for balance on spot, a
+      short on margin): check the holding before resending after an
+      unanswered exit. `Breakout::StillHeld` reads it for putting the stop
+      back, but answers false both when sold and when it cannot tell, so
+      the retry needs a three-way answer (held, sold, unknown) and should
+      send on unknown
 - [ ] `momentum_rotation` on stock daily bars: the lookback finds its bar
       by time (`lookback_bars` periods of 24 hours back), and stock bars
       skip weekends and holidays. A lookback not a multiple of 7 can land on
@@ -341,8 +319,8 @@ four recorded days. Check a change's markouts, not only "vs hold".
     helper for the lock/ProcessPending/ExpireDayOrders prologue its public
     methods repeat.
   - Share the unknown-outcome recovery (look the order up by client ID)
-    across `PlaceOrder` and `PlaceOco` and the three live venues, with the
-    "may have taken effect" test from the Binance.US `kParse` item.
+    across `PlaceOrder` and `PlaceOco` and the three live venues, using
+    `Error::MayHaveTakenEffect()`.
   - Binance.US: a shared WebSocket host for its bar, quote and (later)
     user-data streams. Within Binance.US only: Kraken's v2 channels and
     Schwab's one streamer connection share little with it.
@@ -1007,6 +985,11 @@ the header of the code concerned.
       on 2026-10-29), and `market_maker` traded live on ZEC/USDT in Oct-Nov
       2026. `run` cancels every open order on its symbols before starting.
       Fills are polled; the user-data stream is under Venues in Projects.
+- [x] Shared `Error::MayHaveTakenEffect()` (`kNetwork`, `kTimeout`,
+      `kServer`, `kParse`) across Binance.US, Kraken, Schwab and `breakout`;
+      Binance.US `PlaceOrder`, `PlaceOco` and `CancelOrder` now look up 2xx
+      responses whose bodies fail to parse instead of returning a bare parse
+      error.
 - [x] Schwab trading venue (`SchwabTradingVenue`), on `SchwabAuth` and its
       own `SchwabApi`: market, limit and stop orders, OCO, previewOrder
       (`order --test`), cancels, open orders, fills, positions and balances
@@ -1161,6 +1144,20 @@ the header of the code concerned.
       entry, and sells a target or time exit, at the next open (it never
       traded on daily stock bars before), and the backtest walks a daily
       bar through its session with the open's hooks after the open quote.
+- [x] `breakout` live-safety and percentage risk sizing: an unanswered
+      protective stop or OCO pair (`Error::MayHaveTakenEffect()`) is checked
+      against `GetOpenOrders` before placing or exiting again (adopting a
+      matching stop or pair via `Context::TrackOrder` and cancelling any
+      unadoptable closing order while open), a raised stop whose placement
+      times out is deferred rather than sold at market, a long whose market
+      exit got no answer gets a plain stop back at once while the venue
+      still shows the position and the price is above the stop (else, and
+      for a short, it waits a bar), and a late-appearing exit is adopted and
+      the stop put back cancelled,
+      and `risk_fraction` (up to `0.1`, exclusive with `risk_per_trade`, with
+      an optional `allocation` cap; an entry costs at most 99% of the
+      balance, leaving room for costs) sizes entries from the quote asset's
+      available balance. Reversals are sized from the stop's fill price.
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),

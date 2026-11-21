@@ -663,6 +663,64 @@ TEST(BinanceUSOrders, AnUnansweredOrderThatCannotBeFoundIsAnError) {
     EXPECT_EQ(f.sleeps.size(), 1u);  // a pause before the second look
 }
 
+TEST(BinanceUSOrders, A2xxOrderWhoseBodyFailsToParseIsLookedUpByClientId) {
+    // Both a truncated 2xx body (kParse from BinanceUSApi) and valid JSON
+    // missing fields (kParse from ParseOrder) may have placed the order.
+    for (const char* bad_body : {"{\"orderId\":", "{}"}) {
+        Fixture f;
+        auto venue = f.Venue();
+        f.http->Push("/api/v3/order", bad_body);
+        f.http->Push("/api/v3/order",
+                     Order("ZECUSDT", 88, "NEW", "LIMIT", "BUY", "700.00",
+                           "0.010", "0", "0"));
+        auto ack = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+        ASSERT_TRUE(ack.has_value())
+            << bad_body << ": " << ack.error().ToString();
+        EXPECT_EQ(ack->order_id, "88");
+        const auto sent = f.http->To("/api/v3/order");
+        ASSERT_EQ(sent.size(), 2u);
+        EXPECT_EQ(sent[0].method, net::HttpMethod::kPost);
+        EXPECT_EQ(sent[1].method, net::HttpMethod::kGet);
+        EXPECT_EQ(QueryValue(sent[1].raw_query, "origClientOrderId"),
+                  QueryValue(sent[0].raw_query, "newClientOrderId"));
+    }
+
+    // If neither lookup finds it, the error carries the "may still appear"
+    // note and still counts as MayHaveTakenEffect.
+    Fixture miss;
+    auto venue = miss.Venue();
+    miss.http->Push("/api/v3/order", "{}");
+    for (int i = 0; i < 2; ++i) {
+        miss.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    auto failed = venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_TRUE(failed.error().MayHaveTakenEffect());
+    EXPECT_NE(failed.error().message.find("may still appear"),
+              std::string::npos);
+    EXPECT_EQ(miss.sleeps.size(), 1u);
+
+    // A 2xx response whose symbol fails FromBinanceUSSymbol (kInvalidArgument
+    // inside ParseOrder) still surfaces as kParse / MayHaveTakenEffect when
+    // client-ID lookups miss.
+    Fixture bad_sym;
+    auto sym_venue = bad_sym.Venue();
+    bad_sym.http->Push("/api/v3/order", Order("BAD", 99, "NEW", "LIMIT", "BUY",
+                                              "700.00", "0.010", "0", "0"));
+    for (int i = 0; i < 2; ++i) {
+        bad_sym.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    auto bad_sym_res =
+        sym_venue->PlaceOrder(Limit(types::Side::kBuy, "0.01", "700"));
+    ASSERT_FALSE(bad_sym_res.has_value());
+    EXPECT_EQ(bad_sym_res.error().category, types::ErrorCategory::kParse);
+    EXPECT_TRUE(bad_sym_res.error().MayHaveTakenEffect());
+}
+
 types::OcoRequest SellOco(const char* qty, const char* limit,
                           const char* stop) {
     types::OcoRequest r;
@@ -804,6 +862,57 @@ TEST(BinanceUSOrders, APlacedOcoWhoseLegsCannotBeReadIsCancelled) {
     ASSERT_FALSE(ack.has_value());
     EXPECT_EQ(ack.error().category, types::ErrorCategory::kServer);
     EXPECT_EQ(f.http->To("/api/v3/orderList").size(), 1u);
+}
+
+TEST(BinanceUSOrders, A2xxOcoAndCancelWithTruncatedBodiesLookUpState) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order/oco", "{\"orderListId\":");
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER",
+                                        "SELL", "750.00", "0.010", "0", "0"));
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "NEW", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->limit.order_id, "12");
+    EXPECT_EQ(ack->stop.order_id, "11");
+
+    // Truncated 2xx on DELETE /api/v3/order queries GetOrder instead of
+    // returning a bare kParse failure.
+    f.http->Push("/api/v3/order", "{");
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "CANCELED", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    auto cancelled = venue->CancelOrder("11");
+    ASSERT_OK(cancelled);
+    EXPECT_EQ(*cancelled, CancelOutcome::kCancelled);
+
+    // Truncated 2xx on DELETE when GetOrder shows the order is still open
+    // returns the parse failure (which still counts as MayHaveTakenEffect).
+    f.http->Push("/api/v3/order", "{");
+    f.http->Push("/api/v3/order", Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER",
+                                        "SELL", "750.00", "0.010", "0", "0"));
+    auto still_open = venue->CancelOrder("12");
+    ASSERT_FALSE(still_open.has_value());
+    EXPECT_TRUE(still_open.error().MayHaveTakenEffect());
+
+    // Truncated 2xx OCO where both leg lookups miss across both passes reports
+    // "may still appear" and MayHaveTakenEffect.
+    Fixture miss;
+    auto miss_venue = miss.Venue();
+    miss.http->Push("/api/v3/order/oco", "{\"orderListId\":");
+    for (int i = 0; i < 4; ++i) {
+        miss.http->PushStatus(
+            "/api/v3/order", 400,
+            "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    }
+    auto missed_oco = miss_venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_FALSE(missed_oco.has_value());
+    EXPECT_TRUE(missed_oco.error().MayHaveTakenEffect());
+    EXPECT_NE(missed_oco.error().message.find("may still appear"),
+              std::string::npos);
+    EXPECT_EQ(miss.sleeps.size(), 1u);
 }
 
 TEST(BinanceUSOrders, ARefusedOcoIsReportedAndNothingIsSentForBadPrices) {

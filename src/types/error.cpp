@@ -48,6 +48,18 @@ bool Error::IsTransient() const {
     }
 }
 
+bool Error::MayHaveTakenEffect() const {
+    switch (category) {
+        case ErrorCategory::kNetwork:
+        case ErrorCategory::kTimeout:
+        case ErrorCategory::kServer:
+        case ErrorCategory::kParse:
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::string Error::ToString() const {
     std::string out =
         "[" + std::string(types::ToString(category)) + "] " + message;

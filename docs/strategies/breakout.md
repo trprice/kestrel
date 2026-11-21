@@ -111,9 +111,15 @@ part, the pair is taken down and the rest sold at market. The paper venue,
 Binance.US and Schwab have such pairs. On a venue without them, or when the
 venue refuses the pair (the price already past the target, or a risk limit the
 pair's two orders break), the stop rests alone and the target is left to the
-close for the rest of the trade. A pair whose placement got no answer may be
-resting, so nothing else is placed until the next bar; a pair that came back
-half closed is taken down and tried again then.
+close for the rest of the trade. A pair whose placement got no answer (a
+timeout, network error, 5xx or unparseable 2xx) may be resting, so nothing else
+is placed until `GetOpenOrders` has been checked: if both legs are open they
+are adopted (and tracked for order updates), a lone matching stop leg is
+adopted with the target left to the close, and any other active closing-side
+order on the symbol is cancelled while the market is open before placing again
+(assuming Kestrel is the sole trader on the symbol; see
+[running.md](../running.md)). A pair that came back half closed is taken down
+and tried again on the next bar.
 
 **Moving the stop.** With `breakeven_r` or `trail_bars`, a close that is not
 an exit can raise the stop. The resting stop is cancelled and placed again at
@@ -121,7 +127,8 @@ the new level. A raised stop is never lowered, and never placed at or above
 the close. While the market is closed (daily bars, or a bar that closes the
 session) the new stop is placed at the next open. If the venue refuses it
 there (an open that gapped below it), the position is sold at market, as it
-is when a stop to be placed again has been closed through.
+is when a stop to be placed again has been closed through; an unanswered or
+rate-limited placement waits for the next bar instead.
 
 **Volume.** With `volume_ratio`, the first close above the trigger (of
 `confirm_closes`, or the throwback's) must come on a bar that traded at least
@@ -137,7 +144,19 @@ needs `confirm = "closes"` or `entry = "throwback"`.
   filled (a live venue) is held as a smaller long, with its stop.
 - A protective stop that closes unfilled (cancelled, rejected or expired) is
   placed again at once; one that could not be placed is tried again at the
-  next bar.
+  next bar (adopting it from `GetOpenOrders` first if its placement ended
+  without an answer).
+- An exit (a target or time exit, or `flatten_at_close`) whose market sell
+  got no answer is tried again at the next bar, after `GetOpenOrders` is
+  checked for it (a sell still working is adopted as the exit, and any stop
+  put back meanwhile cancelled). A long gets a plain stop back at once if the
+  venue still shows the position (its position, or else the base asset's
+  balance) and the last close is above the stop. Otherwise it stays without
+  one until the retry: a stop beside a sale that went through would sell
+  short on a margin account, and one past the price would be refused or sell
+  at once. A short always waits, since a buy-stop beside a cover that went
+  through would open a long. A base balance that holds more than the trade
+  (coins bought outside it) counts as still held.
 - An entry whose cancel fails stays armed, and the cancel is retried each bar.
 - When the stop or the exit sells out the position, the other is cancelled.
 
@@ -183,8 +202,9 @@ strategy enters the other direction at once at market. The new stop is
 the setup's height times `target_multiple` away. A reversed trade does not
 reverse again, and a raised or trailed stop, a target or a time exit never
 reverses. A late fill of the failed trade's orders after a reversal is logged
-and ignored. A reversed trade is sized as any entry (with `risk_per_trade`,
-from the last close) but skips the entry filters: `trend_sma`, volume and
+and ignored. A reversed trade is sized as any entry (with `risk_per_trade` or
+`risk_fraction`, from the stop fill price that triggered it) but skips the
+entry filters: `trend_sma`, volume and
 `confirm`. Reversing a long sells short, so it needs a venue that can: on
 Binance.US the short is refused and the strategy stays flat.
 
@@ -267,8 +287,10 @@ In the `[strategy]` table (see [configuration.md](../configuration.md#strategy))
 
 | Key | Meaning |
 |---|---|
-| `symbol`, `quantity` | required; `quantity` is base units (shares) per entry, or the most an entry buys with `risk_per_trade` |
-| `risk_per_trade` | size each entry so that a fill at the entry and a sale at the protective stop lose this much, in the quote asset, before fees and slippage (default 0: every entry buys `quantity`). The size is this over the entry's distance to the stop, rounded down to the lot and capped at `quantity`; an entry under the venue's minimum size or value is skipped. A stop-entry is sized from its trigger, a throwback from its limit, a market entry from the last close, so a gap past the trigger or the stop loses more |
+| `symbol`, `quantity` | required; `quantity` is base units (shares) per entry, or the most an entry buys with `risk_per_trade` or `risk_fraction` |
+| `risk_per_trade` | size each entry so that a fill at the entry and a sale at the protective stop lose this much, in the quote asset, before fees and slippage (default 0: every entry buys `quantity`). The size is this over the entry's distance to the stop, rounded down to the lot and capped at `quantity`; an entry under the venue's minimum size or value is skipped. A stop-entry is sized from its trigger, a throwback from its limit, a market entry from the last close, so a gap past the trigger or the stop loses more. Exclusive with `risk_fraction` |
+| `risk_fraction` | size each entry to risk this share of the quote asset's available balance (for equities, `USD` in live mode or `[paper] default_quote_asset` in paper mode), read from `GetBalances` when the entry is sized (at most `0.1`; default 0: off). Exclusive with `risk_per_trade`; the entry also costs at most 99% of that available balance (or of `allocation`), leaving room for the fee and slippage, `quantity` still caps the base-asset size, and no entry is placed if the balance cannot be read or none is available |
+| `allocation` | with `risk_fraction`, cap the quote-asset balance that `risk_fraction` sizes from and spends (default 0: the whole available balance). Useful on accounts such as Schwab where cash is the whole account's rather than one strategy's |
 | `timeframe` | the bars it trades (default `1h`; Schwab has `30m` or shorter and `1d`) |
 | `setup` | `nr`, `inside`, `range`, `rectangle`, `pipe`, `failed_breakdown`, `double_bottom`, `triple_bottom`, `inverse_head_shoulders`, `ascending_triangle`, `symmetrical_triangle`, `cup_handle`, `fvg` (`fair_value_gap`) or `opening_range` (default `nr`); see [the setups](#the-setups) |
 | `direction` | `long` (default) or `short`; see [Shorts](#shorts) |
@@ -299,5 +321,5 @@ In the `[strategy]` table (see [configuration.md](../configuration.md#strategy))
 | `trail_bars` | on each close, raise the stop to the lowest low of the last `trail_bars` bars less `stop_buffer_bps` (default 0: off) |
 
 `stop_buffer_bps`, `confirm_percent`, `target_multiple`, `volume_ratio`,
-`breakeven_r`, `atr_stop`, `risk_per_trade` and `min_gap_bps` cannot be
-negative, and the bar counts must be positive.
+`breakeven_r`, `atr_stop`, `risk_per_trade`, `risk_fraction`, `allocation` and
+`min_gap_bps` cannot be negative, and the bar counts must be positive.

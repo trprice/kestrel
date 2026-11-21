@@ -242,7 +242,10 @@ strategy placed. Any other order on the account can interrupt the strategy:
   against the strategy's own quotes while it runs.
 
 So while `run` is trading live, do not place orders on its symbols by any other
-means, and use a separate account (or sub-account) for anything else. Orders on
+means, including a second `run` on the same symbol, and use a separate account
+(or sub-account) for anything else. `breakout`, after an order that got no
+answer, adopts or cancels any open order on its symbol that it does not
+track. Orders on
 symbols not listed in `[general] symbols` are not cancelled, but they still
 share the account's balances. The read-only `account` command is safe to use
 at any time.

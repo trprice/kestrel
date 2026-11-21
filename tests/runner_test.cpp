@@ -123,6 +123,9 @@ class RecordingStrategy : public strategy::Strategy {
     Requirements Needs() const override { return requirements; }
 
     void OnStart(strategy::Context& context) override {
+        if (track_on_start) {
+            context.TrackOrder(*track_on_start);
+        }
         for (int i = 0; i < orders_on_start; ++i) {
             types::OrderRequest request;
             request.symbol = kSymbol;
@@ -178,6 +181,7 @@ class RecordingStrategy : public strategy::Strategy {
     bool throw_on_bar = false;
     bool throw_on_fill = false;
     int orders_on_start = 0;
+    std::optional<types::OrderStatus> track_on_start;
     std::function<void()> on_quote;  // after a quote is recorded
     std::vector<std::tuple<std::string, types::OrderState, types::Decimal>>
         updates;
@@ -1942,6 +1946,45 @@ TEST_F(RunnerTest, MultiSymbolStrategyLogContextOmitsSingleSymbolField) {
     ASSERT_OK(runner->Begin());
     EXPECT_EQ(runner->Log().Prefix(), "recording");
     EXPECT_FALSE(runner->Log().Has("symbol"));
+    runner->End();
+}
+
+TEST_F(RunnerTest, TrackOrderDeliversUpdatesForAdoptedOrders) {
+    types::OrderStatus adopted;
+    adopted.order_id = "adopted-stop";
+    adopted.symbol = kSymbol;
+    adopted.side = types::Side::kSell;
+    adopted.type = types::OrderType::kStop;
+    adopted.quantity = types::Decimal::FromInt(1);
+    adopted.state = types::OrderState::kNew;
+    strategy->track_on_start = adopted;
+    venue->open_orders = {adopted};
+
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->updates.empty());
+
+    // Partial fill while open reaches OnOrderUpdate.
+    venue->open_orders[0].state = types::OrderState::kPartiallyFilled;
+    venue->open_orders[0].filled_quantity = types::Decimal(4, 1);
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 1u);
+    EXPECT_EQ(std::get<0>(strategy->updates[0]), "adopted-stop");
+    EXPECT_EQ(std::get<1>(strategy->updates[0]),
+              types::OrderState::kPartiallyFilled);
+
+    // Leaving open_orders triggers GetOrder and delivers the final closed state
+    // once.
+    venue->open_orders.clear();
+    adopted.state = types::OrderState::kCancelled;
+    adopted.filled_quantity = types::Decimal(4, 1);
+    venue->order_states["adopted-stop"] = adopted;
+    EXPECT_TRUE(runner->Drain());
+    ASSERT_EQ(strategy->updates.size(), 2u);
+    EXPECT_EQ(std::get<1>(strategy->updates[1]), types::OrderState::kCancelled);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->updates.size(), 2u);
     runner->End();
 }
 

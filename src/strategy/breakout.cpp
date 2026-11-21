@@ -15,11 +15,22 @@ using types::OrderState;
 using types::Rounding;
 using types::Side;
 
+namespace {
+
+// With risk_fraction, an entry spends at most this share of the capital it
+// sizes from, leaving room for the fee and for a fill above the price it was
+// sized at (a buy-stop that gaps through its trigger, a market entry's
+// slippage): a buy that costs the whole balance would be refused.
+const Decimal kNotionalShare(99, 2);  // 0.99
+
+}  // namespace
+
 Breakout::Breakout(BreakoutParams params)
     : mParams(std::move(params)),
       mShort(mParams.direction == BreakoutParams::Direction::kShort),
-      mEntryQuantity(mParams.quantity) {
-    mBaseAsset = BaseAsset(mParams.symbol);
+      mEntryQuantity(mParams.quantity),
+      mBaseAsset(BaseAsset(mParams.symbol)),
+      mQuoteAsset(QuoteAsset(mParams.symbol, mParams.default_quote_asset)) {
     if (mParams.quantity.Sign() <= 0) {
         throw std::invalid_argument("quantity must be positive");
     }
@@ -74,11 +85,26 @@ Breakout::Breakout(BreakoutParams params)
         mParams.target_multiple.IsNegative() ||
         mParams.volume_ratio.IsNegative() || mParams.breakeven_r.IsNegative() ||
         mParams.atr_stop.IsNegative() || mParams.risk_per_trade.IsNegative() ||
+        mParams.risk_fraction.IsNegative() || mParams.allocation.IsNegative() ||
         mParams.min_gap_bps.IsNegative()) {
         throw std::invalid_argument(
             "stop_buffer_bps, confirm_percent, target_multiple, volume_ratio, "
-            "breakeven_r, atr_stop, risk_per_trade and min_gap_bps cannot be "
-            "negative");
+            "breakeven_r, atr_stop, risk_per_trade, risk_fraction, allocation "
+            "and min_gap_bps cannot be negative");
+    }
+    if (mParams.risk_per_trade.Sign() > 0 && mParams.risk_fraction.Sign() > 0) {
+        throw std::invalid_argument(
+            "set risk_per_trade or risk_fraction, not both");
+    }
+    const Decimal max_risk_fraction(1, 1);  // 0.1
+    if (mParams.risk_fraction > max_risk_fraction) {
+        throw std::invalid_argument("risk_fraction can be at most 0.1");
+    }
+    if (mParams.allocation.Sign() > 0 && mParams.risk_fraction.Sign() == 0) {
+        throw std::invalid_argument("allocation requires risk_fraction");
+    }
+    if (mParams.risk_fraction.Sign() > 0 && mQuoteAsset.empty()) {
+        throw std::invalid_argument("risk_fraction requires a quote asset");
     }
     if (mParams.volume_bars == 0 || mParams.atr_bars == 0) {
         throw std::invalid_argument(
@@ -388,21 +414,33 @@ void Breakout::LongBar(Context& context, const types::Bar& bar) {
     if (bar.open_time >= mEntryTime) {
         ++mBarsHeld;
     }
-    const char* due = nullptr;
-    if (mTarget && mTargetId.empty() && bar.close >= *mTarget) {
-        due = "target";  // not resting at the venue
-    } else if (mParams.max_hold_bars > 0 &&
-               mBarsHeld >= mParams.max_hold_bars) {
-        due = "held long enough";
+    const auto reconcile = ReconcileUnansweredClosers(context);
+    if (mState != State::kLong) {
+        return;  // an unanswered exit was adopted into kExiting
+    }
+    const char* due = mExitDue;
+    if (!due) {
+        if (mTarget && mTargetId.empty() && bar.close >= *mTarget) {
+            due = "target";  // not resting at the venue
+        } else if (mParams.max_hold_bars > 0 &&
+                   mBarsHeld >= mParams.max_hold_bars) {
+            due = "held long enough";
+        }
     }
     if (!due) {
         RaiseStop(context, bar);
     }
     // Orders are refused while closed: the resting stop protects until the
     // next bar in the session, or with daily bars until the open, where a due
-    // exit sells.
+    // exit sells (an exit already deferred into mExitDue stays set).
     if (!context.MarketOpen()) {
         if (due && CarriesOver()) {
+            mExitDue = due;
+        }
+        return;
+    }
+    if (reconcile != ReconcileOutcome::kClear) {
+        if (due) {
             mExitDue = due;
         }
         return;
@@ -419,6 +457,7 @@ void Breakout::LongBar(Context& context, const types::Bar& bar) {
         MoveStop(context);
     }
     if (due) {
+        mExitDue = nullptr;
         Exit(context, due);
     }
 }
@@ -472,10 +511,41 @@ bool Breakout::CarriesOver() const {
     return !bar || *bar >= std::chrono::hours(24);
 }
 
+std::optional<Breakout::SizingBudget> Breakout::EntryBudget(
+    Context& context) const {
+    if (mParams.risk_per_trade.Sign() > 0) {
+        return SizingBudget{mParams.risk_per_trade, std::nullopt};
+    }
+    auto balances = context.Venue().GetBalances();
+    if (!balances) {
+        Log(context).Warn("cannot read balances to size the entry: {}",
+                          balances.error().ToString());
+        return std::nullopt;
+    }
+    Decimal available;
+    for (const auto& balance : *balances) {
+        if (balance.asset == mQuoteAsset) {
+            available = balance.available;
+            break;
+        }
+    }
+    if (available.Sign() <= 0) {
+        Log(context).Info("no available {} balance to size the entry; no entry",
+                          mQuoteAsset);
+        return std::nullopt;
+    }
+    const Decimal capital = mParams.allocation.Sign() > 0
+                                ? std::min(available, mParams.allocation)
+                                : available;
+    return SizingBudget{(capital * mParams.risk_fraction).Normalized(),
+                        (capital * kNotionalShare).Normalized()};
+}
+
 std::optional<Decimal> Breakout::EntrySize(Context& context,
                                            const Decimal& entry,
                                            const Decimal& stop) const {
-    if (mParams.risk_per_trade.Sign() == 0) {
+    if (mParams.risk_per_trade.Sign() == 0 &&
+        mParams.risk_fraction.Sign() == 0) {
         return mParams.quantity;
     }
     const Decimal distance = entry - stop;  // in long terms, so above zero
@@ -489,14 +559,32 @@ std::optional<Decimal> Breakout::EntrySize(Context& context,
         Log(context).Warn("cannot size the entry: {}", info.error().ToString());
         return std::nullopt;
     }
+    const auto budget = EntryBudget(context);
+    if (!budget) {
+        return std::nullopt;
+    }
     // quantity caps the size; below it, divide only to the lot's places, so
-    // the quotient stays small enough to hold.
+    // the quotient stays small enough to hold. With risk_fraction, also cap
+    // the position's notional at 99% of the available / allocated quote
+    // balance (kNotionalShare).
     Decimal size = mParams.quantity;
-    if (mParams.risk_per_trade < mParams.quantity * distance) {
+    const Decimal notional_price = entry.Abs();
+    const bool capped_by_budget =
+        budget->risk < mParams.quantity * distance ||
+        (budget->max_notional &&
+         *budget->max_notional < mParams.quantity * notional_price);
+    if (capped_by_budget) {
         const int places =
             info->lot_size.Sign() > 0 ? info->lot_size.Normalized().Scale() : 8;
-        size = Decimal::Divide(mParams.risk_per_trade, distance, places,
-                               Rounding::kDown);
+        if (budget->risk < size * distance) {
+            size = Decimal::Divide(budget->risk, distance, places,
+                                   Rounding::kDown);
+        }
+        if (budget->max_notional && notional_price.Sign() > 0 &&
+            *budget->max_notional < size * notional_price) {
+            size = Decimal::Divide(*budget->max_notional, notional_price,
+                                   places, Rounding::kDown);
+        }
         if (info->lot_size.Sign() > 0) {
             size = size.RoundToIncrement(info->lot_size, Rounding::kDown);
         }
@@ -504,12 +592,11 @@ std::optional<Decimal> Breakout::EntrySize(Context& context,
     size = size.Normalized();
     if (size.Sign() <= 0 || size < info->min_order_size ||
         (info->min_notional.Sign() > 0 &&
-         size * entry.Abs() < info->min_notional)) {
+         size * notional_price < info->min_notional)) {
         Log(context).Info(
             "entry of {} to risk {} with the stop {} away is under the venue's "
             "minimum; no entry",
-            size.ToString(), mParams.risk_per_trade.ToString(),
-            distance.ToString());
+            size.ToString(), budget->risk.ToString(), distance.ToString());
         return std::nullopt;
     }
     return size;
@@ -580,12 +667,15 @@ void Breakout::ArmThrowback(Context& context) {
     }
 }
 
-void Breakout::EnterAtMarket(Context& context) {
-    // Sized from the last close, the nearest price to the fill there is.
+void Breakout::EnterAtMarket(Context& context,
+                             std::optional<Decimal> reference_price) {
+    // Sized from `reference_price` (on a reversal, the stop fill that just
+    // traded), or else the last close, the nearest price to the fill there is.
     const auto bars = Bars(context);
-    const auto size =
-        EntrySize(context, bars.empty() ? mLevels->trigger : bars.back().close,
-                  mLevels->stop);
+    const Decimal price = reference_price ? *reference_price
+                          : bars.empty()  ? mLevels->trigger
+                                          : bars.back().close;
+    const auto size = EntrySize(context, price, mLevels->stop);
     if (!size) {
         return;
     }
@@ -638,6 +728,8 @@ void Breakout::GoFlat() {
     mExitId.clear();
     mTargetId.clear();
     mClosers.clear();
+    mUnansweredCloser = UnansweredCloser::kNone;
+    mReconcileFailures = 0;
     mTargetHit = false;
     mTargetRefused = false;
 }
@@ -694,7 +786,187 @@ void Breakout::RetryStrays(Context& context) {
     });
 }
 
-void Breakout::PlaceStop(Context& context) {
+Breakout::ReconcileOutcome Breakout::ReconcileUnansweredClosers(
+    Context& context) {
+    if (mUnansweredCloser == UnansweredCloser::kNone) {
+        return ReconcileOutcome::kClear;
+    }
+    auto open = context.Venue().GetOpenOrders();
+    if (!open) {
+        // Never fall back to placing blindly: on a margin or paper-short venue
+        // a live unanswered closer would create a double sell / cover.
+        Log(context).Error(
+            "cannot read open orders after an unanswered closing order "
+            "(attempt {}): {}; still unprotected",
+            ++mReconcileFailures, open.error().ToString());
+        return ReconcileOutcome::kDeferred;
+    }
+    mReconcileFailures = 0;
+
+    // Kestrel owns all orders on its configured symbols (docs/running.md), so
+    // any active closing-side order on mParams.symbol that is not already
+    // tracked here came from the unanswered call (or an external intervention)
+    // and is adopted if it matches, or cancelled before placing another.
+    const Side close_side = mShort ? Side::kBuy : Side::kSell;
+    std::vector<const types::OrderStatus*> untracked;
+    for (const auto& order : *open) {
+        if (order.symbol != mParams.symbol || !types::IsActive(order.state) ||
+            order.side != close_side) {
+            continue;
+        }
+        if (order.order_id == mEntryId || order.order_id == mStopId ||
+            order.order_id == mTargetId || order.order_id == mExitId ||
+            std::ranges::find(mStrays, order.order_id, &Stray::id) !=
+                mStrays.end()) {
+            continue;
+        }
+        untracked.push_back(&order);
+    }
+    if (untracked.empty()) {
+        mUnansweredCloser = UnansweredCloser::kNone;
+        return ReconcileOutcome::kClear;
+    }
+
+    Decimal expected_quantity = RoundDownToLot(context, mParams.symbol, mHeld);
+    if (expected_quantity.Sign() <= 0) {
+        expected_quantity = mHeld;
+    }
+    const auto matches_held = [&](const types::OrderStatus& order) {
+        return order.quantity == expected_quantity ||
+               order.quantity - order.filled_quantity == expected_quantity;
+    };
+
+    // An unanswered market exit still working (e.g. queued on the venue) moves
+    // us into kExiting without sending a second sell.
+    if (mUnansweredCloser == UnansweredCloser::kExit && untracked.size() == 1 &&
+        untracked[0]->type == types::OrderType::kMarket &&
+        matches_held(*untracked[0])) {
+        const auto& exit = *untracked[0];
+        // A stop put back while the exit was unanswered must not sell too.
+        CancelOther(context, mStopId, "protective stop");
+        CancelOther(context, mTargetId, "target");
+        context.TrackOrder(exit);
+        mExitId = exit.order_id;
+        mClosers[mExitId] = "the exit";
+        mExitDue = nullptr;
+        mState = State::kExiting;
+        mUnansweredCloser = UnansweredCloser::kNone;
+        Log(context).Warn("adopted unanswered exit {}", mExitId);
+        return ReconcileOutcome::kDeferred;
+    }
+
+    // A lone matching stop leg (from a plain stop, or an OCO whose target leg
+    // did not rest) already protects the position: adopt it rather than cancel
+    // a working stop, and if its stop price differs, mark mStopMoved so
+    // MoveStop replaces it at mLevels->stop when open.
+    if (mUnansweredCloser != UnansweredCloser::kExit && untracked.size() == 1 &&
+        untracked[0]->type == types::OrderType::kStop &&
+        matches_held(*untracked[0])) {
+        const auto& stop = *untracked[0];
+        context.TrackOrder(stop);
+        mStopId = stop.order_id;
+        mClosers[mStopId] = "the protective stop";
+        if (mLevels &&
+            (!stop.stop_price || *stop.stop_price != Mirror(mLevels->stop))) {
+            mStopMoved = true;
+        }
+        if (mUnansweredCloser == UnansweredCloser::kOco) {
+            mTargetRefused = true;
+        }
+        mUnansweredCloser = UnansweredCloser::kNone;
+        Log(context).Warn("adopted unanswered protective stop {}", mStopId);
+        return ReconcileOutcome::kClear;
+    }
+
+    if (mUnansweredCloser == UnansweredCloser::kOco && untracked.size() == 2) {
+        const types::OrderStatus* limit = nullptr;
+        const types::OrderStatus* stop = nullptr;
+        for (const auto* order : untracked) {
+            if (order->type == types::OrderType::kLimit) {
+                limit = order;
+            } else if (order->type == types::OrderType::kStop) {
+                stop = order;
+            }
+        }
+        if (limit && stop && limit->filled_quantity.IsZero() &&
+            stop->filled_quantity.IsZero() &&
+            limit->quantity == expected_quantity &&
+            stop->quantity == expected_quantity) {
+            context.TrackOrder(*limit);
+            context.TrackOrder(*stop);
+            mTargetId = limit->order_id;
+            mStopId = stop->order_id;
+            mClosers[mTargetId] = "the target";
+            mClosers[mStopId] = "the protective stop";
+            if (mLevels && (!stop->stop_price ||
+                            *stop->stop_price != Mirror(mLevels->stop))) {
+                mStopMoved = true;
+            }
+            mUnansweredCloser = UnansweredCloser::kNone;
+            Log(context).Warn(
+                "adopted unanswered target {} and protective stop {}",
+                mTargetId, mStopId);
+            return ReconcileOutcome::kClear;
+        }
+    }
+
+    // While the market is closed no replacement can be placed, so leave any
+    // non-matching protection resting until OnSessionOpen can replace it.
+    if (!context.MarketOpen()) {
+        return ReconcileOutcome::kDeferred;
+    }
+
+    // Open orders from the unanswered call cannot serve as-is (a lone target
+    // leg without a stop, a partly filled target, or an old size after a late
+    // entry fill): cancel them before placing anything new.
+    bool cleared = true;
+    for (const auto* order : untracked) {
+        mClosers.try_emplace(
+            order->order_id,
+            order->type == types::OrderType::kLimit    ? "the target"
+            : order->type == types::OrderType::kMarket ? "the exit"
+                                                       : "the protective stop");
+        const auto cancelled = context.Venue().CancelOrder(order->order_id);
+        if (!cancelled) {
+            if (cancelled.error().category != types::ErrorCategory::kNotFound) {
+                Log(context).Warn(
+                    "cannot cancel unanswered order {}: {}; waiting for the "
+                    "next bar",
+                    order->order_id, cancelled.error().ToString());
+                cleared = false;
+            }
+            continue;
+        }
+        if (*cancelled == trading::CancelOutcome::kAlreadyFilled) {
+            Log(context).Info(
+                "unanswered order {} filled before it could be cancelled",
+                order->order_id);
+            cleared = false;
+        } else {
+            Log(context).Warn("cancelled unanswered {} {}",
+                              types::ToString(order->type), order->order_id);
+        }
+    }
+    if (cleared) {
+        mUnansweredCloser = UnansweredCloser::kNone;
+    }
+    return cleared ? ReconcileOutcome::kClear : ReconcileOutcome::kDeferred;
+}
+
+Breakout::StopPlacement Breakout::PlaceStop(Context& context) {
+    if (ReconcileUnansweredClosers(context) != ReconcileOutcome::kClear) {
+        return StopPlacement::kDeferred;
+    }
+    if (!mStopId.empty()) {
+        // Adopted above. If mStopMoved is set (stop_price differed, or
+        // RaiseStop moved the level while GetOpenOrders was down), MoveStop
+        // cancels mStopId and calls PlaceStop once with mUnansweredCloser ==
+        // kNone and mStopId empty, so this cannot recurse further.
+        if (mStopMoved) {
+            MoveStop(context);
+        }
+        return StopPlacement::kPlaced;
+    }
     mStopMoved = false;  // placed at mLevels->stop, or retried next bar
     if (mBaseFeePaid) {
         if (const Decimal rounded =
@@ -703,7 +975,10 @@ void Breakout::PlaceStop(Context& context) {
             mHeld = rounded;
         }
     }
-    if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused) {
+    // With an exit due or the target partly hit, the stop rests alone: a
+    // pair's target would only be cancelled by the exit.
+    if (mParams.resting_target && mTarget && !mNoOco && !mTargetRefused &&
+        !mExitDue && !mTargetHit) {
         types::OcoRequest pair;
         pair.symbol = mParams.symbol;
         pair.side = mShort ? Side::kBuy : Side::kSell;
@@ -717,7 +992,7 @@ void Breakout::PlaceStop(Context& context) {
             mTargetId = ack->limit.order_id;
             mClosers[mStopId] = "the protective stop";
             mClosers[mTargetId] = "the target";
-            return;
+            return StopPlacement::kPlaced;
         }
         if (ack) {
             // One leg closed at once: take the other down (cancelling either
@@ -734,26 +1009,27 @@ void Breakout::PlaceStop(Context& context) {
                     CancelOther(context, id, "half-placed pair");
                 }
             }
-            return;
+            return StopPlacement::kDeferred;
         }
-        const auto category = ack.error().category;
-        if (category == types::ErrorCategory::kNetwork ||
-            category == types::ErrorCategory::kTimeout ||
-            category == types::ErrorCategory::kServer ||
-            category == types::ErrorCategory::kRateLimit) {
+        const auto& error = ack.error();
+        if (error.MayHaveTakenEffect() ||
+            error.category == types::ErrorCategory::kRateLimit) {
+            if (error.MayHaveTakenEffect()) {
+                mUnansweredCloser = UnansweredCloser::kOco;
+            }
             // It may have been placed, or may be next time: not a second
             // sell beside it now.
             Log(context).Error(
                 "the target and stop failed: {}; unprotected until the next "
                 "bar",
-                ack.error().ToString());
-            return;
+                error.ToString());
+            return StopPlacement::kDeferred;
         }
-        if (category == types::ErrorCategory::kNotImplemented) {
+        if (error.category == types::ErrorCategory::kNotImplemented) {
             Log(context).Warn(
                 "{} cannot rest the target with the stop ({}); selling on a "
                 "close past it instead",
-                context.Venue().Name(), ack.error().ToString());
+                context.Venue().Name(), error.ToString());
             mNoOco = true;
         } else {
             // Refused (the price already past the target, a risk limit the
@@ -761,7 +1037,7 @@ void Breakout::PlaceStop(Context& context) {
             Log(context).Warn(
                 "the target {} cannot rest with the stop: {}; selling on a "
                 "close past it instead",
-                Price(*mTarget), ack.error().ToString());
+                Price(*mTarget), error.ToString());
             mTargetRefused = true;
         }
     }
@@ -771,13 +1047,28 @@ void Breakout::PlaceStop(Context& context) {
     request.type = types::OrderType::kStop;
     request.quantity = mHeld;
     request.stop_price = mLevels->stop;
-    if (auto id = Place(context, request, "protective stop")) {
-        mStopId = *id;
-        mClosers[mStopId] = "the protective stop";
-    } else {
-        // Unprotected until the next bar, which tries again.
+    auto ack = context.Venue().PlaceOrder(ToVenueTerms(request));
+    if (!ack) {
+        Log(context).Warn("protective stop failed: {}", ack.error().ToString());
         Log(context).Error("held without a protective stop");
+        if (ack.error().MayHaveTakenEffect()) {
+            mUnansweredCloser = UnansweredCloser::kStop;
+            return StopPlacement::kDeferred;
+        }
+        if (ack.error().category == types::ErrorCategory::kRateLimit) {
+            return StopPlacement::kDeferred;
+        }
+        return StopPlacement::kRefused;
     }
+    if (ClosedUnfilled(ack->state)) {
+        Log(context).Warn("protective stop closed without a fill: {}",
+                          types::ToString(ack->state));
+        Log(context).Error("held without a protective stop");
+        return StopPlacement::kRefused;
+    }
+    mStopId = ack->order_id;
+    mClosers[mStopId] = "the protective stop";
+    return StopPlacement::kPlaced;
 }
 
 bool Breakout::VolumeConfirms(Context& context, const types::Bar& bar) const {
@@ -873,8 +1164,7 @@ void Breakout::MoveStop(Context& context) {
     }
     mStopId.clear();
     mTargetId.clear();  // cancelled with its stop
-    PlaceStop(context);
-    if (mStopId.empty()) {
+    if (PlaceStop(context) == StopPlacement::kRefused) {
         // Refused: most likely the price is already through it (an open
         // gapping below a stop raised on the close), where a venue refuses a
         // sell-stop. The raised stop said to be out: sell at market.
@@ -883,14 +1173,25 @@ void Breakout::MoveStop(Context& context) {
 }
 
 void Breakout::Exit(Context& context, const char* why) {
+    if (ReconcileUnansweredClosers(context) != ReconcileOutcome::kClear) {
+        if (mState == State::kLong) {
+            mExitDue = why;
+            Log(context).Error(
+                "exit ({}) deferred until unanswered orders settle", why);
+        }
+        return;
+    }
     if (!mStopId.empty()) {
         const auto cancelled = context.Venue().CancelOrder(mStopId);
         if (cancelled && *cancelled == trading::CancelOutcome::kAlreadyFilled) {
             return;  // the stop got there first; its fill makes us flat
         }
         if (!cancelled) {
-            Log(context).Warn("cannot cancel the protective stop {}: {}",
-                              mStopId, cancelled.error().ToString());
+            mExitDue = why;
+            Log(context).Error(
+                "cannot cancel the protective stop {} to exit ({}): {}; trying "
+                "again on the next bar",
+                mStopId, why, cancelled.error().ToString());
             return;  // it still protects; try again on the next bar
         }
         if (*cancelled == trading::CancelOutcome::kAlreadyClosed &&
@@ -913,13 +1214,84 @@ void Breakout::Exit(Context& context, const char* why) {
     request.type = types::OrderType::kMarket;
     request.quantity = mHeld;
     Log(context).Info("exit ({})", why);
-    if (auto id = Place(context, request, "exit")) {
-        mExitId = *id;
+    auto ack = context.Venue().PlaceOrder(ToVenueTerms(request));
+    if (ack && !ClosedUnfilled(ack->state)) {
+        mExitDue = nullptr;
+        mExitId = ack->order_id;
         mClosers[mExitId] = "the exit";
         mState = State::kExiting;
-    } else if (mState == State::kLong) {
-        PlaceStop(context);  // still long: protect it again
+        return;
     }
+    if (!ack) {
+        Log(context).Warn("exit failed: {}", ack.error().ToString());
+        if (ack.error().MayHaveTakenEffect()) {
+            // The market exit may have been placed: try it again on the next
+            // bar, after GetOpenOrders has been checked for it.
+            mUnansweredCloser = UnansweredCloser::kExit;
+            mExitDue = why;
+            // The stop was cancelled above. Put it back now rather than leave
+            // the long bare for a bar, but only where it can protect: not a
+            // short (a buy-stop beside a cover that went through opens a
+            // long), not past the stop (it would be refused or sell at once),
+            // and only while the venue still shows the position (a stop
+            // beside a sale that went through would sell short on a margin
+            // or allow_short account).
+            const auto bars = Bars(context);
+            const bool through =
+                !bars.empty() && bars.back().close <= mLevels->stop;
+            if (mShort || through || !StillHeld(context)) {
+                Log(context).Error(
+                    "held without a protective stop until the exit is tried "
+                    "again");
+                return;
+            }
+            // PlaceStop checks GetOpenOrders first and adopts the exit if it
+            // is still working.
+            PlaceStop(context);
+            if (mState == State::kLong &&
+                mUnansweredCloser == UnansweredCloser::kNone) {
+                // The exit was not adopted: check again on the next bar before
+                // it is sent again, in case it shows up late. A stop that got
+                // no answer itself keeps its own mark (kStop), so it is
+                // adopted rather than cancelled; an unreadable GetOpenOrders
+                // has left kExit as it is.
+                mUnansweredCloser = UnansweredCloser::kExit;
+            }
+            return;
+        }
+        if (ack.error().category == types::ErrorCategory::kRateLimit) {
+            mExitDue = why;
+        }
+    } else {
+        Log(context).Warn("exit closed without a fill: {}",
+                          types::ToString(ack->state));
+    }
+    if (mState == State::kLong) {
+        PlaceStop(context);  // not out: protect it again
+    }
+}
+
+bool Breakout::StillHeld(Context& context) const {
+    if (auto positions = context.Venue().GetPositions()) {
+        for (const auto& position : *positions) {
+            if (position.symbol == mParams.symbol) {
+                return position.quantity >= mHeld;
+            }
+        }
+    }
+    if (mBaseAsset.empty()) {
+        return false;
+    }
+    auto balances = context.Venue().GetBalances();
+    if (!balances) {
+        return false;
+    }
+    for (const auto& balance : *balances) {
+        if (balance.asset == mBaseAsset) {
+            return balance.total >= mHeld;
+        }
+    }
+    return false;
 }
 
 void Breakout::Disarm(Context& context) {
@@ -944,9 +1316,7 @@ void Breakout::Disarm(Context& context) {
     GoFlat();
 }
 
-std::optional<std::string> Breakout::Place(Context& context,
-                                           types::OrderRequest request,
-                                           const char* what) {
+types::OrderRequest Breakout::ToVenueTerms(types::OrderRequest request) const {
     if (mShort) {
         request.side = request.side == Side::kBuy ? Side::kSell : Side::kBuy;
         if (request.limit_price) {
@@ -956,7 +1326,13 @@ std::optional<std::string> Breakout::Place(Context& context,
             request.stop_price = -*request.stop_price;
         }
     }
-    if (auto ack = Submit(context, request, what)) {
+    return request;
+}
+
+std::optional<std::string> Breakout::Place(Context& context,
+                                           types::OrderRequest request,
+                                           const char* what) {
+    if (auto ack = Submit(context, ToVenueTerms(std::move(request)), what)) {
         return ack->order_id;
     }
     return std::nullopt;
@@ -1081,14 +1457,16 @@ void Breakout::OnFill(Context& context, const types::Fill& raw) {
         if (fill.order_id != mExitId) {
             CancelOther(context, mExitId, "exit");
         }
+        const Decimal stop_fill_price = fill.price;
         GoFlat();
         if (reverse) {
-            Reverse(context, *failed);
+            Reverse(context, *failed, stop_fill_price);
         }
     }
 }
 
-void Breakout::Reverse(Context& context, const Levels& failed) {
+void Breakout::Reverse(Context& context, const Levels& failed,
+                       const Decimal& stop_fill_price) {
     auto info = context.SymbolInfo(mParams.symbol);
     if (!info) {
         Log(context).Warn("cannot reverse: no symbol info: {}",
@@ -1110,7 +1488,7 @@ void Breakout::Reverse(Context& context, const Levels& failed) {
     mLevels = levels;
     Log(context).Info("the breakout failed; reversing, {} at market, stop {}",
                       mShort ? "short" : "long", Price(levels.stop));
-    EnterAtMarket(context);
+    EnterAtMarket(context, -stop_fill_price);
     if (mState != State::kEntering) {
         GoFlat();  // refused: flat, looking for setups the usual way
     }
@@ -1223,7 +1601,10 @@ void Breakout::OnSessionOpen(Context& context) {
             GoFlat();  // the order was refused
         }
     } else if (mState == State::kLong) {
-        if (mStopId.empty()) {
+        if (ReconcileUnansweredClosers(context) != ReconcileOutcome::kClear) {
+            return;
+        }
+        if (mStopId.empty() && !mExitDue) {
             PlaceStop(context);
         } else if (mStopMoved && !mExitDue) {
             MoveStop(context);

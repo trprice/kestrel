@@ -197,6 +197,52 @@ TEST(Breakout, RiskPerTradeSizesTheEntryFromTheStop) {
     EXPECT_NO_THROW(Quantities(bars(), params));
 }
 
+// The bars of RiskPerTradeSizesTheEntryFromTheStop: in at 13.01, stop 10.98,
+// 2.03 a unit. The paper account holds 10,000 USD.
+std::shared_ptr<ReplayDataSource> RiskBars() {
+    return Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                    {"13", "13.2", "10.5", "11"},
+                    {"11", "11", "11", "11"}});
+}
+
+BreakoutParams RiskFractionParams(const char* fraction) {
+    auto params = Params();
+    params.quantity = D("200");  // high enough not to cap
+    params.risk_fraction = D(fraction);
+    return params;
+}
+
+TEST(Breakout, RiskFractionRisksAShareOfTheBalance) {
+    // 0.01 of 10,000 is 100 to risk: 49.261 at 2.03 a unit.
+    EXPECT_EQ(Quantities(RiskBars(), RiskFractionParams("0.01")),
+              (std::vector<types::Decimal>{D("49.261"), D("49.261")}));
+}
+
+TEST(Breakout, RiskFractionRisksAShareOfTheAllocation) {
+    // 0.02 of an allocation of 50 is 1 to risk, as risk_per_trade = 1.
+    auto params = RiskFractionParams("0.02");
+    params.allocation = D("50");
+    EXPECT_EQ(Quantities(RiskBars(), params),
+              (std::vector<types::Decimal>{D("0.4926"), D("0.4926")}));
+}
+
+TEST(Breakout, RiskFractionLeavesRoomForCostsInTheAllocation) {
+    // A tight stop: 0.1 of 100 over 0.12 a unit would buy 83.3333, costing
+    // far more than the 100 allocated. The entry spends 99 of it instead,
+    // leaving room for the fee and slippage: 99 / 12.96 = 7.6388.
+    const auto tight = Bars({{"12", "14", "10", "12"},
+                             {"12", "13", "10", "12"},
+                             {"12", "15", "10", "12"},
+                             {"12", "14", "10", "12"},
+                             {"12.9", "12.95", "12.86", "12.9"},
+                             {"12.9", "13.2", "12.88", "13.1"},
+                             {"13.1", "13.1", "13.1", "13.1"}});
+    auto params = RiskFractionParams("0.1");
+    params.allocation = D("100");
+    EXPECT_EQ(Quantities(tight, params),
+              (std::vector<types::Decimal>{D("7.6388"), D("7.6388")}));
+}
+
 TEST(Breakout, AnUntriggeredEntryExpires) {
     // Hour 5 never reaches 13.01 (and, wide, is no new setup); hour 6 would
     // have, but the entry was cancelled at hour 5's close.
@@ -430,9 +476,15 @@ class FakeContext : public Context {
     }
 
     const LogContext& Log() const override { return log; }
+    bool MarketOpen() const override { return open; }
+    void TrackOrder(const types::OrderStatus& order) override {
+        tracked_orders.push_back(order.order_id);
+    }
 
     kestrel::testing::RecordingVenue venue;
     std::vector<types::Bar> bars;
+    std::vector<std::string> tracked_orders;
+    bool open = true;
     LogContext log;
 };
 
@@ -893,15 +945,677 @@ TEST(Breakout, ARefusedPairFallsBackToAStopAtOnce) {
 }
 
 TEST(Breakout, APairWithAnUnknownOutcomeIsNotDoubledWithAStop) {
+    for (const auto category :
+         {types::ErrorCategory::kTimeout, types::ErrorCategory::kParse}) {
+        auto params = Params();
+        params.resting_target = true;
+        Breakout strategy(params);
+        FakeContext context;
+        context.venue.oco = true;
+        context.venue.oco_error = category;
+        Feed(strategy, context);
+        strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+        EXPECT_EQ(context.venue.orders.size(), 1u);  // the pair may exist
+    }
+}
+
+// An open order on kSymbol, as GetOpenOrders reports it.
+types::OrderStatus OpenOrder(const char* id, Side side, types::OrderType type,
+                             const char* quantity,
+                             std::optional<const char*> price = std::nullopt) {
+    types::OrderStatus order;
+    order.order_id = id;
+    order.symbol = kSymbol;
+    order.side = side;
+    order.type = type;
+    order.quantity = D(quantity);
+    order.state = types::OrderState::kNew;
+    if (price && type == types::OrderType::kStop) {
+        order.stop_price = D(*price);
+    } else if (price) {
+        order.limit_price = D(*price);
+    }
+    return order;
+}
+
+// FakeContext's setup arms at 13.01 with the stop at 10.98: 2.03 a unit.
+BreakoutParams FractionOf(const char* symbol) {
+    BreakoutParams params;
+    params.symbol = symbol;
+    params.quantity = D("100");
+    params.risk_fraction = D("0.02");
+    params.default_quote_asset = "USD";
+    return params;
+}
+
+TEST(Breakout, RiskFractionPlacesNothingWhenBalancesCannotBeRead) {
+    Breakout strategy(FractionOf("AAPL"));
+    FakeContext context;
+    context.venue.fail_balances = true;
+    strategy.OnBar(context, "AAPL", Timeframe::kH1, context.bars.back());
+    EXPECT_TRUE(context.venue.orders.empty());
+}
+
+TEST(Breakout, RiskFractionPlacesNothingWithoutAQuoteBalance) {
+    Breakout strategy(FractionOf("AAPL"));
+    FakeContext context;  // no balances at all
+    strategy.OnBar(context, "AAPL", Timeframe::kH1, context.bars.back());
+    EXPECT_TRUE(context.venue.orders.empty());
+}
+
+TEST(Breakout, RiskFractionSizesFromTheAvailableBalanceNotTheTotal) {
+    // An equity takes default_quote_asset. 1,000 USD with 900 locked leaves
+    // 100: 2 to risk, 0.9852 units.
+    Breakout strategy(FractionOf("AAPL"));
+    FakeContext context;
+    context.venue.balances = {{"USD", D("1000"), D("100"), D("900")}};
+    strategy.OnBar(context, "AAPL", Timeframe::kH1, context.bars.back());
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].quantity, D("0.9852"));
+}
+
+TEST(Breakout, RiskFractionReadsThePairsQuoteAssetUnderItsAllocation) {
+    // BTC/USDT sizes from USDT, not USD, and from the 100 held rather than
+    // the larger allocation of 500.
+    auto params = FractionOf("BTC/USDT");
+    params.allocation = D("500");
+    Breakout strategy(params);
+    FakeContext context;
+    context.venue.balances = {{"USD", D("9000"), D("9000"), D("0")},
+                              {"USDT", D("100"), D("100"), D("0")}};
+    strategy.OnBar(context, "BTC/USDT", Timeframe::kH1, context.bars.back());
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_EQ(context.venue.orders[0].quantity, D("0.9852"));
+}
+
+// Long 1 at 13.01, its stop (stop 10.98) placed without an answer.
+void LongWithAnUnansweredStop(Breakout& strategy, FakeContext& context) {
+    Feed(strategy, context);  // the entry: order-1
+    context.venue.reject_category = types::ErrorCategory::kTimeout;
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.reject_category.reset();
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+}
+
+TEST(Breakout, AdoptsAnUnansweredStopFromOpenOrders) {
+    Breakout strategy(Params());
+    FakeContext context;
+    LongWithAnUnansweredStop(strategy, context);
+    context.venue.open_orders = {OpenOrder(
+        "stop-live", Side::kSell, types::OrderType::kStop, "1", "10.98")};
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.orders.size(), 1u);  // no second stop
+    EXPECT_TRUE(context.venue.cancels.empty());
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"stop-live"});
+}
+
+TEST(Breakout, AnAdoptedStopIsPlacedAgainWhenItClosesUnfilled) {
+    Breakout strategy(Params());
+    FakeContext context;
+    LongWithAnUnansweredStop(strategy, context);
+    auto stop = OpenOrder("stop-live", Side::kSell, types::OrderType::kStop,
+                          "1", "10.98");
+    context.venue.open_orders = {stop};
+    Feed(strategy, context, kQuietBar);
+    context.venue.open_orders.clear();
+    stop.state = types::OrderState::kCancelled;
+    strategy.OnOrderUpdate(context, stop);
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[1].stop_price, D("10.98"));
+}
+
+TEST(Breakout, PlacesTheStopAgainWhenTheUnansweredOneIsNotOpen) {
+    Breakout strategy(Params());
+    FakeContext context;
+    LongWithAnUnansweredStop(strategy, context);
+    Feed(strategy, context, kQuietBar);  // GetOpenOrders: nothing
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+}
+
+// Long 1 at 13.01 with resting_target, its pair placed without an answer
+// (`category`).
+void LongWithAnUnansweredPair(Breakout& strategy, FakeContext& context,
+                              types::ErrorCategory category) {
+    context.venue.oco = true;
+    context.venue.oco_error = category;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.oco_error.reset();
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+}
+
+BreakoutParams WithTarget() {
     auto params = Params();
     params.resting_target = true;
+    return params;
+}
+
+TEST(Breakout, AdoptsAnUnansweredPairFromOpenOrders) {
+    Breakout strategy(WithTarget());
+    FakeContext context;
+    LongWithAnUnansweredPair(strategy, context, types::ErrorCategory::kParse);
+    context.venue.open_orders = {
+        OpenOrder("oco-limit", Side::kSell, types::OrderType::kLimit, "1",
+                  "15.01"),
+        OpenOrder("oco-stop", Side::kSell, types::OrderType::kStop, "1",
+                  "10.98")};
+    // A close past the target: the adopted limit is resting, so no market
+    // sell for it.
+    Feed(strategy, context, {"13", "15.5", "13", "15.2"});
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_TRUE(context.venue.ocos.empty());
+    EXPECT_TRUE(context.venue.cancels.empty());
+    EXPECT_EQ(context.tracked_orders,
+              (std::vector<std::string>{"oco-limit", "oco-stop"}));
+}
+
+TEST(Breakout, AnAdoptedPairsTargetFillClosesItsStop) {
+    Breakout strategy(WithTarget());
+    FakeContext context;
+    LongWithAnUnansweredPair(strategy, context, types::ErrorCategory::kParse);
+    context.venue.open_orders = {
+        OpenOrder("oco-limit", Side::kSell, types::OrderType::kLimit, "1",
+                  "15.01"),
+        OpenOrder("oco-stop", Side::kSell, types::OrderType::kStop, "1",
+                  "10.98")};
+    Feed(strategy, context, kQuietBar);
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    strategy.OnFill(context, FillOf("oco-limit", Side::kSell, "1", "15.01"));
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"oco-stop"});
+}
+
+TEST(Breakout, CancelsALoneTargetLegAndPlacesThePairAgain) {
+    Breakout strategy(WithTarget());
+    FakeContext context;
+    LongWithAnUnansweredPair(strategy, context, types::ErrorCategory::kNetwork);
+    context.venue.open_orders = {OpenOrder(
+        "half-limit", Side::kSell, types::OrderType::kLimit, "1", "15.01")};
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"half-limit"});
+    EXPECT_EQ(context.venue.ocos.size(), 1u);
+}
+
+TEST(Breakout, LeavesAnUnansweredClosersOrdersAloneWhileClosed) {
+    Breakout strategy(WithTarget());
+    FakeContext context;
+    LongWithAnUnansweredPair(strategy, context, types::ErrorCategory::kNetwork);
+    context.venue.open_orders = {OpenOrder(
+        "half-limit", Side::kSell, types::OrderType::kLimit, "1", "15.01")};
+    context.open = false;
+    Feed(strategy, context, kQuietBar);
+    EXPECT_TRUE(context.venue.cancels.empty());
+    EXPECT_TRUE(context.venue.ocos.empty());
+}
+
+// Long with resting_target and breakeven_r 0.5, the pair (order-2 and
+// order-3) resting; then a close raises the stop to 13.01 and the new pair
+// gets no answer.
+void RaisedStopUnanswered(Breakout& strategy, FakeContext& context) {
+    context.venue.oco = true;
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    ASSERT_EQ(context.venue.ocos.size(), 1u);
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.oco_error = types::ErrorCategory::kTimeout;
+    Feed(strategy, context, {"13.5", "14.6", "13.4", "14.5"});
+    context.venue.oco_error.reset();
+}
+
+BreakoutParams WithTargetAndBreakeven() {
+    auto params = WithTarget();
+    params.breakeven_r = D("0.5");
+    return params;
+}
+
+TEST(Breakout, ARaisedStopWithoutAnAnswerIsNotSoldAtMarket) {
+    Breakout strategy(WithTargetAndBreakeven());
+    FakeContext context;
+    RaisedStopUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-3"});
+    EXPECT_EQ(context.venue.orders.size(), 3u);  // the pair; no market sell
+}
+
+TEST(Breakout, AdoptsALoneStopLegAndMovesItToTheRaisedLevel) {
+    Breakout strategy(WithTargetAndBreakeven());
+    FakeContext context;
+    RaisedStopUnanswered(strategy, context);
+    // Only the pair's stop leg is open, at the level before the raise: it is
+    // adopted, the target is left to the close, and the stop moves to 13.01.
+    context.venue.open_orders = {OpenOrder(
+        "lone-stop", Side::kSell, types::OrderType::kStop, "1", "10.98")};
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-3", "lone-stop"}));
+    EXPECT_EQ(context.venue.ocos.size(), 1u);  // no second pair
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[3].stop_price, D("13.01"));
+}
+
+BreakoutParams FlattenAtClose() {
+    auto params = Params();
+    params.flatten_at_close = true;
+    params.target_multiple = D("0");
+    return params;
+}
+
+// Long 0.99895 after a 0.00105 base-asset fee (0.9989 to the lot), its stop
+// unanswered; then the closing flatten finds GetOpenOrders failing.
+void FlattenWithOpenOrdersUnreadable(Breakout& strategy, FakeContext& context) {
+    Feed(strategy, context);
+    auto buy = FillOf("order-1", Side::kBuy, "1", "13.01");
+    buy.fee = D("0.00105");
+    buy.fee_asset = "BTC";
+    context.venue.reject_category = types::ErrorCategory::kTimeout;
+    strategy.OnFill(context, buy);
+    context.venue.reject_category.reset();
+    context.venue.fail_open_orders = true;
+    strategy.OnSessionClosing(context, Hour(6));
+    context.venue.fail_open_orders = false;
+}
+
+TEST(Breakout, AFlattenWaitsWhileOpenOrdersCannotBeRead) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    std::vector<std::string> errors;
+    context.log = LogContext(
+        "breakout", [&](LogContext::Level level, std::string_view line) {
+            if (level == LogContext::Level::kError) {
+                errors.emplace_back(line);
+            }
+        });
+    FlattenWithOpenOrdersUnreadable(strategy, context);
+    EXPECT_EQ(context.venue.orders.size(), 1u);  // no sell beside the stop
+    EXPECT_TRUE(std::ranges::any_of(errors, [](const std::string& line) {
+        return line.find("cannot read open orders") != std::string::npos;
+    }));
+}
+
+TEST(Breakout, ADeferredFlattenSellsAtTheOpenAfterAdoptingTheStop) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    FlattenWithOpenOrdersUnreadable(strategy, context);
+    // The stop that got no answer is open, at the fee-netted lot: adopted,
+    // then cancelled so the flatten sells it.
+    context.venue.open_orders = {OpenOrder(
+        "stop-live", Side::kSell, types::OrderType::kStop, "0.9989", "10.98")};
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    strategy.OnSessionOpen(context);
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"stop-live"});
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("0.9989"));
+}
+
+TEST(Breakout, ALateEntryFillWaitsForTheOldSizedStopToSettle) {
+    Breakout strategy(Params());
+    FakeContext context;
+    Feed(strategy, context);
+    // 0.4 of the entry fills; the next bar disarms the rest, and the stop
+    // for 0.4 gets no answer.
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.4", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyClosed;
+    context.venue.reject_category = types::ErrorCategory::kTimeout;
+    Feed(strategy, context, kQuietBar);
+    context.venue.reject_category.reset();
+    context.venue.open_orders = {OpenOrder(
+        "stop-04", Side::kSell, types::OrderType::kStop, "0.4", "10.98")};
+
+    // The rest of the entry (0.6) fills late. The 0.4 stop cannot serve 1,
+    // and cancelling it fails: no new stop yet.
+    context.venue.cancel_error = types::ErrorCategory::kNetwork;
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "0.6", "13.01"));
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+
+    // Next bar, the 0.4 stop has filled: still no new stop until its fill
+    // arrives.
+    context.venue.cancel_error.reset();
+    context.venue.cancel_result = trading::CancelOutcome::kAlreadyFilled;
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+
+    // Its fill leaves 0.6, which the next bar protects.
+    strategy.OnFill(context, FillOf("stop-04", Side::kSell, "0.4", "10.98"));
+    context.venue.open_orders.clear();
+    Feed(strategy, context, kQuietBar);
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[1].quantity, D("0.6"));
+}
+
+// A short's setup: the entry sells at 11.99, its stop buys at 14.02.
+void ShortSetup(FakeContext& context) {
+    context.bars.clear();
+    for (const auto& b :
+         std::vector<std::array<const char*, 4>>{{"13", "15", "11", "13"},
+                                                 {"13", "15", "12", "13"},
+                                                 {"13", "15", "10", "13"},
+                                                 {"13", "15", "11", "13"},
+                                                 {"13", "14", "12", "13"}}) {
+        context.Add(b);
+    }
+}
+
+BreakoutParams AsShort(BreakoutParams params) {
+    params.direction = BreakoutParams::Direction::kShort;
+    return params;
+}
+
+TEST(Breakout, AShortAdoptsAnUnansweredBuyStopAndIgnoresSells) {
+    Breakout strategy(AsShort(Params()));
+    FakeContext context;
+    ShortSetup(context);
+    Feed(strategy, context);
+    context.venue.reject_category = types::ErrorCategory::kTimeout;
+    strategy.OnFill(context, FillOf("order-1", Side::kSell, "1", "11.99"));
+    context.venue.reject_category.reset();
+    context.venue.open_orders = {
+        OpenOrder("other-sell", Side::kSell, types::OrderType::kLimit, "1",
+                  "20"),
+        OpenOrder("short-stop", Side::kBuy, types::OrderType::kStop, "1",
+                  "14.02")};
+    Feed(strategy, context, {"12.5", "13", "12", "12.5"});
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"short-stop"});
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_TRUE(context.venue.cancels.empty());
+}
+
+TEST(Breakout, AShortAdoptsAnUnansweredPair) {
+    auto params = AsShort(WithTarget());
+    Breakout strategy(params);
+    FakeContext context;
+    ShortSetup(context);
+    context.venue.oco = true;
+    context.venue.oco_error = types::ErrorCategory::kTimeout;
+    Feed(strategy, context);  // short entry stop at 11.99, stop 14.02
+    strategy.OnFill(context, FillOf("order-1", Side::kSell, "1", "11.99"));
+    context.venue.oco_error.reset();
+    ASSERT_EQ(context.venue.orders.size(), 1u);
+    // The pair's legs buy: the target below, the stop above.
+    context.venue.open_orders = {
+        OpenOrder("oco-limit", Side::kBuy, types::OrderType::kLimit, "1",
+                  "9.99"),
+        OpenOrder("oco-stop", Side::kBuy, types::OrderType::kStop, "1",
+                  "14.02")};
+    Feed(strategy, context, {"12.5", "13", "12", "12.5"});
+    EXPECT_EQ(context.tracked_orders,
+              (std::vector<std::string>{"oco-limit", "oco-stop"}));
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+    EXPECT_TRUE(context.venue.ocos.empty());
+    EXPECT_TRUE(context.venue.cancels.empty());
+}
+
+TEST(Breakout, AStopWaitsWhileOpenOrdersCannotBeRead) {
+    Breakout strategy(Params());
+    FakeContext context;
+    std::vector<std::string> errors;
+    context.log = LogContext(
+        "breakout", [&](LogContext::Level level, std::string_view line) {
+            if (level == LogContext::Level::kError) {
+                errors.emplace_back(line);
+            }
+        });
+    LongWithAnUnansweredStop(strategy, context);
+    // The unanswered stop may rest: nothing is placed beside it while the
+    // open orders cannot be read, bar after bar, even below the stop.
+    context.venue.fail_open_orders = true;
+    Feed(strategy, context, kQuietBar);
+    Feed(strategy, context, {"12", "12", "10.5", "10.6"});
+    EXPECT_EQ(context.venue.orders.size(), 1u);
+    const auto attempts =
+        std::ranges::count_if(errors, [](const std::string& line) {
+            return line.find("cannot read open orders") != std::string::npos;
+        });
+    EXPECT_EQ(attempts, 2);
+    // Readable again and nothing resting: closed below the stop, so a stop
+    // would be refused or sell at once. It sells at market.
+    context.venue.fail_open_orders = false;
+    Feed(strategy, context, {"10.6", "10.7", "10.4", "10.5"});
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    EXPECT_EQ(context.venue.orders[1].type, types::OrderType::kMarket);
+    EXPECT_EQ(context.venue.orders[1].side, Side::kSell);
+}
+
+// Sell orders placed from the `first`th on.
+std::ptrdiff_t SellsFrom(const FakeContext& context, std::size_t first) {
+    return std::count_if(
+        context.venue.orders.begin() + static_cast<std::ptrdiff_t>(first),
+        context.venue.orders.end(), [](const types::OrderRequest& order) {
+            return order.side == Side::kSell;
+        });
+}
+
+// The venue's BTC balance: what StillHeld reads on a spot venue.
+void HoldsBtc(FakeContext& context, const char* quantity) {
+    context.venue.balances = {{"BTC", D(quantity), D(quantity), D("0")}};
+}
+
+// Long 1 with its stop (order-2) resting; the closing flatten cancels the
+// stop and its market sell gets no answer.
+void FlattenUnanswered(Breakout& strategy, FakeContext& context,
+                       Side entry_side = Side::kBuy,
+                       const char* entry_price = "13.01") {
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", entry_side, "1", entry_price));
+    ASSERT_EQ(context.venue.orders.size(), 2u);
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.reject_type = types::OrderType::kMarket;
+    context.venue.reject_type_category = types::ErrorCategory::kTimeout;
+    strategy.OnSessionClosing(context, Hour(6));
+    context.venue.reject_type.reset();
+    context.venue.reject_type_category.reset();
+}
+
+TEST(Breakout, AnUnansweredExitProtectsTheLongAgainAtOnce) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");  // the sale did not go through
+    FlattenUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-2"});
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kStop);
+    EXPECT_EQ(context.venue.orders[2].quantity, D("1"));
+    // The next bar tries the exit again: the new stop cancelled, then sold.
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-2", "order-3"}));
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kMarket);
+}
+
+TEST(Breakout, AnUnansweredExitThatWentThroughGetsNoStop) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "0");  // sold: a stop now would sell short on margin
+    FlattenUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+    // Its fill, from an order the strategy never learned of, makes it flat,
+    // so the next bar sells nothing (it may arm a new entry).
+    strategy.OnFill(context, FillOf("exit-unseen", Side::kSell, "1", "12"));
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(SellsFrom(context, 2), 0);
+}
+
+TEST(Breakout, AnUnansweredExitGetsNoStopWhenTheHoldingIsUnknown) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;  // no position or BTC balance listed
+    FlattenUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+}
+
+TEST(Breakout, AnUnansweredExitPastTheStopGetsNoStop) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    // The last close is under the stop (10.98): a stop there would be refused
+    // or sell at once, so the exit is only tried again.
+    context.Add({"11", "11", "10.5", "10.6"});
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.reject_type = types::OrderType::kMarket;
+    context.venue.reject_type_category = types::ErrorCategory::kTimeout;
+    strategy.OnSessionClosing(context, Hour(6));
+    EXPECT_EQ(context.venue.cancels, std::vector<std::string>{"order-2"});
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+}
+
+TEST(Breakout, AnUnansweredExitStillWorkingIsAdopted) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    context.venue.open_orders = {
+        OpenOrder("exit-live", Side::kSell, types::OrderType::kMarket, "1")};
+    FlattenUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.orders.size(), 2u);  // no stop beside it
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"exit-live"});
+    // Its fill makes us flat: the next bar sells nothing (it may arm a new
+    // entry).
+    context.venue.open_orders.clear();
+    strategy.OnFill(context, FillOf("exit-live", Side::kSell, "1", "12"));
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(SellsFrom(context, 2), 0);
+}
+
+TEST(Breakout, AnUnansweredExitShowingUpLateTakesDownTheStopPutBack) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    FlattenUnanswered(strategy, context);
+    ASSERT_EQ(context.venue.orders.size(), 3u);  // the stop put back
+    // The next bar finds the sale working after all: adopted as the exit, the
+    // stop put back is cancelled, and no second sale is sent.
+    context.venue.open_orders = {
+        OpenOrder("exit-late", Side::kSell, types::OrderType::kMarket, "1")};
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"exit-late"});
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-2", "order-3"}));
+    EXPECT_EQ(context.venue.orders.size(), 3u);
+}
+
+TEST(Breakout, AnUnansweredExitPutsBackAPlainStopNotAPair) {
+    auto params = FlattenAtClose();
+    params.resting_target = true;
+    params.target_multiple = D("1");
     Breakout strategy(params);
     FakeContext context;
     context.venue.oco = true;
-    context.venue.oco_error = types::ErrorCategory::kTimeout;
+    HoldsBtc(context, "1");
     Feed(strategy, context);
     strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
-    EXPECT_EQ(context.venue.orders.size(), 1u);  // the pair may exist
+    ASSERT_EQ(context.venue.ocos.size(), 1u);  // target order-2, stop order-3
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.reject_type = types::OrderType::kMarket;
+    context.venue.reject_type_category = types::ErrorCategory::kTimeout;
+    strategy.OnSessionClosing(context, Hour(6));
+    // With the exit due, a target would only be cancelled again.
+    EXPECT_EQ(context.venue.ocos.size(), 1u);
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kStop);
+}
+
+TEST(Breakout, AnUnansweredExitReadsTheVenuesPositionFirst) {
+    // A venue that lists positions (Schwab, the paper venue) is asked for the
+    // symbol's: here it shows only part of the long, so the sale went
+    // through at least in part, and no stop goes back, whatever the balances.
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    types::Position position;
+    position.symbol = kSymbol;
+    position.quantity = D("0.4");
+    context.venue.positions = {position};
+    FlattenUnanswered(strategy, context);
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+}
+
+TEST(Breakout, AnUnansweredExitPutsTheStopBackForAListedPosition) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    types::Position position;
+    position.symbol = kSymbol;
+    position.quantity = D("1");
+    context.venue.positions = {position};  // no balances listed
+    FlattenUnanswered(strategy, context);
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kStop);
+}
+
+TEST(Breakout, AStopPutBackWithoutAnAnswerIsAdoptedNotCancelled) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    // Both the exit and the stop put back get no answer.
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.reject_category = types::ErrorCategory::kTimeout;
+    strategy.OnSessionClosing(context, Hour(6));
+    context.venue.reject_category.reset();
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+    // The stop turns up: adopted (not cancelled as a stray), then cancelled
+    // by the exit's retry, which sells.
+    context.venue.open_orders = {OpenOrder(
+        "stop-late", Side::kSell, types::OrderType::kStop, "1", "10.98")};
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"stop-late"});
+    EXPECT_EQ(context.venue.cancels,
+              (std::vector<std::string>{"order-2", "stop-late"}));
+    ASSERT_EQ(context.venue.orders.size(), 3u);
+    EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
+}
+
+TEST(Breakout, AnUnansweredExitWaitsWhenOpenOrdersCannotBeRead) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    Feed(strategy, context);
+    strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
+    context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    context.venue.reject_type = types::OrderType::kMarket;
+    context.venue.reject_type_category = types::ErrorCategory::kTimeout;
+    context.venue.fail_open_orders = true;
+    strategy.OnSessionClosing(context, Hour(6));
+    context.venue.reject_type.reset();
+    context.venue.reject_type_category.reset();
+    context.venue.fail_open_orders = false;
+    EXPECT_EQ(context.venue.orders.size(), 2u);  // nothing placed blind
+    // Readable on the next bar: the late exit is still looked for.
+    context.venue.open_orders = {
+        OpenOrder("exit-late", Side::kSell, types::OrderType::kMarket, "1")};
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.tracked_orders, std::vector<std::string>{"exit-late"});
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+}
+
+TEST(Breakout, AShortsUnansweredCoverWaitsForTheNextBar) {
+    Breakout strategy(AsShort(FlattenAtClose()));
+    FakeContext context;
+    ShortSetup(context);
+    FlattenUnanswered(strategy, context, Side::kSell, "11.99");
+    // No buy-stop beside a cover that may have gone through.
+    EXPECT_EQ(context.venue.orders.size(), 2u);
+}
+
+TEST(Breakout, ARefusedRetryOfAnUnansweredExitIsNotRepeated) {
+    Breakout strategy(FlattenAtClose());
+    FakeContext context;
+    HoldsBtc(context, "1");
+    FlattenUnanswered(strategy, context);
+    ASSERT_EQ(context.venue.orders.size(), 3u);  // the stop placed again
+    // The retry is refused outright: the long is protected again, and the
+    // one-off flatten is not tried a third time.
+    context.venue.reject_type = types::OrderType::kMarket;
+    Feed(strategy, context, kQuietBar);
+    ASSERT_EQ(context.venue.orders.size(), 4u);
+    EXPECT_EQ(context.venue.orders[3].type, types::OrderType::kStop);
+    context.venue.reject_type.reset();
+    Feed(strategy, context, kQuietBar);
+    EXPECT_EQ(context.venue.orders.size(), 4u);
 }
 
 TEST(Breakout, APairRefusedStopFirstIsNotPlacedAgain) {
@@ -1930,6 +2644,22 @@ TEST(Breakout, RefusesBadParameters) {
     bad = Params();
     bad.breakeven_r = D("-1");
     EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.risk_fraction = D("-0.01");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.risk_fraction = D("0.11");  // above 0.1
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.risk_fraction = D("0.1");
+    EXPECT_NO_THROW(Breakout{bad});
+    bad.risk_per_trade = D("10");  // exclusive with risk_fraction
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad = Params();
+    bad.allocation = D("1000");  // needs risk_fraction
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
+    bad.risk_fraction = D("0.02");
+    EXPECT_NO_THROW(Breakout{bad});
+    bad.allocation = D("-1");
+    EXPECT_THROW(Breakout{bad}, std::invalid_argument);
 }
 
 }  // namespace
@@ -2031,6 +2761,24 @@ TEST(BreakoutShort, AFailedLongReversesOnceIntoAShort) {
     EXPECT_EQ(trades[2].price, D("10.98"));
     EXPECT_EQ(trades[3].side, Side::kBuy);
     EXPECT_EQ(trades[3].price, D("13.02"));
+
+    // Reversal sized by risk_fraction uses the post-stop balance and the stop
+    // fill price (10.98 -> stop 13.02, distance 2.04): 10,000 USD at 0.02
+    // risks 200 USD (98.5221 units), loses ~200 USD on the stop, then risks
+    // 0.02 of ~9,800 USD = 196 USD (96.0784 units) on the reversal.
+    auto rf = params;
+    rf.quantity = D("200");
+    rf.risk_fraction = D("0.02");
+    auto rf_res =
+        backtest::RunBacktest(Nr4Then({{"12.5", "14", "12.4", "13.8"},
+                                       {"13", "13.2", "10.5", "11"},
+                                       {"11", "13.5", "11", "13.5"},
+                                       {"13.5", "13.5", "13.5", "13.5"}}),
+                              std::make_unique<Breakout>(rf), Options(9));
+    ASSERT_OK(rf_res);
+    ASSERT_EQ(rf_res->fills.size(), 4u);
+    EXPECT_EQ(rf_res->fills[0].quantity, D("98.5221"));
+    EXPECT_EQ(rf_res->fills[2].quantity, D("96.0784"));
 }
 
 TEST(BreakoutShort, AFailedShortReversesIntoALong) {

@@ -215,6 +215,12 @@ class ParamReader {
         return mCfg.GetSymbols();
     }
 
+    std::string DefaultQuoteAsset() const {
+        return mCfg.GetMode() == config::Mode::kPaper
+                   ? mCfg.GetPaperOptions().default_quote_asset
+                   : "USD";
+    }
+
     Result<types::Decimal> Quantity(const std::string& key) {
         auto text = Required(key);
         if (!text) {
@@ -671,6 +677,10 @@ Result<StrategyPtr> BuildBreakout(ParamReader& p) {
     Take(p.Whole("trail_bars", params.trail_bars), params.trail_bars, error);
     Take(p.Number("risk_per_trade", params.risk_per_trade),
          params.risk_per_trade, error);
+    Take(p.Number("risk_fraction", params.risk_fraction), params.risk_fraction,
+         error);
+    Take(p.Number("allocation", params.allocation), params.allocation, error);
+    params.default_quote_asset = p.DefaultQuoteAsset();
     if (error) {
         return std::unexpected(*error);
     }

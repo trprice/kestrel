@@ -40,6 +40,10 @@ struct Error {
 
     // Failures that are worth retrying with backoff.
     bool IsTransient() const;
+    // Failures after which a mutating venue call (placing or cancelling an
+    // order) may or may not have acted: a dropped connection, a timeout, a
+    // server failure, or a 2xx response whose body could not be parsed.
+    bool MayHaveTakenEffect() const;
     std::string ToString() const;
 };
 
