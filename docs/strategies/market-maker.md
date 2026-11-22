@@ -92,12 +92,13 @@ last price quoted on that side, since a book delayed past a fill can still
 show our quote there.
 
 **Never crossing.** A bid is held to one tick under the best ask and an ask to
-one tick over the best bid, and nothing is quoted while the book is crossed or
-locked. Such a quote, or one missing its bid or ask, is passed over whole:
-resting quotes stay where they are, and the protection rules are not checked
-on it (see TODO.md). With `post_only`, a quote that would still cross the book
-on arrival is refused by the venue instead of filling as a taker, and the next
-quote tries again.
+one tick over the best bid, and nothing is quoted while the book is crossed,
+locked or missing a side. Such a quote pulls any resting quotes and, once a
+good mid has been seen (or a position's mark resumed), still runs the
+protection rules on that last good mid (using a one-sided book's live side for
+`stop_loss` when it is the closing side). With `post_only`, a quote that would
+still cross the book on arrival is refused by the venue instead of filling as a
+taker, and the next quote tries again.
 
 **Spot only.** The ask is quoted only while there is base asset to sell, and
 the strategy starts from whatever the venue holds of the base asset. Past
@@ -145,24 +146,43 @@ to 1 s. The protection rules still run only when a quote arrives.
 
 ## Fills and races
 
-- When a cancel loses a race with a fill, that side waits for the venue to
-  report the order's final state before quoting again, so the inventory is
-  never counted twice.
+- When a cancel loses a race with a fill, that side waits for the order's
+  closing update or for its fills to cover the order before quoting again, so
+  the inventory is never counted twice. If neither arrives within a minute
+  (e.g. `GetOrder` answered `kNotFound` and the runner forgot the order), the
+  quote is cleared so stops and quoting cannot stick, and any unseen remainder
+  is handed to the unconfirmed-fill check below.
 - Fills move the inventory (`OnFill`); order state comes from
-  `OnOrderUpdate`, so a rejected or expired quote is quoted again.
-- A fill the venue has reported in an order's state but whose `OnFill` has not
-  arrived counts against the room on its side until it does, so a quote that
-  filled on arrival is not placed again and again before the inventory catches
-  up. After a minute it is checked with the venue; still missing after about
-  11, it is booked without a fee, and a copy arriving later is skipped.
+  `OnOrderUpdate`, so a rejected or expired quote is quoted again, and a quote
+  whose fills cover its whole size is cleared without waiting for the update.
+- A fill the venue has reported in an order's state (a quote or an exit) but
+  whose `OnFill` has not arrived counts against the room on its side and is
+  excluded from a market exit on that side, so a quote that filled on arrival
+  is not placed again and again before the inventory catches up, and a position
+  is not exited twice. After a minute it is checked with the venue (an active
+  exit whose closing update was missed is checked then too); still missing
+  after about 11, it is booked without a fee, and a copy arriving later is
+  skipped.
+- An order the venue answers "not found" for (a quote or an exit) is settled
+  from the base asset's balance after about 11 minutes: what the balance
+  shows of it is booked, and the rest dropped. This assumes nothing else on
+  the account trades the base asset. While other fills are outstanding, the
+  balance settles an order only if it gives the same answer whether those
+  filled or not; otherwise the order waits, as the balance cannot say which
+  one moved it. An exit still waiting after 30 minutes is settled against
+  what is held alone (taking the others as not filled), so it is booked or
+  cleared and the stop can sell again; a lost sell on the same side may then
+  be counted twice if its fill arrives after all. Any other lookup error (a
+  timeout, a network error) settles nothing, as the exit may still be
+  working.
 
 ## Protection rules
 
 Every rule is off until its flag is set, and each has its own parameters, so a
 run chooses which to use. The rules came out of the live and replayed
 ZEC/USDT runs, where wins were a few basis points and a trending move cost
-tens of them. Unlike the `[risk]` limits they are checked on every quote with
-a bid and an ask that do not cross, and
+tens of them. Unlike the `[risk]` limits they are checked on every quote (using
+the last good mid when a quote is crossed, locked or missing a side), and
 the stop and cap rules close the position instead of only blocking entries.
 
 "The position" is the base held beyond what the strategy started with, with

@@ -25,6 +25,9 @@ class CancelVenue : public RecordingVenue {
    public:
     types::Result<CancelOutcome> CancelOrder(const std::string& id) override {
         cancelled.push_back(id);
+        if (auto it = outcomes.find(id); it != outcomes.end()) {
+            return it->second;
+        }
         return outcome;
     }
     types::Result<types::OrderAcknowledgement> PlaceOrder(
@@ -34,6 +37,7 @@ class CancelVenue : public RecordingVenue {
     }
 
     types::Result<CancelOutcome> outcome = CancelOutcome::kCancelled;
+    std::map<std::string, types::Result<CancelOutcome>> outcomes;
     std::vector<std::string> cancelled;
     // For each order placed, how many cancels had been sent before it.
     std::vector<std::size_t> cancels_before;
@@ -885,6 +889,9 @@ int CountSide(const std::vector<types::OrderRequest>& orders, Side side) {
 TEST(MarketMakerTest, QuotesThatFillOnArrivalCountAgainstTheRoom) {
     Maker m;  // holds 1, may go to 3 and down to 0
     m.context.venue.ack_state = OrderState::kFilled;  // every quote fills
+    // The venue cannot be asked (not "unknown order", which the balance
+    // would settle past kBookUnseenAfter).
+    m.context.venue.get_order_error = types::ErrorCategory::kNetwork;
     for (int i = 0; i < 10; ++i) {
         m.Quote("99.99", "100.01");  // and no OnFill has arrived yet
     }
@@ -968,8 +975,9 @@ TEST(MarketMakerTest, AFillLongMissingIsBookedAndALateCopySkipped) {
     EXPECT_EQ(m.Orders().back().quantity, D("0.3"));
 }
 
-TEST(MarketMakerTest, NothingIsBookedWithoutTheVenuesWord) {
-    LostFill m;  // the venue does not know the order
+TEST(MarketMakerTest, NothingIsBookedWhileTheVenueCannotBeAsked) {
+    LostFill m;
+    m.context.venue.get_order_error = types::ErrorCategory::kNetwork;
     m.After(std::chrono::minutes(20));
     EXPECT_GE(m.context.venue.get_order_calls, 1);
     // Still waiting: the bid's room stays held for the 0.5, so with 1.5
@@ -1624,6 +1632,602 @@ TEST(MarketMakerProtectionTest, DoesNotExitWhileACancelIsUnsettled) {
     m.context.venue.outcome = CancelOutcome::kAlreadyFilled;
     m.Quote("99.50", "99.52");
     EXPECT_TRUE(MarketOrders(m).empty());
+}
+
+TEST(MarketMakerTest, PullsRestingQuotesOnACrossedLockedOrOneSidedBook) {
+    types::Quote missing_ask;
+    missing_ask.symbol = kSymbol;
+    missing_ask.bid = D("99.99");
+
+    types::Quote missing_bid;
+    missing_bid.symbol = kSymbol;
+    missing_bid.ask = D("100.01");
+
+    for (const auto& bad : {QuoteOf("100.00", "100.00"),  // locked
+                            QuoteOf("100.01", "100.00"),  // crossed
+                            QuoteOf("0", "100.01"),       // zero bid
+                            missing_ask, missing_bid}) {  // one-sided
+        Maker m;
+        m.Quote("99.99", "100.01");
+        ASSERT_EQ(m.Orders().size(), 2u);
+
+        m.strategy.OnQuote(m.context, bad);
+        EXPECT_EQ(m.context.venue.cancelled,
+                  (std::vector<std::string>{"order-1", "order-2"}));
+        EXPECT_EQ(m.Orders().size(), 2u);  // nothing new placed
+
+        // Further bad quotes do not cancel again.
+        m.strategy.OnQuote(m.context, bad);
+        EXPECT_EQ(m.context.venue.cancelled.size(), 2u);
+
+        // Once the book is quotable again, both sides come back.
+        m.Quote("99.99", "100.01");
+        EXPECT_EQ(m.Orders().size(), 4u);
+    }
+}
+
+TEST(MarketMakerProtectionTest,
+     LossCapHaltsAndExitsOnAnUnquotableBookUsingTheLastGoodMid) {
+    MemoryStore store;
+    Maker m("1", LossCapped("1"), &store);
+    m.Quote("99.19", "99.21");  // mid 99.20, quotes order-1 and order-2
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    // A buy at 100 plus a 0.30 USDT fee puts P&L at -1.10 on the 99.20 mid;
+    // the next quote is crossed, yet quotes are pulled, the cap halts, state
+    // is saved, and the position is exited at market.
+    auto fill = FillOf(Side::kBuy, "1");
+    fill.fee = D("0.3");
+    fill.fee_asset = "USDT";
+    m.strategy.OnFill(m.context, fill);
+    m.Quote("99.25", "99.20");  // crossed
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("1"));
+    auto saved = util::ParseJson(store.values["market_maker/ZEC/USDT"]);
+    ASSERT_OK(saved);
+    EXPECT_TRUE((*saved)["halted"].get<bool>());
+}
+
+TEST(MarketMakerProtectionTest,
+     StopLossExitsOnAnUnquotableBookUsingTheLastGoodMid) {
+    auto p = Params();
+    p.protection.stop_loss = true;  // 40 bps
+    Maker m("1", p);
+    m.Quote("99.49", "99.51");  // last good mid 99.50; order-1 and order-2 rest
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    // A fill at 100 arrives (50 bps above 99.50) and the book goes one-sided:
+    // resting quotes are pulled once and the stop loss exits at market.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    types::Quote one_sided;
+    one_sided.symbol = kSymbol;
+    one_sided.ask = D("99.51");
+    m.strategy.OnQuote(m.context, one_sided);
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+
+    // And on a bid-only book, a fresh drop of the live bid triggers stop_loss
+    // even when the last good mid was still above the stop.
+    Maker bid_only("1", p);
+    bid_only.Quote("99.99", "100.01");  // last good mid 100.00
+    bid_only.strategy.OnFill(bid_only.context, FillOf(Side::kBuy, "0.5"));
+    types::Quote dropped_bid;
+    dropped_bid.symbol = kSymbol;
+    dropped_bid.bid = D("99.50");
+    bid_only.strategy.OnQuote(bid_only.context, dropped_bid);
+    ASSERT_EQ(MarketOrders(bid_only).size(), 1u);
+    EXPECT_EQ(MarketOrders(bid_only)[0].side, Side::kSell);
+}
+
+TEST(MarketMakerProtectionTest,
+     UnquotableBookWithFailedCancelDoesNotDoubleCancelInOneQuote) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.Quote("99.49", "99.51");
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.context.venue.outcome =
+        types::MakeError(types::ErrorCategory::kNetwork, "down");
+    m.Quote("99.55", "99.50");  // crossed, and cancels fail
+    EXPECT_EQ(m.context.venue.cancelled,
+              (std::vector<std::string>{"order-1", "order-2"}));
+    EXPECT_TRUE(MarketOrders(m).empty());
+}
+
+TEST(MarketMakerProtectionTest,
+     UnquotableBookBeforeAnyGoodMidDoesNotMarkPositionAtZero) {
+    Maker m("1", LossCapped("1"));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1"));  // -100 cash
+    m.Quote("100.05", "100.00");  // crossed before any good mid was seen
+    EXPECT_TRUE(MarketOrders(m).empty());
+    // A good quote at 100 shows 0 P&L: not halted, quotes both sides.
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.Orders().size(), 2u);
+}
+
+TEST(MarketMakerProtectionTest,
+     SpikeStanddownFiresOnAnUnquotableBookWithoutPushingStaleMids) {
+    auto p = Params();
+    p.protection.spike_standdown = true;  // 50 bps in 3m
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // t=0, mid 100
+    m.context.now += seconds(100);
+    m.Quote("99.39", "99.41");  // t=100s, mid 99.40 (-60 bps, <3m of history)
+    const auto before = m.Orders().size();
+
+    // At t=181s the 3m window covers t=0, and the book is locked: Protect runs
+    // on the 99.40 mid and triggers the 15m stand-down.
+    m.context.now += seconds(81);
+    m.Quote("99.40", "99.40");
+    m.context.now += seconds(1);
+    m.Quote("99.39", "99.41");  // book heals, but stand-down holds quotes off
+    EXPECT_EQ(m.Orders().size(), before);
+}
+
+TEST(MarketMakerProtectionTest,
+     AnExitReportedFilledAtOnceWhoseFillNeverArrivesIsBookedAndUnpauses) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // at 100
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.Quote("99.50", "99.52");  // order-1: market sell 0.5, acked kFilled
+    m.context.venue.ack_state = OrderState::kNew;
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+
+    types::OrderStatus status = StatusOf("order-1", OrderState::kFilled);
+    status.side = Side::kSell;
+    status.filled_quantity = D("0.5");
+    status.average_fill_price = D("99.50");
+    m.context.venue.order_states["order-1"] = status;
+
+    // Checked with GetOrder after 1m; still paused while waiting out the
+    // runner's fill horizon.
+    m.context.now += seconds(61);
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(m.context.venue.get_order_calls, 1);
+    EXPECT_EQ(m.Orders().size(), 1u);
+
+    // Past 11m, the missing exit fill is booked unseen, mExit clears, and
+    // quoting resumes; a late duplicate OnFill is skipped.
+    m.context.now += minutes(11);
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(m.Orders().size(), 3u);  // bid and ask back in place
+
+    auto late = FillOf(Side::kSell, "0.5", "order-1");
+    late.price = D("99.50");
+    m.strategy.OnFill(m.context, late);
+    m.context.now += seconds(1);
+    m.Quote("99.00", "99.02");  // flat, not -0.5 short: no buy-back stop
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+}
+
+TEST(MarketMakerProtectionTest,
+     AnExitClosedFilledViaOrderUpdateWhoseFillNeverArrivesIsBooked) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.50", "99.52");  // order-1: acked kNew
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+
+    types::OrderStatus status = StatusOf("order-1", OrderState::kFilled);
+    status.side = Side::kSell;
+    status.filled_quantity = D("0.5");
+    status.average_fill_price = D("99.50");
+    m.context.venue.order_states["order-1"] = status;
+    m.strategy.OnOrderUpdate(m.context, status);  // closed filled, no OnFill
+
+    m.context.now += minutes(12);
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(m.Orders().size(), 3u);  // unpaused once booked
+}
+
+TEST(MarketMakerProtectionTest,
+     AnExitActiveAtAckWhoseOrderUpdateNeverArrivesIsReconciled) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.50", "99.52");  // order-1: acked kNew, then Runner forgets it
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+
+    // Case 1: GetOrder finds order-1 closed unfilled -> cleared at 1m and
+    // retried on the same quote (order-2).
+    m.context.venue.order_states["order-1"] =
+        StatusOf("order-1", OrderState::kExpired);
+    m.context.now += seconds(61);
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 2u);
+
+    // Case 2: order-2 actually filled on the venue, still with no OnOrderUpdate
+    // or OnFill -> discovered at +1m and booked at +11m.
+    types::OrderStatus filled = StatusOf("order-2", OrderState::kFilled);
+    filled.side = Side::kSell;
+    filled.filled_quantity = D("0.5");
+    filled.average_fill_price = D("99.50");
+    m.context.venue.order_states["order-2"] = filled;
+    m.context.now += seconds(61);
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 2u);
+    m.context.now += minutes(11);
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 2u);
+    EXPECT_GT(m.Orders().size(), 2u);  // quoting again
+}
+
+TEST(MarketMakerProtectionTest,
+     APartiallyFilledExpiredExitExitsOnlyTheRemainderAtOnce) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.50", "99.52");  // order-1: sell 0.5
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+
+    // 0.3 filled before the rest expired, and OnOrderUpdate arrives ahead of
+    // OnFill: the 0.3 stays in mUnconfirmed so the next quote immediately
+    // exits only the remaining 0.2 instead of leaving it bare or selling 0.5.
+    types::OrderStatus part = StatusOf("order-1", OrderState::kExpired);
+    part.side = Side::kSell;
+    part.filled_quantity = D("0.3");
+    part.average_fill_price = D("99.50");
+    m.strategy.OnOrderUpdate(m.context, part);
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 2u);
+    EXPECT_EQ(MarketOrders(m)[1].quantity, D("0.2"));
+
+    // Both fills land, bringing the position cleanly to flat.
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.3", "order-1"));
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.2", "order-2"));
+    const auto before = m.Orders().size();
+    m.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(m).size(), 2u);
+    EXPECT_GT(m.Orders().size(), before);
+}
+
+TEST(MarketMakerProtectionTest,
+     AnExitNotFoundOnTheVenueResyncsFromBalancesPastTheHorizon) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+
+    // Case 1: GetOrder keeps returning kNotFound and balances show the 0.5 is
+    // still held (less tiny base-fee dust under min_order_size) -> clears the
+    // lost exit at 11m without booking dust, and retries the 0.5 exit.
+    Maker unsold("1", p);
+    unsold.strategy.OnFill(unsold.context, FillOf(Side::kBuy, "0.5"));
+    unsold.context.venue.balances = {{"ZEC", D("1.4995"), D("1.4995"), D("0")},
+                                     {"USDT", D("1000"), D("1000"), D("0")}};
+    unsold.Quote("99.50", "99.52");  // order-1: acked kNew, unknown to GetOrder
+    ASSERT_EQ(MarketOrders(unsold).size(), 1u);
+    unsold.context.now += minutes(12);
+    unsold.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(unsold).size(), 2u);
+    EXPECT_EQ(MarketOrders(unsold)[1].quantity, D("0.5"));
+
+    // Case 2: GetOrder keeps returning kNotFound (even on an acked-kFilled
+    // exit), but balances show only the starting 1.0 remains -> books the 0.5
+    // exit fill unseen, clears mExit, and resumes quoting.
+    Maker sold("1", p);
+    sold.strategy.OnFill(sold.context, FillOf(Side::kBuy, "0.5"));
+    sold.context.venue.ack_state = OrderState::kFilled;
+    sold.Quote("99.50", "99.52");  // order-1: acked kFilled, GetOrder kNotFound
+    sold.context.venue.ack_state = OrderState::kNew;
+    sold.context.venue.balances = {{"ZEC", D("1"), D("1"), D("0")},
+                                   {"USDT", D("1000"), D("1000"), D("0")}};
+    sold.context.now += minutes(12);
+    sold.Quote("99.50", "99.52");
+    EXPECT_EQ(MarketOrders(sold).size(), 1u);  // not sold a second time
+    EXPECT_EQ(sold.Orders().size(), 3u);       // bid and ask back in place
+}
+
+TEST(MarketMakerProtectionTest,
+     ACancelRaceClearsOnceItsFillsCoverTheOrderWithoutAnOrderUpdate) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // order-1 bid 0.5, order-2 ask 0.5
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // at 100
+    m.context.venue.outcome = CancelOutcome::kAlreadyFilled;
+    m.Quote("99.50", "99.52");  // both cancels race; no exit yet
+    EXPECT_TRUE(MarketOrders(m).empty());
+
+    // Both fills arrive, but Runner forgot the orders so OnOrderUpdate never
+    // comes: the quotes clear from their fills alone, and the next quote exits
+    // the remaining 0.5 (1 + 0.5 + 0.5 - 0.5 = 1.5, +0.5 above start).
+    m.context.venue.outcome = CancelOutcome::kCancelled;
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-2"));
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+}
+
+TEST(MarketMakerProtectionTest,
+     ACancelRaceTimesOutAndUnblocksStopLossWhileKeepingUnconfirmedRoom) {
+    auto p = Params();  // max_inventory 2, quantity 0.5
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // order-1 bid 0.5 @ 99.90, order-2 ask 0.5
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // at 100
+
+    // Only order-1's cancel loses to a fill; order-2 cancels cleanly.
+    m.context.venue.outcomes["order-1"] = CancelOutcome::kAlreadyFilled;
+    m.Quote("99.50", "99.52");  // t=0: order-1 enters cancel_raced
+    m.context.venue.outcomes.clear();
+
+    // order-1 gets neither OnOrderUpdate nor OnFill: still waiting at 59 s.
+    m.context.now += seconds(59);
+    m.Quote("99.50", "99.52");
+    EXPECT_TRUE(MarketOrders(m).empty());
+
+    // At 60 s, order-1's cancel_raced times out, unblocking the stop-loss exit.
+    m.context.now += seconds(1);
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].side, Side::kSell);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+
+    // Settle the exit; order-1's 0.5 buy is still held in mUnconfirmed, so
+    // buying 1.5 elsewhere fills the 2.0 room and blocks any further bid.
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "0.5", "order-3"));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5"));
+    const auto before = m.Orders().size();
+    m.Quote("100.00", "100.02");
+    EXPECT_FALSE(Quotes(m, Side::kBuy, before));
+}
+
+TEST(MarketMakerProtectionTest,
+     ACancelRaceOnAnAskDoesNotDoubleSellIntoTheStartingHolding) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);             // starts with 1 ZEC
+    m.Quote("99.99", "100.01");  // order-1 bid 0.5, order-2 ask 0.5
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // +0.5 at 100
+
+    // order-2 (the ask) filled as we cancelled it, closing the +0.5 position,
+    // while order-1 cancels cleanly; neither OnFill nor OnOrderUpdate arrives.
+    m.context.venue.outcomes["order-2"] = CancelOutcome::kAlreadyFilled;
+    m.Quote("99.50", "99.52");
+    m.context.venue.outcomes.clear();
+
+    // When order-2's cancel race times out at 60 s, its 0.5 sell is in
+    // mUnconfirmed, so ExitPosition sees 0.5 - 0.5 = 0 left and does NOT sell
+    // 0.5 out of the starting 1 ZEC holding.
+    m.context.now += seconds(60);
+    m.Quote("99.50", "99.52");
+    EXPECT_TRUE(MarketOrders(m).empty());
+}
+
+// A quote fill the venue does not know (GetOrder answers kNotFound) is
+// settled from the base balance past kBookUnseenAfter, not held for good.
+TEST(MarketMakerTest,
+     AFillTheVenueDoesNotKnowIsDroppedWhenTheBalanceIsUnmoved) {
+    LostFill m;  // holds 0; order-1's 0.5 bid assumed filled
+    m.After(std::chrono::minutes(10));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5"));
+    auto before = m.Orders().size();
+    m.After(std::chrono::seconds(1));
+    EXPECT_FALSE(Quotes(m, Side::kBuy, before));  // 1.5 + 0.5 held: full
+
+    m.context.venue.balances = {{"ZEC", D("1.5"), D("1.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    before = m.Orders().size();
+    m.After(std::chrono::minutes(2));  // past 11 min: the 0.5 never happened
+    ASSERT_TRUE(Quotes(m, Side::kBuy, before));
+    EXPECT_EQ(m.Orders().back().side, Side::kBuy);
+    EXPECT_EQ(m.Orders().back().quantity, D("0.5"));  // room 2 - 1.5
+}
+
+TEST(MarketMakerTest, AFillTheVenueDoesNotKnowIsBookedWhenTheBalanceShowsIt) {
+    LostFill m;
+    m.context.venue.balances = {{"ZEC", D("0.5"), D("0.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    const auto before = m.Orders().size();
+    m.After(std::chrono::minutes(12));
+    // Booked: 0.5 held, so there is 0.5 to sell.
+    ASSERT_TRUE(Quotes(m, Side::kSell, before));
+    EXPECT_EQ(m.Orders().back().side, Side::kSell);
+    EXPECT_EQ(m.Orders().back().quantity, D("0.5"));
+    // A copy arriving late is skipped: 0.5 held, so a 1.5 buy fills the
+    // 2.0 room and no bid follows.
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5"));
+    const auto after = m.Orders().size();
+    m.After(std::chrono::seconds(1));
+    EXPECT_FALSE(Quotes(m, Side::kBuy, after));
+}
+
+TEST(MarketMakerTest, AFillTheVenueDoesNotKnowWaitsWhileBalancesCannotBeRead) {
+    LostFill m;
+    m.context.venue.fail_balances = true;
+    m.After(std::chrono::minutes(20));
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.5"));
+    const auto before = m.Orders().size();
+    m.After(std::chrono::seconds(1));
+    EXPECT_FALSE(Quotes(m, Side::kBuy, before));  // the 0.5 is still held
+}
+
+// An exit whose lookup keeps failing for any reason but "unknown order" may
+// still be working: it is not cleared from the balance, so no second exit.
+TEST(MarketMakerProtectionTest,
+     AnExitThatCannotBeLookedUpIsNotClearedOrRepeated) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.context.venue.get_order_error = types::ErrorCategory::kTimeout;
+    m.context.venue.balances = {{"ZEC", D("1.5"), D("1.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    m.Quote("99.50", "99.52");  // order-1: the exit, acked kNew
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    for (int i = 0; i < 30; ++i) {
+        m.context.now += minutes(1);
+        m.Quote("99.50", "99.52");
+    }
+    EXPECT_EQ(MarketOrders(m).size(), 1u);  // still waiting on the first
+
+    // Once the venue says it does not know it, the balance settles it.
+    m.context.venue.get_order_error.reset();
+    m.context.now += minutes(1);
+    m.Quote("99.50", "99.52");
+    ASSERT_EQ(MarketOrders(m).size(), 2u);
+    EXPECT_EQ(MarketOrders(m)[1].quantity, D("0.5"));
+}
+
+// The case the cancel-race timeout is for: the runner forgot the order and
+// its fill never comes. The balance then settles the assumed fill, so the
+// stop-loss exit is not left short of the position for good.
+TEST(MarketMakerProtectionTest,
+     ATimedOutCancelRaceIsSettledFromTheBalanceIfTheVenueDoesNotKnowIt) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("1", p);
+    m.Quote("99.99", "100.01");  // order-1 bid 0.5, order-2 ask 0.5
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // +0.5 at 100
+    m.context.venue.outcomes["order-2"] = CancelOutcome::kAlreadyFilled;
+    m.Quote("99.50", "99.52");  // the ask's cancel races a fill
+    m.context.venue.outcomes.clear();
+    m.context.now += seconds(60);
+    m.Quote("99.50", "99.52");  // timed out: the 0.5 sell assumed
+    EXPECT_TRUE(MarketOrders(m).empty());
+
+    // The ask in fact never filled: the venue still holds 1.5.
+    m.context.venue.balances = {{"ZEC", D("1.5"), D("1.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    m.context.now += minutes(11);
+    m.Quote("99.50", "99.52");  // the assumed sell is dropped
+    m.Quote("99.50", "99.52");  // and the stop sells the whole 0.5
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+}
+
+TEST(MarketMakerTest, APartOfALostFillIsBookedWhenTheBalanceShowsOnlyThat) {
+    Maker m("1");
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.strategy.OnFill(m.context, FillOf(Side::kSell, "1"));  // hold 0
+    m.Quote("99.99", "100.01");  // order-1: the bid, filled at once
+    m.context.venue.ack_state = OrderState::kNew;
+    // The venue shows 0.3 bought, not the 0.5 assumed: 0.3 is booked.
+    m.context.venue.balances = {{"ZEC", D("0.3"), D("0.3"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    m.context.now += minutes(12);
+    const auto before = m.Orders().size();
+    m.Quote("99.99", "100.01");
+    m.Quote("99.99", "100.01");
+    ASSERT_TRUE(Quotes(m, Side::kSell, before));
+    EXPECT_EQ(m.Orders().back().side, Side::kSell);
+    EXPECT_EQ(m.Orders().back().quantity, D("0.3"));
+}
+
+// Two bids filled at once and neither fill arrived; only the first really
+// filled. The balance cannot say which, so neither is settled from it: the
+// first's late fill is counted once and the second is then settled alone.
+TEST(MarketMakerTest, ALostFillIsNotSettledFromTheBalanceBesideAnother) {
+    Maker m("0");
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.Quote("99.99", "100.01");  // order-1
+    m.context.now += seconds(1);
+    m.Quote("99.99", "100.01");  // order-2
+    m.context.venue.ack_state = OrderState::kNew;
+    m.context.venue.balances = {{"ZEC", D("0.5"), D("0.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    for (int i = 0; i < 30; ++i) {  // GetOrder: kNotFound for both
+        m.context.now += minutes(1);
+        m.Quote("99.99", "100.01");
+    }
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5", "order-1"));
+    m.context.now += minutes(1);
+    m.Quote("99.99", "100.01");  // order-2, now alone: dropped
+    // Held 0.5, so after buying 1.0 more the resting 0.5 bid still fits
+    // (counted twice, the first fill would leave no room and pull it).
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "1.0"));
+    const auto cancels = m.context.venue.cancelled.size();
+    m.context.now += seconds(1);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.cancelled.size(), cancels);
+}
+
+// A lost exit beside a lost bid that never filled either: the balance (still
+// what is held) reads as the exit's sale if the bid is assumed filled, so
+// neither is settled from it until the bid is; then the exit is cleared and
+// the position sold again.
+TEST(MarketMakerProtectionTest,
+     ALostExitBesideALostBidIsNotSettledFromTheBalanceUntilTheBidIs) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("0", p);
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.Quote("99.99", "100.01");  // order-1: the bid, filled at once
+    m.context.venue.ack_state = OrderState::kNew;
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));  // +0.5 at 100
+    m.Quote("99.50", "99.52");  // the stop: order-3 sells 0.5
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    EXPECT_EQ(MarketOrders(m)[0].quantity, D("0.5"));
+    m.context.venue.balances = {{"ZEC", D("0.5"), D("0.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    const auto before = m.Orders().size();
+    for (int i = 0; i < 20; ++i) {  // GetOrder: kNotFound for both
+        m.context.now += minutes(1);
+        m.Quote("99.50", "99.52");
+    }
+    // Still exiting: not booked as sold (which would leave it flat and
+    // quoting) and not sold a second time.
+    EXPECT_EQ(m.Orders().size(), before);
+
+    // The venue answers for the bid: it never filled. The exit is then
+    // settled alone, the balance shows it unsold, and the stop sells again.
+    types::OrderStatus bid = StatusOf("order-1", OrderState::kCancelled);
+    bid.side = Side::kBuy;
+    m.context.venue.order_states["order-1"] = bid;
+    for (int i = 0; i < 3; ++i) {
+        m.context.now += minutes(1);
+        m.Quote("99.50", "99.52");
+    }
+    ASSERT_EQ(MarketOrders(m).size(), 2u);
+    EXPECT_EQ(MarketOrders(m)[1].quantity, D("0.5"));
+}
+
+// The same pair, both unknown to the venue for good: past 30 minutes the
+// exit is settled against what is held alone, so the stop can sell again
+// rather than wait forever.
+TEST(MarketMakerProtectionTest,
+     ALostExitBesideALostBidIsSettledAgainstWhatIsHeldAfterHalfAnHour) {
+    auto p = Params();
+    p.protection.stop_loss = true;
+    Maker m("0", p);
+    m.context.venue.ack_state = OrderState::kFilled;
+    m.Quote("99.99", "100.01");  // order-1: the bid, filled at once
+    m.context.venue.ack_state = OrderState::kNew;
+    m.strategy.OnFill(m.context, FillOf(Side::kBuy, "0.5"));
+    m.Quote("99.50", "99.52");  // the stop's exit
+    ASSERT_EQ(MarketOrders(m).size(), 1u);
+    m.context.venue.balances = {{"ZEC", D("0.5"), D("0.5"), D("0")},
+                                {"USDT", D("1000"), D("1000"), D("0")}};
+    for (int i = 0; i < 29; ++i) {
+        m.context.now += minutes(1);
+        m.Quote("99.50", "99.52");  // one a minute: the bid's entry is due
+                                    // each time, and the exit still gets
+                                    // its lookup
+    }
+    EXPECT_EQ(MarketOrders(m).size(), 1u);  // held off
+    for (int i = 0; i < 3; ++i) {
+        m.context.now += minutes(1);
+        m.Quote("99.50", "99.52");  // one a minute: the bid's entry is due
+                                    // each time, and the exit still gets
+                                    // its lookup
+    }
+    ASSERT_EQ(MarketOrders(m).size(), 2u);  // 0.5 still held: sold again
+    EXPECT_EQ(MarketOrders(m)[1].quantity, D("0.5"));
 }
 
 }  // namespace

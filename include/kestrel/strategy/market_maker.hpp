@@ -77,11 +77,12 @@ struct MarketMakerParams {
 // protects itself is described in docs/strategies/market-maker.md.
 //
 // The inventory is moved only by fills (OnFill), and a side whose cancel lost
-// a race with a fill waits for the order's final state before quoting again,
-// so a fill is never counted twice. Fills a venue has reported in an order's
-// state but not yet delivered count against the room on their side
-// (Unconfirmed), or a quote that filled on arrival would be placed again and
-// again before the inventory caught up.
+// a race with a fill waits for the order's closing update, full fills, or
+// timeout before quoting again, so a fill is never counted twice. Fills a
+// venue has reported in an order's state (or via kAlreadyFilled) but not yet
+// delivered count against the room on their side (Unconfirmed), or a quote
+// that filled on arrival would be placed again and again before the inventory
+// caught up.
 class MarketMaker : public Strategy {
    public:
     // Throws std::invalid_argument for parameters out of range.
@@ -105,11 +106,13 @@ class MarketMaker : public Strategy {
     // One resting quote.
     struct Resting {
         std::string order_id;  // empty: nothing resting
+        types::Side side{};
         types::Decimal price;
         types::Decimal quantity;
         types::Decimal filled;
         types::Timestamp placed;
-        bool cancel_raced = false;  // a fill beat our cancel; await its state
+        bool cancel_raced = false;  // a fill beat our cancel; await settlement
+        types::Timestamp raced_at;  // when cancel_raced was set
 
         types::Decimal Remaining() const { return quantity - filled; }
     };
@@ -143,24 +146,31 @@ class MarketMaker : public Strategy {
     // than flow_window.
     void NoteTrade(const types::Quote& quote, types::Timestamp now);
 
-    // Protection. All run on the quote's mid and the book.
+    // Protection. Runs on the quote's mid and book, or on the last good mid
+    // when a quote is crossed, locked or missing a side.
     struct Pause {
         bool bid = false;
         bool ask = false;
     };
     // Applies the rules enabled in mParams.protection and says which sides
-    // must not quote.
-    Pause Protect(Context& context, const types::Quote& quote,
-                  const types::Decimal& mid);
+    // must not quote. When `!quotable`, `mid` is the last good mid (not pushed
+    // onto mMids again; a one-sided book still uses its live side for
+    // stop_loss), and `can_exit` is whether resting quotes have already been
+    // pulled.
+    Pause Protect(Context& context, const types::Quote& quote, bool quotable,
+                  const types::Decimal& mid, bool can_exit = true);
     // Adds the sides the recent trades are running against to `pause`.
     void FlowPause(Context& context, types::Timestamp now, Pause& pause);
     // Basis-point move of the mid over `window`; zero without that history.
     types::Decimal Move(types::Timestamp now, std::chrono::milliseconds window,
                         const types::Decimal& mid) const;
-    // Cancels both quotes and sells (or buys back) the position at market.
-    // False if it could not (a quote cannot be pulled yet, the order was
-    // refused) or nothing needs doing. Does nothing while an exit is pending.
-    bool ExitPosition(Context& context, const char* why);
+    // Cancels both quotes and sells (or buys back) the position at market,
+    // recording `reference_price` as the fallback mark if the exit's fill must
+    // later be booked unseen. False if it could not (a quote cannot be pulled
+    // yet, the order was refused) or nothing needs doing. Does nothing while
+    // an exit is pending.
+    bool ExitPosition(Context& context, const char* why,
+                      const types::Decimal& reference_price);
     void Halt(Context& context, const char* why);
     // Kept state (MarketMakerProtection::reset_state). LoadState is false
     // when a saved state cannot be read, and the maker then does not quote.
@@ -189,15 +199,56 @@ class MarketMaker : public Strategy {
         types::Decimal price;  // the order's, for a fill booked unseen
         std::optional<types::Timestamp> checked;  // last asked of the venue
         bool lookup_warned = false;
+        bool balance_warned = false;    // GetBalances failure logged
+        bool ambiguous_warned = false;  // balance could not settle it, logged
     };
     void ExpectFills(const std::string& order_id, types::Side side,
                      const types::Decimal& filled, const types::Decimal& seen,
                      types::Timestamp now, const types::Decimal& price);
-    // Asks the venue about fills unconfirmed for a while: corrects what an
-    // order filled to what the venue says, and books one that has not
+    // Asks the venue about fills (and exits) unconfirmed for a while: corrects
+    // what an order filled to what the venue says, and books one that has not
     // arrived long after the runner would have delivered it (see
     // ReconcileUnconfirmed in the .cpp).
     void ReconcileUnconfirmed(Context& context);
+    // Synthesizes a Fill for the `expected - seen` units of `order_id` not
+    // delivered by OnFill, records it in mBookedUnseen, and applies it. Takes
+    // values rather than references because ApplyFill may reset mExit.
+    void BookUnseenFill(Context& context, std::string order_id,
+                        types::Side side, types::Decimal expected,
+                        types::Decimal seen, types::Timestamp since,
+                        types::Decimal price, types::Timestamp now);
+    // Past kBookUnseenAfter, resolves an mExit that GetOrder answers
+    // kNotFound for by comparing mInventory against GetBalances(). False (the
+    // exit stays pending) on any other lookup error, which leaves the order
+    // possibly still working, if balances cannot be read either, or if the
+    // other fills outstanding leave the balance's answer open (for up to
+    // kSettleExitAfter, then it takes them as not filled).
+    bool ResolveMissingExit(Context& context, const types::Error& lookup_error,
+                            types::Timestamp now);
+    // The same for an unconfirmed quote fill (`order_id` in mUnconfirmed, not
+    // the exit): past kBookUnseenAfter with GetOrder answering kNotFound,
+    // books what the base balance shows of it and drops the entry, so its
+    // side's room and ExitPosition's size are not held for good. Held instead
+    // while the other fills outstanding leave the answer open (see
+    // ConfirmedByBalance). True if the entry was erased.
+    bool ResolveMissingFill(Context& context, const std::string& order_id,
+                            const types::Error& lookup_error,
+                            types::Timestamp now);
+    // The base asset's total on the venue, or nullopt if balances cannot be
+    // read.
+    std::optional<types::Decimal> VenueBaseTotal(Context& context,
+                                                 types::Error& error);
+    // How much of `order_id`'s fill on `side`, of at most `cap` units, the
+    // venue's base total shows against mInventory. The other fills still to
+    // come (unconfirmed ones, and an exit in flight's undelivered part) are
+    // taken at both none and all filled; nullopt if the two answers differ,
+    // as the balance then cannot say which order it holds; with
+    // `others_unfilled`, the answer taking them all as not filled. Below
+    // min_order_size or lot_size it is fee dust: zero.
+    std::optional<types::Decimal> ConfirmedByBalance(
+        const std::string& order_id, types::Side side,
+        const types::Decimal& venue_total, const types::Decimal& cap,
+        bool others_unfilled = false) const;
     // The bookkeeping of a fill, for OnFill and for one booked unseen.
     void ApplyFill(Context& context, const types::Fill& fill);
     // Fills booked unseen, by order ID, and how much of them: a copy that
@@ -208,14 +259,20 @@ class MarketMaker : public Strategy {
     };
     std::map<std::string, BookedUnseen> mBookedUnseen;
     // Base units on `side` still to be confirmed by OnFill.
-    types::Decimal UnconfirmedFills(Context& context, types::Side side,
-                                    types::Timestamp now);
+    types::Decimal UnconfirmedFills(types::Side side) const;
 
-    // The exit order in flight; empty id: none.
+    // The exit order in flight.
     struct Exit {
         std::string order_id;
+        types::Side side{};
         types::Decimal quantity;
         types::Decimal filled;
+        types::Decimal price;  // fallback price if booked unseen
+        types::Timestamp placed;
+        std::optional<types::Timestamp> checked;  // last GetOrder attempt
+        bool lookup_warned = false;               // GetOrder failure logged
+        bool balance_warned = false;              // GetBalances failure logged
+        bool ambiguous_warned = false;  // balance could not settle it, logged
     };
 
     MarketMakerParams mParams;
@@ -253,7 +310,9 @@ class MarketMaker : public Strategy {
     bool mStateDirty = false;
     std::optional<types::Timestamp> mStateSaved;
     types::Timestamp mStateRetryAt;  // no save attempt before this
-    types::Decimal mLastMark;        // the mid mLastPnl was marked at
+    // Last good mid (or resumed mark) that mLastPnl was valued at; also runs
+    // Protect when a quote is crossed, locked or missing a side.
+    types::Decimal mLastMark;
     bool mStateWarned = false;
     std::size_t mWouldTake = 0;  // post-only quotes refused, for the log
     std::deque<std::pair<types::Timestamp, types::Decimal>> mMids;
@@ -314,7 +373,8 @@ class MarketMaker : public Strategy {
     // whether the quotes were pulled for its silence.
     std::optional<types::Timestamp> mLastArrival;
     bool mQuietPulled = false;
-    bool mQuietLogged = false;  // the pull was logged: log the return too
+    bool mQuietLogged = false;       // the pull was logged: log the return too
+    bool mUnquotableLogged = false;  // bad-book pull logged: log recovery too
 };
 
 }  // namespace kestrel::strategy

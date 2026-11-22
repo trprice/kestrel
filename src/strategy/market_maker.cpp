@@ -28,17 +28,43 @@ constexpr std::chrono::seconds kUnconfirmedWarning{30};
 // An unconfirmed fill is checked with the venue after this long, and again
 // at most this often.
 constexpr std::chrono::seconds kReconcileAfter{60};
+// How long a cancel answered kAlreadyFilled waits for OnFill or OnOrderUpdate
+// before clearing the quote (past the default 30 s
+// RunnerOptions::fill_backstop_interval). If a longer backstop is configured,
+// ExpectFills still holds the side's room and ExitPosition excludes
+// unconfirmed closing fills, so an arriving fill is not traded twice.
+constexpr std::chrono::seconds kCancelRaceTimeout{60};
 // And booked unseen after this long: past the runner's duplicate check
 // (Runner::kSeenFillHorizon, 10 minutes), a fill not delivered by then is
 // unlikely to come (it still can, if no newer fill moved the runner's
 // cursor on: the copy is skipped, see mBookedUnseen).
 constexpr std::chrono::minutes kBookUnseenAfter{11};
+// A lost exit the balance cannot settle (other fills outstanding leave it
+// open) is settled after this long against mInventory alone, taking the
+// others as not filled: that keeps what is held in line with the balance,
+// and a held exit would otherwise block every exit after it.
+constexpr std::chrono::minutes kSettleExitAfter{30};
 // A booked fill's late copy is watched for this long, then forgotten.
 constexpr std::chrono::minutes kBookedUnseenKept{20};
 const Decimal kBpsDivisor = Decimal::FromInt(10000);
 // The mid is sampled for the volatility at most this often, so the flicker
 // of the book between trades does not count as volatility.
 constexpr std::chrono::seconds kVolSampleInterval{1};
+
+// Both sides present, positive, and uncrossed (neither locked nor inverted).
+bool QuotableBook(const types::Quote& quote) {
+    return quote.bid && quote.ask && quote.bid->Sign() > 0 &&
+           *quote.bid < *quote.ask;
+}
+
+// What a closed status says filled: `filled_quantity`, or `assumed` if a venue
+// or test reports kFilled without populating `filled_quantity`.
+Decimal ReportedFill(const types::OrderStatus& status, const Decimal& assumed) {
+    return status.state == types::OrderState::kFilled &&
+                   status.filled_quantity.IsZero()
+               ? assumed
+               : status.filled_quantity;
+}
 
 double ToDouble(const Decimal& d) {
     return static_cast<double>(d.Mantissa()) / std::pow(10.0, d.Scale());
@@ -349,7 +375,7 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     if (!mReady || quote.symbol != mParams.symbol) {
         return;
     }
-    if (!mUnconfirmed.empty()) {
+    if (!mUnconfirmed.empty() || mExit || !mBookedUnseen.empty()) {
         ReconcileUnconfirmed(context);
     }
     mLastArrival = context.Now();
@@ -361,15 +387,32 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
     if (mParams.flow_pull_imbalance.Sign() > 0) {
         NoteTrade(quote, context.Now());
     }
-    if (!quote.bid || !quote.ask || quote.bid->Sign() <= 0 ||
-        *quote.bid >= *quote.ask) {
+    if (!QuotableBook(quote)) {
+        if (AnyResting() && !mUnquotableLogged) {
+            mUnquotableLogged = true;
+            Log(context).Warn(
+                "book cannot be quoted (bid {}, ask {}); pulling the quotes",
+                quote.bid ? quote.bid->ToString() : "none",
+                quote.ask ? quote.ask->ToString() : "none");
+        }
+        const bool pulled = PullAll(context);
+        if (mLastMark.Sign() > 0) {
+            Protect(context, quote, false, mLastMark, pulled);
+        } else if (mHalted && pulled) {
+            ExitPosition(context, "halted", mEntry);
+        }
         return;
+    }
+    if (mUnquotableLogged) {
+        mUnquotableLogged = false;
+        Log(context).Info("book quotable again (bid {}, ask {})",
+                          quote.bid->ToString(), quote.ask->ToString());
     }
     const Decimal tick = mInfo.tick_size;
     const Decimal mid =
         Decimal::Divide(*quote.bid + *quote.ask, Decimal::FromInt(2), kScale,
                         Rounding::kNearest);
-    Pause pause = Protect(context, quote, mid);
+    Pause pause = Protect(context, quote, true, mid);
     if (mParams.flow_pull_imbalance.Sign() > 0) {
         FlowPause(context, context.Now(), pause);
     }
@@ -387,12 +430,11 @@ void MarketMaker::OnQuote(Context& context, const types::Quote& quote) {
 
     // Room to add to the position, and to sell down. Spot cannot go short.
     // Fills the venue reported but OnFill has not delivered yet count as done.
-    const auto now = context.Now();
     const Decimal bid_room = mStart + mParams.max_inventory - mInventory -
-                             UnconfirmedFills(context, Side::kBuy, now);
+                             UnconfirmedFills(Side::kBuy);
     const Decimal ask_room =
         mInventory - std::max(Decimal(), mStart - mParams.max_inventory) -
-        UnconfirmedFills(context, Side::kSell, now);
+        UnconfirmedFills(Side::kSell);
 
     const Decimal away = std::max(Bps(mid, mParams.requote_bps), tick);
     const Decimal toward = std::max(
@@ -635,10 +677,20 @@ Decimal MarketMaker::Move(types::Timestamp now,
 
 MarketMaker::Pause MarketMaker::Protect(Context& context,
                                         const types::Quote& quote,
-                                        const Decimal& mid) {
+                                        bool quotable, const Decimal& mid,
+                                        bool can_exit) {
     const auto& rules = mParams.protection;
     const auto now = context.Now();
     Pause pause;
+    // On a one-sided book (uncrossed because the other side is absent), a
+    // live bid or ask on the closing side is fresher than the last good mid.
+    const bool live_bid = quotable || ((!quote.ask || quote.ask->Sign() <= 0) &&
+                                       quote.bid && quote.bid->Sign() > 0);
+    const bool live_ask = quotable || ((!quote.bid || quote.bid->Sign() <= 0) &&
+                                       quote.ask && quote.ask->Sign() > 0);
+    const Decimal long_mark = live_bid ? *quote.bid : mid;
+    const Decimal short_mark = live_ask ? *quote.ask : mid;
+    const Decimal exit_price = Position().Sign() > 0 ? long_mark : short_mark;
 
     // Losses, measured on every quote, with the P&L of earlier runs when
     // the state is kept.
@@ -656,29 +708,35 @@ MarketMaker::Pause MarketMaker::Protect(Context& context,
     }
     if (mHalted) {
         SaveState(context, mStateDirty);
-        ExitPosition(context, "halted");
+        if (can_exit) {
+            ExitPosition(context, "halted", exit_price);
+        }
         return {true, true};
     }
 
     if (rules.stop_loss && !mExit && Position().Abs() >= mInfo.min_order_size) {
         const Decimal reach = Bps(mEntry, rules.stop_loss_bps);
         const bool long_stopped =
-            Position().Sign() > 0 && *quote.bid <= mEntry - reach;
+            Position().Sign() > 0 && long_mark <= mEntry - reach;
         const bool short_stopped =
-            Position().Sign() < 0 && *quote.ask >= mEntry + reach;
-        if ((long_stopped || short_stopped) &&
-            ExitPosition(context, "stop loss") && rules.cooldown_after_stop) {
+            Position().Sign() < 0 && short_mark >= mEntry + reach;
+        if ((long_stopped || short_stopped) && can_exit &&
+            ExitPosition(context, "stop loss", exit_price) &&
+            rules.cooldown_after_stop) {
             mCooldownUntil = now + rules.cooldown;
             mStateDirty = true;
         }
     }
 
-    // Price moves.
+    // Price moves. Only real book mids enter mMids, so a run of unquotable
+    // ticks neither grows the deque nor masks an earlier move.
     if (rules.spike_standdown || rules.downtrend_filter ||
         rules.momentum_filter) {
-        mMids.emplace_back(now, mid);
-        while (mMids.size() >= 2 && mMids[1].first <= now - kHistory) {
-            mMids.pop_front();
+        if (quotable) {
+            mMids.emplace_back(now, mid);
+            while (mMids.size() >= 2 && mMids[1].first <= now - kHistory) {
+                mMids.pop_front();
+            }
         }
         const Decimal m3 = Move(now, std::chrono::minutes(3), mid);
         const Decimal m5 = Move(now, std::chrono::minutes(5), mid);
@@ -714,13 +772,29 @@ void MarketMaker::Halt(Context& context, const char* why) {
     context.Log().Error("halted ({}), position {}", why, Position().ToString());
 }
 
-bool MarketMaker::ExitPosition(Context& context, const char* why) {
+bool MarketMaker::ExitPosition(Context& context, const char* why,
+                               const Decimal& reference_price) {
     if (mExit) {
         return false;
     }
-    const Decimal quantity =
-        Position().Abs().RoundToIncrement(mInfo.lot_size, Rounding::kDown);
-    if (quantity.Sign() <= 0 || quantity < mInfo.min_order_size) {
+    const Decimal pos = Position();
+    if (pos.IsZero()) {
+        return false;
+    }
+    const Side side = pos.Sign() > 0 ? Side::kSell : Side::kBuy;
+    // Exclude closing-side fills the venue already reported (a quote that
+    // filled on arrival, a closed partial exit, or a timed-out cancel race)
+    // whose OnFill has not arrived yet, so they are not exited twice.
+    const auto exitable = [&] {
+        const Decimal remaining = pos.Abs() - UnconfirmedFills(side);
+        if (remaining.Sign() <= 0) {
+            return Decimal();
+        }
+        const Decimal rounded =
+            remaining.RoundToIncrement(mInfo.lot_size, Rounding::kDown);
+        return rounded < mInfo.min_order_size ? Decimal() : rounded;
+    };
+    if (exitable().Sign() <= 0) {
         return false;
     }
     // Both quotes must be gone first, or a resting one could fill into the
@@ -728,15 +802,20 @@ bool MarketMaker::ExitPosition(Context& context, const char* why) {
     if (!PullAll(context)) {
         return false;  // try again on the next quote
     }
+    // PullAll may have timed out a cancel_raced quote and moved its fill into
+    // mUnconfirmed: size the exit after that.
+    const Decimal quantity = exitable();
+    if (quantity.Sign() <= 0) {
+        return false;
+    }
     types::OrderRequest request;
     request.symbol = mParams.symbol;
-    request.side = Position().Sign() > 0 ? Side::kSell : Side::kBuy;
+    request.side = side;
     request.type = types::OrderType::kMarket;
     request.quantity = quantity;
     auto ack = context.Venue().PlaceOrder(request);
     if (!ack) {
-        context.Log().Warn("exit ({}) failed: {}", why,
-                           ack.error().ToString());
+        context.Log().Warn("exit ({}) failed: {}", why, ack.error().ToString());
         return false;
     }
     context.Log().Warn("exiting {} {} at market ({})",
@@ -745,7 +824,14 @@ bool MarketMaker::ExitPosition(Context& context, const char* why) {
         ack->state != types::OrderState::kFilled) {
         return false;  // refused; nothing will fill
     }
-    mExit = Exit{ack->order_id, quantity, Decimal()};
+    const auto now = context.Now();
+    mExit =
+        Exit{ack->order_id, request.side, quantity, Decimal(), reference_price,
+             now,           std::nullopt, false,    false};
+    if (ack->state == types::OrderState::kFilled) {
+        ExpectFills(ack->order_id, request.side, quantity, Decimal(), now,
+                    reference_price);
+    }
     return true;
 }
 
@@ -753,14 +839,33 @@ bool MarketMaker::Pull(Context& context, Resting& quote) {
     if (quote.order_id.empty()) {
         return true;
     }
+    const auto now = context.Now();
     if (quote.cancel_raced) {
-        return false;  // waiting for the venue to settle it
+        if (now - quote.raced_at < kCancelRaceTimeout) {
+            return false;  // waiting for the venue to settle it
+        }
+        // The runner never delivered a closing update (e.g. GetOrder answered
+        // kNotFound): unblock quoting and exits, and let ReconcileUnconfirmed
+        // check the missing fill with the venue.
+        Log(context).Warn(
+            "cancel of {} lost to a fill {} s ago with no closing update ({} "
+            "of {} seen); clearing the quote",
+            quote.order_id,
+            std::chrono::duration_cast<std::chrono::seconds>(now -
+                                                             quote.raced_at)
+                .count(),
+            quote.filled.ToString(), quote.quantity.ToString());
+        ExpectFills(quote.order_id, quote.side, quote.quantity, quote.filled,
+                    quote.raced_at, quote.price);
+        quote = Resting();
+        return true;
     }
     auto outcome = context.Venue().CancelOrder(quote.order_id);
     if (outcome && *outcome == trading::CancelOutcome::kAlreadyFilled) {
-        // The fill is on its way (OnFill); until the order's state arrives the
-        // inventory is not trustworthy.
+        // The fill is on its way (OnFill); until the order's state or fills
+        // arrive the inventory is not trustworthy.
         quote.cancel_raced = true;
+        quote.raced_at = now;
         return false;
     }
     if (!outcome) {
@@ -864,8 +969,8 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
         }
         return;
     }
-    quote =
-        Resting{ack->order_id, *price, size, Decimal(), context.Now(), false};
+    quote = Resting{ack->order_id, side,          *price, size,
+                    Decimal(),     context.Now(), false,  {}};
     if (top) {
         (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
     }
@@ -977,6 +1082,9 @@ void MarketMaker::ApplyFill(Context& context, const types::Fill& fill) {
         for (Resting& quote : *side) {
             if (!quote.order_id.empty() && quote.order_id == fill.order_id) {
                 quote.filled += fill.quantity;
+                if (quote.filled >= quote.quantity) {
+                    quote = Resting();
+                }
             }
         }
     }
@@ -998,17 +1106,27 @@ void MarketMaker::OnOrderUpdate(Context& context,
     if (types::IsActive(status.state)) {
         return;
     }
-    if (mExit && mExit->order_id == status.order_id &&
-        status.state != types::OrderState::kFilled) {
-        mExit.reset();  // closed without filling; the next quote may retry
+    if (mExit && mExit->order_id == status.order_id) {
+        const Decimal filled = ReportedFill(status, mExit->quantity);
+        const Decimal price = status.average_fill_price.value_or(mExit->price);
+        ExpectFills(status.order_id, mExit->side, filled, mExit->filled,
+                    context.Now(), price);
+        // A partial exit closed short of its full size clears mExit at once:
+        // ExpectFills holds the filled part so ExitPosition will not exit it
+        // twice, and the next quote can exit the remainder without waiting.
+        if (filled < mExit->quantity || mExit->filled >= filled) {
+            mExit.reset();
+        } else {
+            mExit->quantity = filled;
+        }
     }
     for (auto* side : {&mBids, &mAsks}) {
         for (Resting& quote : *side) {
             if (!quote.order_id.empty() && quote.order_id == status.order_id) {
                 // Closed with fills OnFill has not delivered: keep counting
                 // them.
-                ExpectFills(status.order_id, status.side,
-                            status.filled_quantity, quote.filled, context.Now(),
+                ExpectFills(status.order_id, quote.side, status.filled_quantity,
+                            quote.filled, context.Now(),
                             status.average_fill_price.value_or(quote.price));
                 quote = Resting();
             }
@@ -1019,10 +1137,248 @@ void MarketMaker::OnOrderUpdate(Context& context,
 void MarketMaker::ExpectFills(const std::string& order_id, Side side,
                               const Decimal& filled, const Decimal& seen,
                               types::Timestamp now, const Decimal& price) {
-    if (filled > seen) {
-        mUnconfirmed[order_id] =
-            Unconfirmed{side, filled, seen, now, false, price, std::nullopt};
+    if (filled <= seen) {
+        return;
     }
+    auto [it, inserted] = mUnconfirmed.try_emplace(
+        order_id,
+        Unconfirmed{side, filled, seen, now, false, price, std::nullopt});
+    if (!inserted) {
+        it->second.expected = filled;
+        it->second.seen = std::max(it->second.seen, seen);
+        it->second.price = price;
+    }
+}
+
+void MarketMaker::BookUnseenFill(Context& context, std::string order_id,
+                                 Side side, Decimal expected, Decimal seen,
+                                 types::Timestamp since, Decimal price,
+                                 types::Timestamp now) {
+    const Decimal missing = expected - seen;
+    context.Log().Warn(
+        "order {} filled {} but only {} arrived in {} s; booking the {} "
+        "missing at {}",
+        order_id, expected.ToString(), seen.ToString(),
+        std::chrono::duration_cast<std::chrono::seconds>(now - since).count(),
+        missing.ToString(), price.ToString());
+    // Booked without a fee, which the venue's record of it would carry (a fee
+    // in the coin then shows as a little more held than the venue has).
+    types::Fill fill;
+    fill.fill_id = "unseen-" + order_id;
+    fill.order_id = order_id;
+    fill.symbol = mParams.symbol;
+    fill.side = side;
+    fill.quantity = missing;
+    fill.price = price;
+    fill.time = now;
+    auto& booked = mBookedUnseen[order_id];
+    booked.quantity += missing;
+    booked.at = now;
+    ApplyFill(context, fill);
+}
+
+std::optional<Decimal> MarketMaker::VenueBaseTotal(Context& context,
+                                                   types::Error& error) {
+    auto balances = context.Venue().GetBalances();
+    if (!balances) {
+        error = balances.error();
+        return std::nullopt;
+    }
+    for (const auto& balance : *balances) {
+        if (balance.asset == mBaseAsset) {
+            return balance.total;
+        }
+    }
+    return Decimal();
+}
+
+std::optional<Decimal> MarketMaker::ConfirmedByBalance(
+    const std::string& order_id, Side side, const Decimal& venue_total,
+    const Decimal& cap, bool others_unfilled) const {
+    // What else is still to come could have filled anywhere from none to
+    // all of it: the other unconfirmed fills, and an exit in flight's part
+    // not yet delivered. The balance settles this order only if the answer
+    // is the same at both ends.
+    Decimal buys;
+    Decimal sells;
+    for (const auto& [id, pending] : mUnconfirmed) {
+        if (id != order_id) {
+            (pending.side == Side::kBuy ? buys : sells) +=
+                pending.expected - pending.seen;
+        }
+    }
+    if (mExit && mExit->order_id != order_id &&
+        !mUnconfirmed.contains(mExit->order_id)) {
+        (mExit->side == Side::kBuy ? buys : sells) +=
+            std::max(Decimal(), mExit->quantity - mExit->filled);
+    }
+    const auto confirmed = [&](const Decimal& expected_inventory) {
+        const Decimal delta = side == Side::kSell
+                                  ? expected_inventory - venue_total
+                                  : venue_total - expected_inventory;
+        const Decimal c = std::clamp(delta, Decimal(), cap);
+        // Below an order's size it is taken as base-fee dust.
+        return c < mInfo.min_order_size || c < mInfo.lot_size ? Decimal() : c;
+    };
+    if (others_unfilled) {
+        // A lost fill on the same side then reads as this one's: if its own
+        // copy arrives after all, it counts again (logged where this is
+        // used).
+        return confirmed(mInventory);
+    }
+    // The expected inventory's least and greatest, over any mix of them.
+    const Decimal low = confirmed(mInventory - sells);
+    const Decimal high = confirmed(mInventory + buys);
+    if (low != high) {
+        return std::nullopt;
+    }
+    return low;
+}
+
+bool MarketMaker::ResolveMissingExit(Context& context,
+                                     const types::Error& lookup_error,
+                                     types::Timestamp now) {
+    // Only an order the venue says it does not have is settled from the
+    // balance: after a timeout or a network error the exit may still be
+    // working, and clearing it would let a second one go out.
+    if (lookup_error.category != types::ErrorCategory::kNotFound) {
+        return false;
+    }
+    types::Error balance_error;
+    const auto venue_total = VenueBaseTotal(context, balance_error);
+    if (!venue_total) {
+        if (!mExit->balance_warned) {
+            mExit->balance_warned = true;
+            Log(context).Error(
+                "cannot check exit {} ({}) or read balances ({}); holding off",
+                mExit->order_id, lookup_error.ToString(),
+                balance_error.ToString());
+        }
+        return false;
+    }
+    const std::string id = mExit->order_id;
+    const Side side = mExit->side;
+    const Decimal seen = mExit->filled;
+    const Decimal remaining_exit = mExit->quantity - seen;
+    const Decimal price = mExit->price;
+    const types::Timestamp placed = mExit->placed;
+    // A base balance moved from outside (a deposit, a manual trade) in the
+    // meantime reads as the exit's fill: at most its remainder is booked.
+    auto settled = ConfirmedByBalance(id, side, *venue_total, remaining_exit);
+    if (!settled && now - placed >= kSettleExitAfter) {
+        settled =
+            ConfirmedByBalance(id, side, *venue_total, remaining_exit, true);
+        Log(context).Error(
+            "exit {} still not settled after {} s; taking the other fills "
+            "outstanding as not filled, so the {} balance of {} settles it",
+            id,
+            std::chrono::duration_cast<std::chrono::seconds>(now - placed)
+                .count(),
+            mBaseAsset, venue_total->ToString());
+    }
+    if (!settled) {
+        if (!mExit->ambiguous_warned) {
+            mExit->ambiguous_warned = true;
+            Log(context).Error(
+                "exit {} not found ({}), and with other fills outstanding the "
+                "{} balance of {} cannot say whether it filled; holding off "
+                "for up to {} min",
+                id, lookup_error.ToString(), mBaseAsset,
+                venue_total->ToString(), kSettleExitAfter.count());
+        }
+        return false;
+    }
+    const Decimal confirmed = *settled;
+    mUnconfirmed.erase(id);
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(now - placed).count();
+    if (confirmed.Sign() > 0) {
+        Log(context).Error(
+            "exit {} not found after {} s ({}), but the {} balance is {}; "
+            "booking {}",
+            id, elapsed, lookup_error.ToString(), mBaseAsset,
+            venue_total->ToString(), confirmed.ToString());
+        if (confirmed < remaining_exit) {
+            mExit.reset();
+        } else {
+            mExit->quantity = seen + confirmed;
+        }
+        BookUnseenFill(context, id, side, seen + confirmed, seen, placed, price,
+                       now);
+    } else {
+        Log(context).Error(
+            "exit {} not found after {} s ({}), and the {} balance is still "
+            "{}; clearing the exit",
+            id, elapsed, lookup_error.ToString(), mBaseAsset,
+            venue_total->ToString());
+        mExit.reset();
+    }
+    return true;
+}
+
+bool MarketMaker::ResolveMissingFill(Context& context,
+                                     const std::string& order_id,
+                                     const types::Error& lookup_error,
+                                     types::Timestamp now) {
+    auto it = mUnconfirmed.find(order_id);
+    if (it == mUnconfirmed.end() ||
+        lookup_error.category != types::ErrorCategory::kNotFound ||
+        now - it->second.since < kBookUnseenAfter) {
+        return false;
+    }
+    types::Error balance_error;
+    const auto venue_total = VenueBaseTotal(context, balance_error);
+    if (!venue_total) {
+        if (!it->second.balance_warned) {
+            it->second.balance_warned = true;
+            Log(context).Error(
+                "cannot check order {} ({}) or read balances ({}); its side "
+                "keeps the room for it",
+                order_id, lookup_error.ToString(), balance_error.ToString());
+        }
+        return false;
+    }
+    const std::string id = order_id;  // `order_id` may refer into the map
+    const Unconfirmed pending = it->second;
+    const Decimal missing = pending.expected - pending.seen;
+    const auto settled =
+        ConfirmedByBalance(id, pending.side, *venue_total, missing);
+    if (!settled) {
+        // Booking it here could book another order's fill under this one's
+        // ID, and that order's own copy would then count it again: keep the
+        // room held until the others settle.
+        if (!it->second.ambiguous_warned) {
+            it->second.ambiguous_warned = true;
+            Log(context).Error(
+                "order {} not found ({}), and with other fills outstanding the "
+                "{} balance of {} cannot say whether it filled; its side keeps "
+                "the room for it",
+                id, lookup_error.ToString(), mBaseAsset,
+                venue_total->ToString());
+        }
+        return false;
+    }
+    const Decimal confirmed = *settled;
+    mUnconfirmed.erase(it);
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(now - pending.since)
+            .count();
+    if (confirmed.Sign() > 0) {
+        Log(context).Error(
+            "order {} not found after {} s ({}), but the {} balance is {}; "
+            "booking {} of the {} missing",
+            id, elapsed, lookup_error.ToString(), mBaseAsset,
+            venue_total->ToString(), confirmed.ToString(), missing.ToString());
+        BookUnseenFill(context, id, pending.side, pending.seen + confirmed,
+                       pending.seen, pending.since, pending.price, now);
+    } else {
+        Log(context).Error(
+            "order {} not found after {} s ({}), and the {} balance is still "
+            "{}; dropping the {} expected",
+            id, elapsed, lookup_error.ToString(), mBaseAsset,
+            venue_total->ToString(), missing.ToString());
+    }
+    return true;
 }
 
 void MarketMaker::ReconcileUnconfirmed(Context& context) {
@@ -1031,8 +1387,24 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
         it = now - it->second.at >= kBookedUnseenKept ? mBookedUnseen.erase(it)
                                                       : std::next(it);
     }
-    // At most one venue call per quote, so a slow venue cannot hold up
-    // quoting for long.
+    for (auto& [order_id, pending] : mUnconfirmed) {
+        if (!pending.warned && now - pending.since >= kUnconfirmedWarning) {
+            pending.warned = true;
+            const bool is_exit = mExit && mExit->order_id == order_id;
+            context.Log().Warn(
+                "{} {} filled {} but only {} has arrived after {} s; {}",
+                is_exit ? "exit" : "order", order_id,
+                pending.expected.ToString(), pending.seen.ToString(),
+                std::chrono::duration_cast<std::chrono::seconds>(now -
+                                                                 pending.since)
+                    .count(),
+                is_exit ? "holding off until it settles"
+                        : "that side keeps the room for it");
+        }
+    }
+    // At most one GetOrder per quote for the unconfirmed fills, and one for an
+    // active exit (each with a GetBalances fallback on a long-missing order),
+    // so a slow venue cannot hold up quoting for long.
     bool asked = false;
     for (auto it = mUnconfirmed.begin(); it != mUnconfirmed.end() && !asked;) {
         auto& [order_id, pending] = *it;
@@ -1045,28 +1417,48 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
         asked = true;
         auto status = context.Venue().GetOrder(order_id);
         if (!status) {
+            if (mExit && mExit->order_id == order_id &&
+                now - mExit->placed >= kBookUnseenAfter &&
+                ResolveMissingExit(context, status.error(), now)) {
+                break;  // ResolveMissingExit erased order_id, invalidating it
+            }
+            if ((!mExit || mExit->order_id != order_id) &&
+                ResolveMissingFill(context, order_id, status.error(), now)) {
+                break;  // erased order_id, invalidating it
+            }
             // Without the venue's word nothing is booked: the side keeps the
-            // room for it, as before.
+            // room for it (or the exit stays pending), as before.
             if (!pending.lookup_warned) {
                 pending.lookup_warned = true;
-                context.Log().Warn(
-                    "cannot check order {} with the venue ({}); its side keeps "
-                    "the room for it",
-                    order_id, status.error().ToString());
+                const bool is_exit = mExit && mExit->order_id == order_id;
+                context.Log().Warn("cannot check {} {} with the venue ({}); {}",
+                                   is_exit ? "exit" : "order", order_id,
+                                   status.error().ToString(),
+                                   is_exit ? "holding off until it settles"
+                                           : "its side keeps the room for it");
             }
             ++it;
             continue;
         }
-        if (status->filled_quantity < pending.expected) {
+        const Decimal filled = ReportedFill(*status, pending.expected);
+        if (filled < pending.expected) {
             // The acknowledgement assumed the size asked for; the venue
             // filled less (rounded, or a partial fill).
             context.Log().Warn("order {} filled {}, not the {} assumed",
-                               order_id, status->filled_quantity.ToString(),
+                               order_id, filled.ToString(),
                                pending.expected.ToString());
-            pending.expected = status->filled_quantity;
+            pending.expected = filled;
         }
         if (status->average_fill_price) {
             pending.price = *status->average_fill_price;
+        }
+        if (mExit && mExit->order_id == order_id &&
+            !types::IsActive(status->state)) {
+            if (filled < mExit->quantity || mExit->filled >= filled) {
+                mExit.reset();
+            } else {
+                mExit->quantity = filled;
+            }
         }
         if (pending.expected <= pending.seen) {
             it = mUnconfirmed.erase(it);  // all of it has arrived
@@ -1078,54 +1470,79 @@ void MarketMaker::ReconcileUnconfirmed(Context& context) {
         }
         // Long past when the runner would deliver it: book it here, and
         // skip a copy that arrives after all.
-        const Decimal missing = pending.expected - pending.seen;
-        context.Log().Warn(
-            "order {} filled {} but only {} arrived in {} s; booking the {} "
-            "missing at {}",
-            order_id, pending.expected.ToString(), pending.seen.ToString(),
-            std::chrono::duration_cast<std::chrono::seconds>(now -
-                                                             pending.since)
-                .count(),
-            missing.ToString(), pending.price.ToString());
-        // Booked without a fee, which the venue's record of it would carry
-        // (a fee in the coin then shows as a little more held than the
-        // venue has).
-        types::Fill fill;
-        fill.fill_id = "unseen-" + order_id;
-        fill.order_id = order_id;
-        fill.symbol = mParams.symbol;
-        fill.side = pending.side;
-        fill.quantity = missing;
-        fill.price = pending.price;
-        fill.time = now;
-        auto& booked = mBookedUnseen[order_id];
-        booked.quantity += missing;
-        booked.at = now;
+        const std::string id = order_id;
+        const Unconfirmed snapshot = pending;
         it = mUnconfirmed.erase(it);
-        ApplyFill(context, fill);
+        BookUnseenFill(context, id, snapshot.side, snapshot.expected,
+                       snapshot.seen, snapshot.since, snapshot.price, now);
+    }
+
+    // An exit acknowledged while still active (kNew / kPartiallyFilled) is not
+    // in mUnconfirmed until it closes; if its OnOrderUpdate was missed, check
+    // the venue after kReconcileAfter too. It has a lookup of its own, so lost
+    // quote fills due every minute on a quiet book cannot starve it.
+    if (mExit && !mUnconfirmed.contains(mExit->order_id) &&
+        now - mExit->placed >= kReconcileAfter &&
+        (!mExit->checked || now - *mExit->checked >= kReconcileAfter)) {
+        mExit->checked = now;
+        auto status = context.Venue().GetOrder(mExit->order_id);
+        if (!status) {
+            if (now - mExit->placed >= kBookUnseenAfter &&
+                ResolveMissingExit(context, status.error(), now)) {
+                return;
+            }
+            if (!mExit->lookup_warned) {
+                mExit->lookup_warned = true;
+                context.Log().Warn(
+                    "cannot check exit {} with the venue ({}); holding off "
+                    "until it settles",
+                    mExit->order_id, status.error().ToString());
+            }
+            return;
+        }
+        if (types::IsActive(status->state)) {
+            return;
+        }
+        const Decimal filled = ReportedFill(*status, mExit->quantity);
+        const Decimal price = status->average_fill_price.value_or(mExit->price);
+        const bool partial = filled < mExit->quantity;
+        if (mExit->filled >= filled) {
+            context.Log().Warn(
+                "exit {} closed on the venue ({}, {} filled); clearing it",
+                mExit->order_id, types::ToString(status->state),
+                filled.ToString());
+            mExit.reset();
+            return;
+        }
+        if (now - mExit->placed >= kBookUnseenAfter) {
+            const std::string id = mExit->order_id;
+            const Side side = mExit->side;
+            const Decimal seen = mExit->filled;
+            const types::Timestamp placed = mExit->placed;
+            if (partial) {
+                mExit.reset();
+            } else {
+                mExit->quantity = filled;
+            }
+            BookUnseenFill(context, id, side, filled, seen, placed, price, now);
+            return;
+        }
+        ExpectFills(mExit->order_id, mExit->side, filled, mExit->filled,
+                    mExit->placed, price);
+        mUnconfirmed[mExit->order_id].checked = now;
+        if (partial) {
+            mExit.reset();
+        } else {
+            mExit->quantity = filled;
+        }
     }
 }
 
-Decimal MarketMaker::UnconfirmedFills(Context& context, Side side,
-                                      types::Timestamp now) {
+Decimal MarketMaker::UnconfirmedFills(Side side) const {
     Decimal total;
-    for (auto& [order_id, pending] : mUnconfirmed) {
-        if (pending.side != side) {
-            continue;
-        }
-        total += pending.expected - pending.seen;
-        // Kept until the fill arrives, or the venue says it will not
-        // (ReconcileUnconfirmed): until then that side is short of room
-        // rather than over the limit.
-        if (!pending.warned && now - pending.since >= kUnconfirmedWarning) {
-            pending.warned = true;
-            context.Log().Warn(
-                "order {} filled {} but only {} has arrived after {} s; that "
-                "side keeps the room for it",
-                order_id, pending.expected.ToString(), pending.seen.ToString(),
-                std::chrono::duration_cast<std::chrono::seconds>(now -
-                                                                 pending.since)
-                    .count());
+    for (const auto& [order_id, pending] : mUnconfirmed) {
+        if (pending.side == side) {
+            total += pending.expected - pending.seen;
         }
     }
     return total;
@@ -1212,8 +1629,7 @@ void MarketMaker::OnStop(Context& context) {
                     quote->order_id, quote->price.ToString());
             } else {
                 context.Log().Warn("stopping, cancel of {} failed: {}",
-                                   quote->order_id,
-                                   outcome.error().ToString());
+                                   quote->order_id, outcome.error().ToString());
             }
         }
     }

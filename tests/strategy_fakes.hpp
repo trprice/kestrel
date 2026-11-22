@@ -106,6 +106,9 @@ class RecordingVenue : public trading::TradingVenue {
     types::Result<types::OrderStatus> GetOrder(
         const std::string& order_id) override {
         ++get_order_calls;
+        if (get_order_error) {
+            return types::MakeError(*get_order_error, "lookup failed");
+        }
         if (auto it = order_states.find(order_id); it != order_states.end()) {
             return it->second;
         }
@@ -168,7 +171,7 @@ class RecordingVenue : public trading::TradingVenue {
     bool fail_fills = false;
     bool fail_balances = false;
     bool fail_cancel_all = false;
-    std::function<void()> before_get_fills;  // e.g. to hold a poll
+    std::function<void()> before_get_fills;      // e.g. to hold a poll
     std::vector<std::string> cancel_all_result;  // returned once
     // What CancelOrder answers; without it, kNotFound.
     std::optional<types::Result<trading::CancelOutcome>> cancel_result;
@@ -180,6 +183,8 @@ class RecordingVenue : public trading::TradingVenue {
     std::vector<types::OrderStatus> open_orders;
     std::vector<types::Fill> fills;
     std::map<std::string, types::OrderStatus> order_states;  // GetOrder
+    // GetOrder fails with this, if set; otherwise an unknown ID is kNotFound.
+    std::optional<types::ErrorCategory> get_order_error;
 
     int attempts = 0;
     int cancel_all_calls = 0;

@@ -18,10 +18,9 @@ Projects; the live checks are under In progress.
 
 1. ~~Live-safety fixes, Binance.US and `breakout`, and `breakout`
    `risk_fraction`~~ — done (see Done).
-2. `market_maker`: protection on a crossed, locked or one-sided book, a
-   reconcile for exits, and a `cancel_raced` that cannot stick
-   (Strategies). Not trading now (parked after the Nov
-   2026 replays), so these gate its next live run.
+2. ~~`market_maker`: protection on a crossed, locked or one-sided book, a
+   reconcile for exits, and a `cancel_raced` that cannot stick~~ — done (see
+   Done).
 3. CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
    stream code lands.
 4. Alerts when the kill switch trips, a stream stays down or a venue keeps
@@ -233,6 +232,16 @@ Sections in priority order: safety first, then what is in use.
       half_spread_bps=2,3,4,6` replaying the loaded quotes once per value and
       printing one table (summary and markouts), then tuning on one day and
       testing on the next. The sweeps so far were shell loops.
+- [ ] A random-entry baseline: `backtest` runs N copies of the strategy
+      whose entries are random (same exits, filters, side and number of
+      trades) and reports where the real result falls among them (its
+      percentile, and the random runs' median and spread). It tests whether
+      the entry adds anything beyond the exits, the filter and the market's
+      drift, for any strategy, where the comparisons so far were built by
+      hand (exposure-matched holding in the Turtle screen). From a Nov 2026
+      video that ran 36 TradingView indicators against 60 coin-flip traders
+      each: with a 200 EMA filter on daily bars the coin flips alone made a
+      profit factor of about 1.3
 - [ ] A pair scanner: rank a venue's pairs by the market spread against the
       one-minute volatility, trade rate, maker fee and tick size against the
       price. Market making pays where the spread is wide for how fast the
@@ -260,6 +269,13 @@ Sections in priority order: safety first, then what is in use.
       stop order instead of the check at the close
 - [ ] Position sizing helpers: volatility-targeted, for the strategies that
       do not size from equity yet
+- [ ] `breakout`: a chandelier trailing stop (`trail_atr`): on each close,
+      raise the stop to the highest close of the last `trail_bars` bars less
+      `trail_atr` ATRs (Chandelier Exit's defaults: 22 bars, 3 ATR), instead
+      of the lowest low. Low priority: test it on BTC daily against the
+      20/10 Turtle's `trail_bars = 10` (run 48's settings) before keeping
+      it. The same video found Chandelier Exit's edge was in its exit (its
+      entries moved one ATR the right way first 52% of the time)
 - [ ] Indicators: `Keltner`, `Adx`, `Supertrend` and `SessionVwap` in
       `patterns.hpp`
 - [ ] `ma_crossover` trades only on the bar of a cross. A cross that comes
@@ -298,27 +314,26 @@ Sections in priority order: safety first, then what is in use.
       unranked, so that rebalance is skipped. Count the lookback in bars on
       markets that close (24/7 crypto can keep time, which stops a gap
       lengthening it)
-- [ ] `market_maker`: an exit (a stop or cap closing the position at
-      market) reported filled whose fill never arrives keeps `mExit` set,
-      so both sides stay paused for good and the position is never booked.
-      Quotes have a reconcile path for missing fills
-      (`ReconcileUnconfirmed`); exits need one too
-- [ ] `market_maker`: a quote that is crossed, locked or missing a side
-      returns before `Protect`, so while the book stays that way resting
-      quotes are left in place and the stop loss, caps and stand-downs are
-      not checked. Pull the quotes and run the protection on the last good
-      mid
-- [ ] `market_maker`: a cancel answered `kAlreadyFilled` sets the quote's
-      `cancel_raced`, which only the order's closed update clears
-      (`OnOrderUpdate`). If the runner forgets the order instead (a
-      `GetOrder` answering `kNotFound`), the update never comes, `Pull` keeps
-      returning false, `PullAll` fails, and an exit is never sent: the stop
-      loss silently stops working. Clear it once its fills cover the order
-      or after a timeout
 - [ ] `mean_reversion`: the RSI exit at `overbought` cannot be turned off
       (it must be under 100), so Connors's RSI(2), which exits only at the
       5-day average, can only be approximated (`overbought = 90` or 99).
       Allow 0 (or 100) for no RSI exit
+- [ ] `market_maker`: an exit the venue answers `kNotFound` for, still not
+      settled after 30 minutes (`kSettleExitAfter`), is settled against
+      `mInventory` alone, taking the other fills outstanding as not filled.
+      A lost quote fill on the exit's side then reads as the exit's: if only
+      the quote filled, its balance move is booked under the exit's ID, and
+      if the quote's own fill arrives after all it counts a second time, so
+      the inventory ends below the venue's by that fill (and may read as a
+      short to exit). It needs a lost exit and a lost same-side quote fill
+      at once, both unknown to the venue for 30 minutes; the log reports
+      it. A fix would reconcile against the venue's fills (`GetFills`) for
+      the window rather than the balance, or hold the quote fill's ID as
+      settled too
+- [ ] `market_maker`: `ReconcileUnconfirmed` asks the venue about one
+      unconfirmed fill a quote, in key order, so on a book quoting less than
+      once a minute per outstanding fill the later ones wait (the active
+      exit has its own lookup)
 
 #### Market maker
 Every item here is done (Nov 2026; see Done). The Nov 2026 replays found
@@ -1185,6 +1200,23 @@ the header of the code concerned.
       an optional `allocation` cap; an entry costs at most 99% of the
       balance, leaving room for costs) sizes entries from the quote asset's
       available balance. Reversals are sized from the stop's fill price.
+- [x] `market_maker` live-safety fixes: a crossed, locked or one-sided quote
+      pulls resting quotes at once and runs `Protect` on the last good mid
+      (using a one-sided book's live closing side for `stop_loss`, without
+      pushing stale mids onto the move history); market exits exclude
+      unconfirmed closing fills, reconcile missing fills and missed closing
+      updates through `ReconcileUnconfirmed` (falling back to `GetBalances`
+      past the fill horizon when `GetOrder` no longer finds the exit), and
+      immediately exit any unfilled remainder of a part-filled exit; and
+      `cancel_raced` clears once an order's fills cover its size or after a
+      60 s timeout (handing any unseen remainder to `ReconcileUnconfirmed`), so
+      an order the runner forgot after `GetOrder` answered `kNotFound` cannot
+      block the stop loss. A quote or exit the venue answers `kNotFound` for
+      is settled from the base balance after 11 minutes, only when the other
+      fills outstanding cannot change the answer (an exit waits at most 30
+      minutes, then is settled against what is held alone); other lookup
+      errors settle nothing, so a working exit is never cleared (Nov 2026,
+      after Gemini's version was reviewed)
 
 ### Bar patterns
 - [x] `strategy/patterns.hpp`: `Range`, `IsNarrowRange` (NR4 and the like),
