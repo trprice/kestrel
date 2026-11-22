@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -554,7 +555,8 @@ class DailyBarPoller final : public Subscription {
             }
             for (const types::Bar& bar : *bars) {
                 if (bar.open_time > last) {
-                    mCallback(symbol, types::Timeframe::kD1, bar);
+                    CallGuarded("schwab: daily bar callback", mCallback, symbol,
+                                types::Timeframe::kD1, bar);
                     last = bar.open_time;
                 }
             }

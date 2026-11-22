@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -169,11 +170,7 @@ void BinanceUSQuoteStream::OnMessage(const std::string& text) {
         return;
     }
     for (const auto& quote : mMerger.Apply(*parsed, types::Now())) {
-        try {
-            mCallback(quote);
-        } catch (const std::exception& e) {
-            spdlog::error("binanceus ws: quote callback threw: {}", e.what());
-        }
+        CallGuarded("binanceus ws: quote callback", mCallback, quote);
     }
 }
 

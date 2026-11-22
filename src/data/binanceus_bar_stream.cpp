@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -142,11 +143,8 @@ void BinanceUSBarStream::OnMessage(const std::string& text) {
     if (!bar) {
         return;
     }
-    try {
-        mCallback(bar->first, mTimeframe, bar->second);
-    } catch (const std::exception& e) {
-        spdlog::error("binanceus ws: bar callback threw: {}", e.what());
-    }
+    CallGuarded("binanceus ws: bar callback", mCallback, bar->first, mTimeframe,
+                bar->second);
 }
 
 }  // namespace kestrel::data

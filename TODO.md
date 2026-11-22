@@ -13,30 +13,28 @@ the reference sections, Known limitations and Done.
 ## Priorities
 
 From the Nov 20 2026 reviews of this list (GLM-5.3, then Gemini, checked
-against the code by Claude). Each step's details are in its item under
-Projects; the live checks are under In progress.
+against the code by Claude), renumbered on Nov 22 once the first three and
+half of the sixth were done (see Done). Each step's details are in its item
+under Projects; the live checks are under In progress.
 
-1. ~~Live-safety fixes, Binance.US and `breakout`, and `breakout`
-   `risk_fraction`~~ — done (see Done).
-2. ~~`market_maker`: protection on a crossed, locked or one-sided book, a
-   reconcile for exits, and a `cancel_raced` that cannot stick~~ — done (see
-   Done).
-3. ~~CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
-   stream code lands~~ — done (see Done).
-4. Alerts when the kill switch trips, a stream stays down or a venue keeps
-   failing, e.g. expired authorization (Operations). Before any live run is
-   left unattended.
-5. The real-account checks for Kraken and Schwab, then `live_trading` on by
+1. Alerts (Operations): error-level log lines pushed to a phone, a
+   heartbeat that catches a dead process, and error lines for a stream down
+   too long or an authorization that expired. Before any live run is left
+   unattended.
+2. The real-account checks for Kraken and Schwab, then `live_trading` on by
    default (In progress), when live trading there is planned.
-6. Shared unknown-outcome recovery and a stream-callback guard, a WebSocket
-   host shared within Binance.US only, and the small engineering items
-   (Engineering); then pushed executions: Binance.US first, then Schwab
-   `ACCT_ACTIVITY` and Kraken `executions` (Venues, In progress).
-7. Kestrel's order IDs recorded per run (Operations), then quote retention
-   by venue, after the `Migrate()` failure tests, and continuous crypto
-   recording (Operations).
-8. Research: backtest-against-live checks, `backtest --sweep`, the pair
-   scanner (Backtesting and research).
+3. Binance.US pushed executions: its user-data stream (Venues), on a
+   WebSocket host shared by its bar, quote and user-data streams, built
+   first.
+4. Schwab pushed executions: `ACCT_ACTIVITY` (Venues).
+5. Kraken pushed executions: the v2 `executions` channel (In progress).
+6. The small engineering items (Engineering), each on its own.
+7. Kestrel's order IDs recorded per run (Operations).
+8. The `Migrate()` failure tests (Engineering), then quote retention by venue
+   (Operations).
+9. Continuous crypto recording (Operations), once retention is in.
+10. Research: backtest-against-live checks, `backtest --sweep`, the pair
+    scanner (Backtesting and research).
 
 Not now: new strategies, the indicator backlog, MSVC, paper shorting fees.
 
@@ -55,12 +53,15 @@ and what the live API showed beyond Schwab's documents, is in
       defensive (see Done); renewals work, and do not rotate the refresh
       token, so the 7 days still run from `authorize`.
 - [ ] Finish checking the trading venue on a real account (what the Nov 13
-      check covered is under Done), then default `[schwab] live_trading` on:
-      a resting limit and a stop placed (not only previewed) and cancelled,
-      `cancel --all` leaving an order on another symbol alone, an ETF bought
-      (previewOrder accepted SCHB sent as `EQUITY`), an OCO's legs cancelling each other (`order` cannot
-      place one; `breakout` with `resting_target` can), and a margin
-      account's balance fields.
+      check covered is under Done), then default `[schwab] live_trading` on.
+      Still to check:
+      - a resting limit and a stop placed (not only previewed) and
+        cancelled;
+      - `cancel --all` leaving an order on another symbol alone;
+      - an ETF bought (previewOrder accepted SCHB sent as `EQUITY`);
+      - an OCO's legs cancelling each other (`order` cannot place one;
+        `breakout` with `resting_target` can);
+      - a margin account's balance fields.
 
 ### Kraken trading venue
 
@@ -75,20 +76,25 @@ for `order --test`, `CancelOrder`, symbol-scoped `CancelAll`, `OpenOrders`,
       `with_cursor=true` and `TradeVolume` with `pair` in the `BTC/USD` form
       all answered. The account was empty (no balances, no orders, no fills in
       30 days), so no balance, order or fill rows were parsed.
-- [ ] The rest of the real-account check: `order --test` including `pair =
-      "BTC/USD"` and `timeinforce = "FOK"`, a small resting limit placed and
-      cancelled, a stop and a sell through `order --test` (both carry
-      `oflags=fciq`), a crossing `post_only` limit, a fill read back through
-      `TradesHistory`, and `BalanceEx` with balances (and Kraken Rewards `.F`
-      ones if used); then default `[kraken] live_trading` on.
+- [ ] The rest of the real-account check, then default `[kraken]
+      live_trading` on:
+      - `order --test` including `pair = "BTC/USD"` and `timeinforce =
+        "FOK"`;
+      - a small resting limit placed and cancelled;
+      - a stop and a sell through `order --test` (both carry
+        `oflags=fciq`);
+      - a crossing `post_only` limit;
+      - a fill read back through `TradesHistory`;
+      - `BalanceEx` with balances (and Kraken Rewards `.F` ones if used);
+      - what a real cancel returns, for the `pending: true` item below.
 - [ ] `CancelOrder` answers `kCancelled` when Kraken replies `pending: true`
       (kraken_trading_venue.cpp, `CancelOrder`), though the order may still
       be open and fill; the runner, the risk gate and `market_maker` then
       treat it as gone. Confirm with `GetOrder` (or answer that it is not
-      settled yet) before live trading, and see what a real cancel returns.
-      Also: the unknown-outcome lookup reads only the first page of
-      `ClosedOrders` (it misses only past 50 orders closed in its 5-minute
-      window).
+      settled yet) before live trading.
+- [ ] The unknown-outcome lookup reads only the first page of
+      `ClosedOrders`, so it misses an order only past 50 closed in its
+      5-minute window: page with `ofs` if a strategy ever closes that many.
 - [ ] Kraken WebSocket v2 `executions` channel behind
       `KrakenTradingVenue::StreamExecutions`, so fills and order changes are
       pushed instead of polled every 15 s.
@@ -110,17 +116,29 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Order-side latency: order acknowledgement, cancel acknowledgement, time
       until a fill shows in `GetFills`, and the venue's clock against ours,
       stored beside `venue_latency`.
+- [ ] Binance.US: a WebSocket host for its streams, built first for the
+      user-data stream below. The bar and quote streams
+      (`binanceus_bar_stream.cpp`, `binanceus_quote_stream.cpp`) each own an
+      `ix::WebSocket` with the same combined-stream URL, ping, reconnect
+      backoff, message switch and `{"stream", "data"}` unwrapping; the
+      user-data stream would be a third copy. One class would own the socket,
+      route messages by stream name, call callbacks through
+      `data::CallGuarded`, and count reconnects for health checks. Share the
+      code, not necessarily the connection: one socket for everything means
+      one drop takes down bars and quotes together, and the user-data URL
+      changes with each new listen key. Within Binance.US only: Kraken's v2
+      channels and Schwab's one streamer connection share little with it.
 - [ ] Binance.US user-data stream behind `StreamExecutions`: listen key from
       the API key (no new credentials), keepalive about every 30 minutes,
       `executionReport` to fills and order states, a REST catch-up after a
       reconnect, and the event time against ours for the fill-visibility
       latency. Check the current Binance.US docs first: Binance.com has been
-      moving from listen keys to a WebSocket API subscription. Until it lands
-      the venue is polled, and polling `GetFills` (weight 20 with a symbol,
-      since Jul 30 2026) and `GetOpenOrders` (weight 3) every second uses
-      about 1,380 of the 2400 weight per minute the client keeps to, per
-      symbol, so a live run on two or more symbols needs a longer
-      `fill_poll_interval`.
+      moving from listen keys to a WebSocket API subscription.
+      - Why: until it lands the venue is polled, and polling `GetFills`
+        (weight 20 with a symbol, since Jul 30 2026) and `GetOpenOrders`
+        (weight 3) every second uses about 1,380 of the 2400 weight per
+        minute the client keeps to, per symbol, so a live run on two or
+        more symbols needs a longer `fill_poll_interval`.
 - [ ] A stop-limit order type, if a venue needs one.
 - [ ] `RateLimiter::Penalize` with a hold, to honour `Retry-After`.
 
@@ -148,7 +166,8 @@ Sections in priority order: safety first, then what is in use.
         recorded crypto quotes is enough.
       - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever (small).
         `venue_latency`: keep 1 year, then review (about 1 MB a day live).
-      - Add a check that warns at startup when the disk is nearly full.
+- [ ] Warn at startup (and in the alerts) when the database's disk is nearly
+      full.
 - [ ] Use `account_fills` for the cost basis of what the account holds at the
       start of a run, so selling a starting holding realizes a real profit or
       loss instead of the whole sale price (the 8 hour run's phantom
@@ -163,64 +182,80 @@ Sections in priority order: safety first, then what is in use.
       order IDs, so `account_fills.client_order_id` is always empty. Record
       the exchange order ID of every order Kestrel places, with its run (and
       make the tag the run ID), so `account_fills` can be joined on
-      `order_id`. Older history can be backfilled once by looking each order
-      up (weight 4 each, about 800 for the 197 orders stored so far). The
-      startup cancel does not need this: it clears every open order on the
-      configured symbols by design (see docs/running.md, "One trader per
-      account").
+      `order_id`. The startup cancel does not need this: it clears every
+      open order on the configured symbols by design (see docs/running.md,
+      "One trader per account").
+- [ ] Then backfill the order IDs of older history once, by looking each
+      order up (weight 4 each, about 800 for the 197 orders stored so far).
 - [ ] Persist orders and strategy decisions to the database (fills and P&L
       snapshots are recorded with `[recording]`; see `RunRecorder`). Store
       Kestrel's own orders with their final state, not the venue's whole order
       history: a market maker cancels most of what it places (about 125k
       orders a day at the paper run's pace), which would outgrow `quotes`.
-- [ ] Alerts (email, webhook or push) when the kill switch trips, a stream
-      stays down, or a venue keeps failing (an authorization that expired
-      mid-run leaves the process up but unable to trade, with only repeated
-      warnings in its log)
+- [ ] Alerts: error-level log lines pushed to a phone. An spdlog sink at
+      error level queues each line, and a background thread POSTs it to a
+      URL from the secrets file (an [ntfy](https://ntfy.sh) topic, whose
+      name is the password; a Discord or Slack webhook or Pushover would do
+      as well). It must never block the strategy's thread (a bounded queue
+      that drops), sends the same line at most once every few minutes, and
+      masks account hashes and balances before they leave the machine. The
+      kill switch, refusals and halts already log errors.
+- [ ] Alerts: a heartbeat. Ping a dead-man's-switch URL (healthchecks.io, or
+      ntfy with a cron check) every few minutes, so a crash, an OOM kill or
+      a VM restart, which log nothing, is noticed when the pings stop.
+- [ ] Alerts: error lines for what only warns today. A stream down longer
+      than a threshold (say 5 minutes), and an authorization that expired
+      mid-run (it leaves the process up but unable to trade, with only
+      repeated warnings in its log), log one error each, so the sink above
+      sends them.
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
 - [ ] Run several strategies in one process, sharing data subscriptions
 - [ ] Quote `seq` is numbered per process: two recorders of one symbol
       interleave. Check the stored maximum at each flush, or number in SQL.
-- [ ] **GitHub releases and a run-environment container.** The current
-      `Dockerfile` is a testbed (`kestrel-entrypoint` compiles `/src` from
-      scratch on each `docker run`, runs `ctest` against `kestrel_test` and
-      exits; mounting a persistent volume over PostgreSQL's data directory
-      hides the cluster created at build time, and Ubuntu's
-      `postgresql-18-timescaledb` lacks compression). Make running Kestrel in
-      a container straightforward without compiling C++:
-      - **GitHub release workflow** (`.github/workflows/release.yml` on `v*`
-        tags): run the test suite, build the stripped Ubuntu 26.04 Release
+- [ ] **GitHub release workflow** (`.github/workflows/release.yml` on `v*`
+      tags), so Kestrel can be run without compiling C++:
+      - run the test suite and build the stripped Ubuntu 26.04 Release
         `kestrel_app` (as `ci.yml` already does for short-lived workflow
-        artifacts), and publish a versioned tarball plus `SHA256SUMS` to
-        GitHub Releases. Bundle everything a person or AI agent needs to
-        configure, verify and run Kestrel without cloning the source tree:
-        `kestrel_app`, `README.md`, `docs/` (configuration, venues,
-        strategies, database, running, strategy-tests), `config/*.example.toml`
-        (including `secrets.example.toml`), `scripts/setup_database.sh`, the
-        run-container files, and a short operator/agent setup guide covering
-        directory layout, environment variables, one-shot vs long-running
-        commands (`init-db`, `authorize`, `bars --store`, `databento`,
-        `backtest`, `run`), and live-trading prerequisites (`[risk]`,
-        `live_trading = true`).
-      - **Run-environment `Dockerfile`** (e.g. `docker/Dockerfile.run` and
-        entrypoint, plus an optional `docker-compose.yml`): start from Ubuntu
-        26.04 (matching the release binary's shared-library ABI in
-        `docs/running.md`), install only the runtime packages (`ca-certificates`,
-        `tzdata`, `curl`, `libcpr1`, `libpq5`, `libspdlog1.15`, `libfmt10`,
+        artifacts);
+      - publish a versioned tarball plus `SHA256SUMS` to GitHub Releases;
+      - bundle everything a person or AI agent needs to configure, verify
+        and run Kestrel without cloning the source tree: `kestrel_app`,
+        `README.md`, `docs/` (configuration, venues, strategies, database,
+        running, strategy-tests), `config/*.example.toml` (including
+        `secrets.example.toml`), `scripts/setup_database.sh` and the
+        run-container files;
+      - with a short operator/agent setup guide: directory layout,
+        environment variables, one-shot against long-running commands
+        (`init-db`, `authorize`, `bars --store`, `databento`, `backtest`,
+        `run`), and live-trading prerequisites (`[risk]`, `live_trading =
+        true`).
+- [ ] **Run-environment `Dockerfile`**, after the release workflow. The
+      current `Dockerfile` is a testbed: `kestrel-entrypoint` compiles
+      `/src` from scratch on each `docker run`, runs `ctest` against
+      `kestrel_test` and exits; mounting a persistent volume over
+      PostgreSQL's data directory hides the cluster created at build time;
+      and Ubuntu's `postgresql-18-timescaledb` lacks compression. A second
+      one (e.g. `docker/Dockerfile.run` and entrypoint, plus an optional
+      `docker-compose.yml`) would:
+      - start from Ubuntu 26.04, matching the release binary's
+        shared-library ABI in `docs/running.md`;
+      - install only the runtime packages (`ca-certificates`, `tzdata`,
+        `curl`, `libcpr1`, `libpq5`, `libspdlog1.15`, `libfmt10`,
         `libtomlplusplus3t64`, `libssl3t64`, `zlib1g`) plus PostgreSQL 18 and
         TimescaleDB (Timescale's community package with compression once
-        published for 26.04, falling back to Ubuntu's Apache build until then),
-        and fetch and SHA-256-verify the GitHub release archive into
-        `/opt/kestrel` (`ARG KESTREL_VERSION`). On first start with an empty
-        data volume, the entrypoint should initialize the PostgreSQL cluster
-        with `shared_preload_libraries = 'timescaledb'`, start it, run
-        `setup_database.sh` and `kestrel_app init-db` for the `kestrel` role
-        and database (unless pointed at an external `[database] host`), run
-        `kestrel_app` as a non-root user against mounted `/config` (writable
-        for Schwab's renewed `tokens.json`), and forward `SIGINT`/`SIGTERM` so
-        `kestrel_app` cancels resting orders and flushes `RunRecorder` before
-        PostgreSQL stops.
+        published for 26.04, Ubuntu's Apache build until then);
+      - fetch and SHA-256-verify the GitHub release archive into
+        `/opt/kestrel` (`ARG KESTREL_VERSION`);
+      - on first start with an empty data volume, initialize the PostgreSQL
+        cluster with `shared_preload_libraries = 'timescaledb'`, start it,
+        and run `setup_database.sh` and `kestrel_app init-db` for the
+        `kestrel` role and database (unless pointed at an external
+        `[database] host`);
+      - run `kestrel_app` as a non-root user against a mounted `/config`
+        (writable for Schwab's renewed `tokens.json`), and forward
+        `SIGINT`/`SIGTERM` so it cancels resting orders and flushes
+        `RunRecorder` before PostgreSQL stops.
 
 ### Backtesting and research
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
@@ -341,37 +376,35 @@ none of them an edge on ZEC/USDT: every setting lost to holding over the
 four recorded days. Check a change's markouts, not only "vs hold".
 
 ### Engineering
-- [ ] From the Nov 2026 project review, not yet done:
-  - Value BNB (and other third-asset) fees at their price, not 1:1 with
-    the quote asset.
-  - Paper venue: a buy-stop reserves `stop_price` × (1 + slippage) but
-    fills at the ask, so one that gaps through its trigger by more than the
-    free balance covers is cancelled at fill time ("insufficient funds at
-    fill time") rather than filled: an entry is lost, or a short's
-    protective stop is dropped. `breakout` with `risk_fraction` spends up to
-    99% of the balance, so a gap of about 1% is enough (likely on equity
-    opens, rare on crypto quotes). Reserve for the gap or fill what the
-    balance covers; and a helper for the lock/ProcessPending/ExpireDayOrders prologue its public
-    methods repeat.
-  - Share the unknown-outcome recovery (look the order up by client ID)
-    across `PlaceOrder` and `PlaceOco` and the three live venues, using
-    `Error::MayHaveTakenEffect()`.
-  - Binance.US: a shared WebSocket host for its bar, quote and (later)
-    user-data streams. Within Binance.US only: Kraken's v2 channels and
-    Schwab's one streamer connection share little with it.
-  - Stream callbacks: each stream (Kraken and Binance.US quotes, the
-    Binance.US bar stream, Schwab's streamer) wraps its own dispatch in a
-    `catch (const std::exception&)`, so nothing makes a new stream do the
-    same, and a throw of anything else still reaches the socket thread
-    (the paper venue's `Deliver` also catches `...`). Wrap them once in
-    the shared dispatch.
-  - Kraken's quote stream: a silence watchdog like Schwab's.
-  - `MakeTimedHttpClient` builds a connection pool per call.
-  - `Secrets()` reads the secrets file twice per load.
-  - `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
-    through.
-  - `RunBacktest`: build the timeline in a function of its own.
-  - Tests: `types/time.cpp` round trips, `Migrate()` failures.
+From the Nov 2026 project review:
+- [ ] Value BNB (and other third-asset) fees at their price, not 1:1 with
+      the quote asset.
+- [ ] Paper venue: a buy-stop reserves `stop_price` × (1 + slippage) but
+      fills at the ask, so one that gaps through its trigger by more than
+      the free balance covers is cancelled at fill time ("insufficient
+      funds at fill time") rather than filled: an entry is lost, or a
+      short's protective stop is dropped. `breakout` with `risk_fraction`
+      spends up to 99% of the balance, so a gap of about 1% is enough
+      (likely on equity opens, rare on crypto quotes). Reserve for the gap,
+      or fill what the balance covers.
+- [ ] Paper venue: a helper for the lock / `ProcessPending` /
+      `ExpireDayOrders` prologue its public methods repeat.
+- [ ] Stream callbacks: every dispatch site calls `data::CallGuarded`, but
+      nothing makes a new stream do so. The Binance.US WebSocket host
+      (Venues) can call it for its streams, or `QuoteCallback` /
+      `BarCallback` / `ExecutionCallback` could become a type whose call
+      cannot throw.
+- [ ] Kraken's quote stream: a silence watchdog like Schwab's.
+- [ ] `MakeTimedHttpClient` builds a connection pool per call.
+- [ ] `Secrets()` reads the secrets file twice per load.
+- [ ] `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
+      through.
+- [ ] `RunBacktest`: build the timeline in a function of its own.
+- [ ] Tests: `types/time.cpp` round trips.
+- [ ] Tests: `Migrate()`'s failure paths, before quote retention
+      (Operations) deletes anything.
+
+Other engineering:
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.
@@ -795,6 +828,18 @@ the header of the code concerned.
 ## Done
 
 ### Overall
+- [x] Stream callbacks are called through one guard, `data::CallGuarded`
+      (`data/guarded_callback.hpp`), which logs and swallows anything they
+      throw, not only a `std::exception`: Kraken's and Binance.US's quote
+      streams, Binance.US's bar stream, Schwab's streamer, the paper venue's
+      executions, and Schwab's daily-bar poller, whose callback was not
+      guarded at all (a throw there ended the process) (Nov 22 2026)
+- [x] Unknown-outcome recovery by client ID shared: `LookUpPlaced` and
+      `NoteLookup` (`trading/order_recovery.hpp`) do the rounds of lookups
+      and the error's wording for Binance.US's `PlaceOrder` and `PlaceOco`
+      and Kraken's `PlaceOrder`. Schwab takes no client ID and matches
+      recent orders by content, so it keeps its own; all three decide
+      through `Error::MayHaveTakenEffect()` (Nov 22 2026)
 - [x] Timeframe lists checked against Kraken's and Binance.US's docs (Nov 21
       2026 review): Kraken OHLC 1, 5, 15, 30, 60, 240, 1440, 10080 and 21600
       minutes; Binance.US klines 1m to 1M, without Binance.com's 1s

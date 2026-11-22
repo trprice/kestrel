@@ -864,6 +864,36 @@ TEST(BinanceUSOrders, APlacedOcoWhoseLegsCannotBeReadIsCancelled) {
     EXPECT_EQ(f.http->To("/api/v3/orderList").size(), 1u);
 }
 
+// A 2xx whose reports leave out a leg: only that leg is looked up, and
+// again after a pause if it does not show at once, rather than the pair
+// being cancelled.
+TEST(BinanceUSOrders, APlacedOcoLooksAgainForALegItsAnswerLeftOut) {
+    Fixture f;
+    auto venue = f.Venue();
+    f.http->Push("/api/v3/order/oco",
+                 "{\"orderListId\":3,\"transactionTime\":1700000000123,"
+                 "\"orderReports\":[" +
+                     Order("ZECUSDT", 12, "NEW", "LIMIT_MAKER", "SELL",
+                           "750.00", "0.010", "0", "0") +
+                     "]}");
+    f.http->PushStatus("/api/v3/order", 400,
+                       "{\"code\":-2013,\"msg\":\"Order does not exist.\"}");
+    f.http->Push("/api/v3/order",
+                 Order("ZECUSDT", 11, "NEW", "STOP_LOSS", "SELL", "0.00",
+                       "0.010", "0", "0", "650.00"));
+    auto ack = venue->PlaceOco(SellOco("0.01", "750", "650"));
+    ASSERT_OK(ack);
+    EXPECT_EQ(ack->limit.order_id, "12");
+    EXPECT_EQ(ack->stop.order_id, "11");
+    const auto looked = f.http->To("/api/v3/order");
+    ASSERT_EQ(looked.size(), 2u);  // the stop, twice; not the limit
+    EXPECT_EQ(QueryValue(looked[0].raw_query, "origClientOrderId"),
+              QueryValue(f.http->To("/api/v3/order/oco")[0].raw_query,
+                         "stopClientOrderId"));
+    EXPECT_EQ(f.sleeps.size(), 1u);
+    EXPECT_TRUE(f.http->To("/api/v3/orderList").empty());  // not cancelled
+}
+
 TEST(BinanceUSOrders, A2xxOcoAndCancelWithTruncatedBodiesLookUpState) {
     Fixture f;
     auto venue = f.Venue();

@@ -92,6 +92,7 @@ add_library(kestrel
   src/db/strategy_state_store.cpp
   src/db/trade_store.cpp
   src/trading/order_rules.cpp
+  src/trading/order_recovery.cpp
   src/trading/pnl_tracker.cpp
   src/trading/risk_gate.cpp
   src/trading/session_gated_venue.cpp
@@ -269,6 +270,8 @@ if(KESTREL_BUILD_TESTS)
     tests/single_order_position_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp
+    tests/guarded_callback_test.cpp
+    tests/order_recovery_test.cpp
     tests/logging_setup.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)

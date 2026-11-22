@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -920,12 +921,8 @@ void SchwabStreamer::OnQuotes(std::uint64_t generation, const json& content) {
             if (!consumer->keys.contains(keyed.key)) {
                 continue;
             }
-            try {
-                consumer->on_quote(keyed.quote);
-            } catch (const std::exception& e) {
-                spdlog::error("schwab streamer: quote callback threw: {}",
-                              e.what());
-            }
+            CallGuarded("schwab streamer: quote callback", consumer->on_quote,
+                        keyed.quote);
         }
     }
 }
@@ -956,12 +953,8 @@ void SchwabStreamer::OnBars(std::uint64_t generation, const json& content) {
                 continue;
             }
             for (const auto& bar : aggregator->second.Add(keyed.bar)) {
-                try {
-                    consumer->on_bar(*symbol, consumer->timeframe, bar);
-                } catch (const std::exception& e) {
-                    spdlog::error("schwab streamer: bar callback threw: {}",
-                                  e.what());
-                }
+                CallGuarded("schwab streamer: bar callback", consumer->on_bar,
+                            *symbol, consumer->timeframe, bar);
             }
         }
     }

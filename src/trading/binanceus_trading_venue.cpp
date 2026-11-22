@@ -8,6 +8,7 @@
 
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/net/timed_http_client.hpp"
+#include "kestrel/trading/order_recovery.hpp"
 #include "kestrel/trading/order_rules.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -25,13 +26,15 @@ constexpr int kAccountWeight = 10;
 constexpr int kOpenOrdersWeight = 3;  // with a symbol
 constexpr int kOrderWeight = 4;
 constexpr int kMyTradesWeight = 20;  // with a symbol, since Jul 30 2026
-constexpr int kNewOrderWeight = 1;  // also the test endpoint
+constexpr int kNewOrderWeight = 1;   // also the test endpoint
 constexpr int kCancelWeight = 1;
 constexpr int kCancelAllWeight = 1;  // with a symbol
 
 // How long to wait before the second look for an order whose placement or
 // cancel ended without a clear answer.
 constexpr auto kLookupPause = std::chrono::seconds(1);
+// Rounds of lookups by client ID after an unknown outcome.
+constexpr int kLookups = 2;
 
 // How many order -> symbol entries are kept. A market maker places tens of
 // thousands of orders a day; an order that has dropped out is still found, by
@@ -508,31 +511,19 @@ Result<types::OrderAcknowledgement> BinanceUSTradingVenue::PlaceOrder(
                  body ? "returned an unreadable 2xx response"
                       : "ended without an answer",
                  send_error->ToString());
-    std::optional<types::Error> lookup_failure;
-    for (int look = 0; look < 2; ++look) {
-        if (look > 0) {
-            mSleep(kLookupPause);
-        }
-        auto found = LookupClientOrder(native, client_id);
-        if (found) {
-            // Its creation time is the transactTime a direct answer would have
-            // carried.
-            return types::OrderAcknowledgement{
-                found->order_id, found->client_order_id, found->state,
-                found->created_time};
-        }
-        if (found.error().category != ErrorCategory::kNotFound) {
-            lookup_failure = found.error();
-            break;
-        }
+    auto looked = LookUpPlaced(
+        {client_id},
+        [&](const std::string& id) { return LookupClientOrder(native, id); },
+        kLookups, [&] { mSleep(kLookupPause); });
+    if (const auto& found = looked.found[0]) {
+        // Its creation time is the transactTime a direct answer would have
+        // carried.
+        return types::OrderAcknowledgement{found->order_id,
+                                           found->client_order_id, found->state,
+                                           found->created_time};
     }
     types::Error error = std::move(*send_error);
-    error.message +=
-        lookup_failure
-            ? " (order " + client_id + " could not be looked up either: " +
-                  lookup_failure->ToString() + "; it may exist)"
-            : " (order " + client_id +
-                  " was not found afterwards, but may still appear)";
+    NoteLookup(error, "order " + client_id, looked.failure);
     return std::unexpected(std::move(error));
 }
 
@@ -643,29 +634,16 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
             "binanceus: placing OCO {} ended without an answer ({}); looking "
             "up its legs",
             list_id, body.error().ToString());
-        std::optional<types::Error> lookup_failure;
-        std::optional<types::OrderStatus> found[2];
-        const std::string* ids[2] = {&limit_id, &stop_id};
-        for (int look = 0; look < 2 && !lookup_failure; ++look) {
-            if (look > 0) {
-                mSleep(kLookupPause);
-            }
-            for (int leg = 0; leg < 2; ++leg) {
-                if (found[leg]) {
-                    continue;
-                }
-                auto order = LookupClientOrder(native, *ids[leg]);
-                if (order) {
-                    found[leg] = *order;
-                } else if (order.error().category != ErrorCategory::kNotFound) {
-                    lookup_failure = order.error();
-                    break;
-                }
-            }
-            if (found[0] && found[1]) {
-                return types::OcoAcknowledgement{AckOf(*found[0]),
-                                                 AckOf(*found[1])};
-            }
+        auto looked = LookUpPlaced(
+            {limit_id, stop_id},
+            [&](const std::string& id) {
+                return LookupClientOrder(native, id);
+            },
+            kLookups, [&] { mSleep(kLookupPause); });
+        const auto& found = looked.found;
+        if (looked.AllFound()) {
+            return types::OcoAcknowledgement{AckOf(*found[0]),
+                                             AckOf(*found[1])};
         }
         types::Error error = body.error();
         if (found[0] || found[1]) {
@@ -678,12 +656,7 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
                              " rests, but the other leg could not be found; " +
                              CancelList(native, list_id) + ")";
         } else {
-            error.message +=
-                lookup_failure
-                    ? " (OCO " + list_id + " could not be looked up either: " +
-                          lookup_failure->ToString() + "; it may exist)"
-                    : " (OCO " + list_id +
-                          " was not found afterwards, but may still appear)";
+            NoteLookup(error, "OCO " + list_id, looked.failure);
         }
         return std::unexpected(std::move(error));
     }
@@ -705,11 +678,29 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
         }
     }
     if (!limit || !stop) {
-        // Placed, but the answer is not one we can read: find the legs.
+        // Placed, but the answer is not one we can read: find the legs it
+        // did not report, as after an unknown outcome (a leg can take a
+        // moment to show).
         spdlog::warn("binanceus: OCO {} placed; looking up its legs", list_id);
-        auto found_limit = LookupClientOrder(native, limit_id);
-        auto found_stop = LookupClientOrder(native, stop_id);
-        if (!found_limit || !found_stop) {
+        std::vector<std::string> missing;
+        if (!limit) {
+            missing.push_back(limit_id);
+        }
+        if (!stop) {
+            missing.push_back(stop_id);
+        }
+        auto looked = LookUpPlaced(
+            missing,
+            [&](const std::string& id) {
+                return LookupClientOrder(native, id);
+            },
+            kLookups, [&] { mSleep(kLookupPause); });
+        for (std::size_t i = 0; i < missing.size(); ++i) {
+            if (looked.found[i]) {
+                (missing[i] == limit_id ? limit : stop) = *looked.found[i];
+            }
+        }
+        if (!limit || !stop) {
             // Not tracked without both legs: take it down. kServer tells the
             // caller the pair may still rest if the cancel failed, so a
             // strategy reconciles GetOpenOrders before placing again.
@@ -719,8 +710,6 @@ Result<types::OcoAcknowledgement> BinanceUSTradingVenue::PlaceOco(
                     " was placed but its legs could not be read; " +
                     CancelList(native, list_id));
         }
-        limit = *found_limit;
-        stop = *found_stop;
     }
     types::OcoAcknowledgement ack{AckOf(*limit), AckOf(*stop)};
     if (auto time = IntegerMember(*body, "transactionTime"); time) {

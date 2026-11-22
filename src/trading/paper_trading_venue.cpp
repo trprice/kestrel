@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <utility>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/trading/order_rules.hpp"
 
 namespace kestrel::trading {
@@ -201,13 +202,7 @@ void PaperTradingVenue::Deliver() {
     }
     for (const ExecutionUpdate& update : batch) {
         for (const auto& [id, callback] : mListeners->callbacks) {
-            try {
-                callback(update);
-            } catch (const std::exception& e) {
-                spdlog::error("paper: execution callback threw: {}", e.what());
-            } catch (...) {
-                spdlog::error("paper: execution callback threw unknown error");
-            }
+            data::CallGuarded("paper: execution callback", callback, update);
         }
     }
 }

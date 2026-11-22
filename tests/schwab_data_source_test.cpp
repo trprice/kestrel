@@ -686,6 +686,32 @@ TEST_F(SchwabDailyBarsTest, ADaysBarIsFetchedOnceTheDayHasEnded) {
     EXPECT_EQ(asked[0].query.at("frequencyType"), "daily");
 }
 
+// A callback that throws (it must not) is logged, and the poller's thread
+// carries on rather than ending the process: the next symbol's bar still
+// arrives.
+TEST_F(SchwabDailyBarsTest, ACallbackThatThrowsDoesNotStopThePoller) {
+    ReplyDaily([] {
+        return std::vector{Candle("2026-11-04T06:00:00Z", "101"),
+                           Candle("2026-11-05T06:00:00Z", "102")};
+    });
+    auto source = DailySource(At("2026-11-05T23:59:59.900Z"));
+    auto collect = Collect();
+    auto sub =
+        source.StreamBars({"SPY", "XLF"}, Timeframe::kD1,
+                          [collect](const types::Symbol& symbol, Timeframe tf,
+                                    const types::Bar& bar) {
+                              if (symbol == "SPY") {
+                                  throw 42;  // not even a std::exception
+                              }
+                              collect(symbol, tf, bar);
+                          });
+    ASSERT_OK(sub);
+    ASSERT_TRUE(WaitFor([&] { return BarCount() >= 1; }));
+    (*sub)->Stop();
+    ASSERT_EQ(mBars.size(), 1u);
+    EXPECT_EQ(mBars[0].first, "XLF");
+}
+
 TEST_F(SchwabDailyBarsTest, ALateBarIsAskedForAgainUntilItComes) {
     std::atomic<int> answers{0};
     ReplyDaily([&answers] {

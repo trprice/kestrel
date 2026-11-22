@@ -3,6 +3,7 @@
 #include <ixwebsocket/IXWebSocket.h>
 #include <spdlog/spdlog.h>
 
+#include "kestrel/data/guarded_callback.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/util/json.hpp"
 
@@ -161,11 +162,7 @@ void KrakenQuoteStream::OnMessage(const std::string& text) {
         return;
     }
     for (const auto& quote : mMerger.Apply(msg, types::Now())) {
-        try {
-            mCallback(quote);
-        } catch (const std::exception& e) {
-            spdlog::error("kraken ws: quote callback threw: {}", e.what());
-        }
+        CallGuarded("kraken ws: quote callback", mCallback, quote);
     }
 }
 

@@ -9,6 +9,7 @@
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/symbols.hpp"
 #include "kestrel/net/timed_http_client.hpp"
+#include "kestrel/trading/order_recovery.hpp"
 #include "kestrel/trading/order_rules.hpp"
 #include "kestrel/util/hmac.hpp"
 #include "kestrel/util/json.hpp"
@@ -24,6 +25,8 @@ using types::Result;
 namespace {
 
 constexpr auto kLookupPause = std::chrono::seconds(1);
+// Rounds of lookups by client ID after an unknown outcome.
+constexpr int kLookups = 2;
 constexpr auto kClosedLookupSlack = std::chrono::minutes(5);
 // Asked for as `limit` alongside `with_cursor=true` (Kraken's maximum is 100).
 constexpr std::size_t kTradesPageSize = 100;
@@ -706,30 +709,20 @@ Result<types::OrderAcknowledgement> KrakenTradingVenue::PlaceOrder(
     spdlog::warn(
         "kraken: placing {} ended without an answer ({}); looking it up",
         client_id, send_error->ToString());
-    std::optional<types::Error> lookup_failure;
-    for (int look = 0; look < 2; ++look) {
-        if (look > 0) {
-            mOptions.sleeper(kLookupPause);
-        }
-        auto found = LookupClientOrder(client_id, not_before);
-        if (found) {
-            return types::OrderAcknowledgement{
-                found->order_id, found->client_order_id, found->state,
-                types::IsActive(found->state) ? found->created_time
-                                              : found->updated_time};
-        }
-        if (found.error().category != ErrorCategory::kNotFound) {
-            lookup_failure = found.error();
-            break;
-        }
+    auto looked = LookUpPlaced(
+        {client_id},
+        [&](const std::string& id) {
+            return LookupClientOrder(id, not_before);
+        },
+        kLookups, [&] { mOptions.sleeper(kLookupPause); });
+    if (const auto& found = looked.found[0]) {
+        return types::OrderAcknowledgement{
+            found->order_id, found->client_order_id, found->state,
+            types::IsActive(found->state) ? found->created_time
+                                          : found->updated_time};
     }
     types::Error error = std::move(*send_error);
-    error.message +=
-        lookup_failure
-            ? " (order " + client_id + " could not be looked up either: " +
-                  lookup_failure->ToString() + "; it may exist)"
-            : " (order " + client_id +
-                  " was not found afterwards, but may still appear)";
+    NoteLookup(error, "order " + client_id, looked.failure);
     return std::unexpected(std::move(error));
 }
 
