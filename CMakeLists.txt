@@ -269,6 +269,7 @@ if(KESTREL_BUILD_TESTS)
     tests/single_order_position_test.cpp
     tests/market_maker_test.cpp
     tests/config_test.cpp
+    tests/logging_setup.cpp
   )
   target_link_libraries(kestrel_tests PRIVATE kestrel::kestrel GTest::gtest_main)
   target_compile_options(kestrel_tests PRIVATE ${KESTREL_WARNINGS})
