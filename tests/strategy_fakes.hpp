@@ -190,7 +190,9 @@ class RecordingVenue : public trading::TradingVenue {
     int cancel_all_calls = 0;
     int get_order_calls = 0;
     std::atomic<int> get_fills_calls{0};
-    types::Timestamp last_fills_since{};
+    // Atomic: the runner's poll thread and a risk gate on the strategy's
+    // thread both call GetFills.
+    std::atomic<types::Timestamp> last_fills_since{};
     std::vector<types::OrderRequest> orders;
     std::vector<types::OcoRequest> ocos;
     trading::ExecutionCallback pushed;

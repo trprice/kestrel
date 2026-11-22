@@ -6,8 +6,13 @@ set -euo pipefail
 pg_ctlcluster "$PG_VERSION" main start
 trap 'pg_ctlcluster "$PG_VERSION" main stop' EXIT
 
-# Warnings are errors here, so none creep in.
-cmake -S /src -B /build -G Ninja -DKESTREL_WERROR=ON
+# Warnings are errors here, so none creep in. KESTREL_SANITIZE (address,
+# undefined, address,undefined or thread) builds with those sanitizers.
+cmake_args=(-DKESTREL_WERROR=ON)
+if [[ -n "${KESTREL_SANITIZE:-}" ]]; then
+    cmake_args+=("-DKESTREL_SANITIZE=$KESTREL_SANITIZE")
+fi
+cmake -S /src -B /build -G Ninja "${cmake_args[@]}"
 # Parallel C++23 compiles can exhaust a container's memory; override with KESTREL_JOBS.
 cmake --build /build -j "${KESTREL_JOBS:-2}"
 

@@ -564,16 +564,16 @@ class SlowVenue : public RecordingVenue {
 
 TEST_F(RiskGateTest, HaltCancelsAnOrderThatWasInFlight) {
     auto slow = std::make_shared<SlowVenue>();
-    gate = std::make_unique<RiskGatedVenue>(slow, limits,
-                                            [this] { return now; });
+    gate =
+        std::make_unique<RiskGatedVenue>(slow, limits, [this] { return now; });
 
     auto placing = std::async(std::launch::async, [&] {
         return gate->PlaceOrder(Market(Side::kBuy, "1"));
     });
     slow->entered.get_future().wait();  // the order is inside the venue call
 
-    auto halting = std::async(std::launch::async,
-                              [&] { return gate->Halt("test"); });
+    auto halting =
+        std::async(std::launch::async, [&] { return gate->Halt("test"); });
     {
         // The first cancel goes out without waiting for the order.
         std::unique_lock lock(slow->mutex);
@@ -807,10 +807,10 @@ TEST_F(RiskGateTest, AFillReadReachesBackAnHourWhenNoFillHasCome) {
     const types::Timestamp start = now;
     now += std::chrono::hours(3);
     gate->NoteReferencePrice(kSymbol, D("100"));
-    EXPECT_EQ(venue->last_fills_since, start);
+    EXPECT_EQ(venue->last_fills_since.load(), start);
     now += std::chrono::seconds(1);
     gate->NoteReferencePrice(kSymbol, D("101"));
-    EXPECT_EQ(venue->last_fills_since, start + std::chrono::hours(2));
+    EXPECT_EQ(venue->last_fills_since.load(), start + std::chrono::hours(2));
 }
 
 TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {

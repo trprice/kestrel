@@ -157,7 +157,8 @@ struct Live {
     }
     // Fills order `i` at the day's close, as a venue would, and moves cash.
     void Fill(std::size_t i) {
-        const auto& order = context.venue.orders.at(i);
+        // A copy: OnFill can place orders, which may move the vector.
+        const types::OrderRequest order = context.venue.orders.at(i);
         const std::string id = "order-" + std::to_string(i + 1);
         const Decimal price = context.Close(order.symbol);
         types::Fill fill;

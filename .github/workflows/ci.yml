@@ -42,6 +42,46 @@ jobs:
       - name: Build and run the tests
         run: docker run --rm --network none -e KESTREL_JOBS=4 kestrel-test
 
+  # The same suite under AddressSanitizer with UndefinedBehaviorSanitizer,
+  # and under ThreadSanitizer: the runner, the venues, the streams and
+  # QuoteWriter are multithreaded. Any finding fails the test it is in.
+  sanitizers:
+    name: Sanitizers (${{ matrix.sanitize }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: [address-undefined, thread]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build the test image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: kestrel-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ThreadSanitizer cannot map its shadow memory with the runner
+      # kernel's default of 32 bits of mmap randomization.
+      - name: Allow ThreadSanitizer's memory layout
+        if: matrix.sanitize == 'thread'
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build and run the tests
+        run: |
+          docker run --rm --network none -e KESTREL_JOBS=4 \
+            -e KESTREL_SANITIZE="${{ matrix.sanitize == 'thread' && 'thread' || 'address,undefined' }}" \
+            -e ASAN_OPTIONS=detect_leaks=1:abort_on_error=1 \
+            -e UBSAN_OPTIONS=print_stacktrace=1 \
+            -e TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 \
+            kestrel-test
+
   package:
     name: Release binary
     runs-on: ubuntu-latest

@@ -21,8 +21,8 @@ Projects; the live checks are under In progress.
 2. ~~`market_maker`: protection on a crossed, locked or one-sided book, a
    reconcile for exits, and a `cancel_raced` that cannot stick~~ — done (see
    Done).
-3. CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
-   stream code lands.
+3. ~~CI: ASan/UBSan and TSan jobs (Engineering), before new multithreaded
+   stream code lands~~ — done (see Done).
 4. Alerts when the kill switch trips, a stream stays down or a venue keeps
    failing, e.g. expired authorization (Operations). Before any live run is
    left unattended.
@@ -375,10 +375,9 @@ four recorded days. Check a change's markouts, not only "vs hold".
 - [ ] Exercise the cpr FetchContent fallback in `cmake/KestrelDependencies.cmake`
       (build on a machine with no system cpr or libcurl). It is written but has
       only ever used the system cpr.
-- [ ] CI: it builds and runs the tests on every push; add a clang-tidy job
-      (`.clang-tidy`; the whole tree takes about 12 minutes on 4 cores, so
-      perhaps changed files only) and the ASan/UBSan and TSan builds. TSan is
-      worth having, since the runner and venues are multithreaded.
+- [ ] CI: it builds and runs the tests on every push, plain and under
+      ASan/UBSan and TSan; add a clang-tidy job (`.clang-tidy`; the whole
+      tree takes about 12 minutes on 4 cores, so perhaps changed files only).
 - [ ] The database tests share fixture rows, so they cannot run in parallel
       (`ctest -j` fails them); give each test its own venue name or schema.
       Without `KESTREL_TEST_DBNAME` they skip, so a local `ctest` looks green
@@ -1306,6 +1305,13 @@ the header of the code concerned.
 ### Engineering
 - [x] Sanitizer builds: `-DKESTREL_SANITIZE=address,undefined` and `=thread`;
       the whole suite passes under both
+- [x] CI runs the suite under ASan/UBSan and TSan on every push (the
+      `sanitizers` jobs, through `KESTREL_SANITIZE` in
+      `docker/entrypoint.sh`). Their first run on the Nov 22 2026 tree found
+      two test bugs, no product ones: a `trend_ensemble` test helper read an
+      order after `OnFill` had moved the vector it was in, and the fake
+      venue's `last_fills_since` was written from the runner's poll thread
+      and the risk gate's at once
 - [x] `CreateComponents` no longer starts the paper venue's quote stream as a
       side effect; the `Runner` feeds a `PaperTradingVenue` from its own quote
       stream, so `bars` and `account` open no WebSocket and a paper run opens

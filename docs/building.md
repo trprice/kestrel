@@ -60,6 +60,13 @@ times slower to compile and run, and the first configure fetches any
 dependency that is not installed. TSan is the one to run after touching the
 runner, a venue, a stream or `QuoteWriter`, since they are multithreaded.
 
+CI runs both on every push (the `sanitizers` jobs in
+`.github/workflows/ci.yml`): `docker/entrypoint.sh` builds with
+`KESTREL_SANITIZE` when it is set, e.g.
+`docker run --rm -e KESTREL_SANITIZE=thread kestrel-test`. On a host whose
+kernel uses 32 bits of mmap randomization (GitHub's runners), TSan needs
+`sudo sysctl -w vm.mmap_rnd_bits=28` first.
+
 Run the database tests serially (plain `ctest`, not `-j`), sanitized or not:
 they share the fixture venues' rows, so parallel runs collide.
 
