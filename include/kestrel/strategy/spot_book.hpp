@@ -23,10 +23,12 @@ namespace kestrel::strategy {
 // `timeframe`.
 class SpotBook {
    public:
-    // Throws std::invalid_argument when a symbol has no quote asset, is
-    // listed twice, or the quote assets differ.
+    // A symbol without a quote asset (a stock, "SPY") is quoted in
+    // `default_quote`. Throws std::invalid_argument when a symbol has no
+    // quote asset and there is no default, is listed twice, or the quote
+    // assets differ.
     SpotBook(const std::vector<types::Symbol>& symbols,
-             types::Timeframe timeframe);
+             types::Timeframe timeframe, const std::string& default_quote = {});
 
     const std::string& Quote() const { return mQuote; }
 

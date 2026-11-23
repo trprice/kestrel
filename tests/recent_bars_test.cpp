@@ -98,6 +98,36 @@ TEST(RecentBars, StopsWhenTheHistoryRunsOut) {
     EXPECT_LE(empty.requests.size(), 4u);
 }
 
+// 1,081 daily bars of a market closed at weekends take over four years,
+// past the two the span otherwise stops at.
+TEST(RecentBars, ALongWarmupOfWeekdayBarsReachesPastTwoYears) {
+    HistorySource source;
+    for (int day = 0; day < 3000; ++day) {
+        if (day % 7 < 5) {
+            source.hours.push_back(day * 24);
+        }
+    }
+    auto bars = RecentBars(source, "X", Timeframe::kD1, 1081, Hour(3000 * 24));
+    ASSERT_OK(bars);
+    EXPECT_EQ(bars->size(), 1081u);
+    EXPECT_EQ(source.requests.size(), 2u);
+}
+
+// 1,200 4h bars of two a weekday (a 6.5-hour session) take over three
+// years: past two years, and over four times their own span.
+TEST(RecentBars, ALongWarmupOfIntradayStockBarsReachesPastTwoYears) {
+    HistorySource source;
+    for (int day = 0; day < 1500; ++day) {
+        if (day % 7 < 5) {
+            source.hours.push_back(day * 24 + 14);
+            source.hours.push_back(day * 24 + 18);
+        }
+    }
+    auto bars = RecentBars(source, "X", Timeframe::kH4, 1200, Hour(1500 * 24));
+    ASSERT_OK(bars);
+    EXPECT_EQ(bars->size(), 1200u);
+}
+
 }  // namespace
 // Refuses a span reaching past the newest `kept` hours, as Kraken refuses one
 // past the 720 bars it keeps.

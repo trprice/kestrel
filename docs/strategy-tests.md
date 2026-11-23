@@ -33,6 +33,7 @@ Unless a test says otherwise:
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
+| `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
@@ -618,6 +619,38 @@ for:
   years, most of them a few USDT as one model of nine changed, which is
   why the account needs to be large enough for Binance.US's 1 USDT minimum.
 - Paper-trading on 1,000 USDT from Nov 19 2026 (run 45; see Paper runs).
+
+### On 13 ETFs (Schwab daily bars, 2019–2026)
+
+The same rules, untuned, with `days_per_year = 252`, on SPY, QQQ, IWM, DIA,
+EEM, EFA, GLD, TLT and the XLE, XLF, XLK, XLU and XLV sectors: 100,000 USD
+(whole shares need it; on 1,000 USD most ETFs are a share or less of a
+symbol's share), no commission, 5 bps slippage a side, filled at the next
+price after each close. The full 1,081-bar warm-up of the nine lookbacks
+starts the test in Sep 2019. Schwab's bars are split-adjusted but carry no
+dividends, and cash earns nothing; both understate holding more than the
+strategy, which was about half in cash.
+
+| 100,000 USD | Sep 2019 – Dec 2022 | Holdout, Jan 2023 – Nov 5 2026 |
+|---|---|---|
+| Default 9 lookbacks | +8.5%, 5.2% vol, Sharpe 0.50, 6.3% fall; 41% invested | +18.9%, 5.2% vol, Sharpe 0.90, 5.2% fall; 48% invested |
+| `lookbacks = [20, 55]` | +9.1%, Sharpe 0.51, 5.5% fall | +12.8%, Sharpe 0.65, 6.8% fall |
+| SPY and cash at the default's volatility (22%; 35% in the holdout) | +7.9%, Sharpe 0.46, 8.2% fall | +28.9%, Sharpe 1.30, 7.0% fall |
+| Hold SPY | +31.5%, Sharpe 0.46, 34.1% fall | +101.4%, Sharpe 1.30, 19.0% fall |
+| Hold the 13, equal weight | +24.3%, Sharpe 0.43, 30.3% fall | +75.4%, Sharpe 1.22, 14.9% fall |
+
+- **No edge over SPY at the same risk.** Level in 2019–2022 (ΔSharpe +0.03,
+  95% CI [−0.74, +0.71]), behind in the holdout (−0.41, [−1.01, +0.10],
+  p = 0.12; paired 20-day block bootstrap, correlation 0.6–0.7). Its worst
+  fall was smaller than the SPY mix's in both periods (6.3% against 8.2%,
+  and 5.2% against 7.0%), not enough to make up the return. This agrees
+  with the Turtle screen's ETF result (no timing edge over holding).
+- **`[20, 55]` did no better here**: level in 2019–2022 and 6 points behind
+  the default in the holdout, at a quarter of the fills (728 and 877
+  against 3,261 and 3,698).
+- **Turnover** was about 10 times equity a year (7.1 million USD traded in
+  seven years), most of it small resizes; free at Schwab, but each fill
+  pays the spread.
 
 ### Checked against the paper: BTC on Kraken, 2015–2025
 

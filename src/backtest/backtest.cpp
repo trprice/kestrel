@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <vector>
 
 #include "kestrel/strategy/runner.hpp"
+#include "kestrel/types/market_hours.hpp"
 
 namespace kestrel::backtest {
 
@@ -58,6 +60,75 @@ bool Covers(const std::vector<types::Bar>& bars, types::Timestamp first,
            bars.back().open_time >= to - length * 2;
 }
 
+// Where to start loading so that `warmup` bars of `length` close before
+// `from`. On a market that closes, they are counted in its sessions (a stock
+// market has about 252 daily bars a year, not 365), back to the first one
+// needed: a daily bar from its day's start (UTC), as it is stamped at
+// midnight. Elsewhere, for bars longer than a day, or with sessions not
+// found within a reasonable span, `warmup` + 1 lengths back (a bar more, as
+// the newest slot may have none yet).
+types::Timestamp WarmupStart(types::Timestamp from, std::chrono::seconds length,
+                             std::size_t warmup,
+                             const types::MarketHours* hours) {
+    const auto calendar = from - length * static_cast<std::int64_t>(warmup + 1);
+    constexpr auto kDay = std::chrono::days(1);
+    if (!hours || hours->IsAlwaysOpen() || length > kDay || warmup == 0) {
+        return calendar;
+    }
+    // A day at a time, newest first, over the sessions that open in it. A
+    // stock market needs about 1.45 days a daily bar.
+    std::size_t counted = 0;
+    auto t = from;
+    const auto max_days = static_cast<std::int64_t>(warmup) * 2 + 30;
+    std::vector<types::MarketHours::Session> sessions;
+    for (std::int64_t d = 0; d < max_days; ++d) {
+        const auto start = t - kDay;
+        sessions.clear();
+        for (auto s = hours->CurrentOrNext(start); s && s->start < t;
+             s = hours->CurrentOrNext(s->end)) {
+            if (s->start >= start) {  // one that opened earlier counts there
+                sessions.push_back(*s);
+            }
+        }
+        for (auto it = sessions.rbegin(); it != sessions.rend(); ++it) {
+            // Its bars a run can see at `from`: one is seen once its whole
+            // length has passed (ReplayDataSource), so a daily bar, stamped
+            // at its day's midnight (UTC), at the next midnight, not at the
+            // close, and a session's short last bar a full length after it
+            // opens.
+            const auto day = std::chrono::floor<std::chrono::days>(it->start);
+            std::size_t n = 0;
+            if (length >= kDay) {
+                n = day + kDay <= from ? 1 : 0;
+            } else if (from > it->start) {
+                const auto open = std::chrono::ceil<std::chrono::seconds>(
+                    it->end - it->start);
+                const auto bars = (open + length - std::chrono::seconds(1)) /
+                                  length;  // the last may be short
+                const auto passed =
+                    std::chrono::floor<std::chrono::seconds>(from - it->start) /
+                    length;
+                n = static_cast<std::size_t>(std::min(bars, passed));
+            }
+            if (counted + n >= warmup) {
+                if (length >= kDay) {
+                    return day;
+                }
+                // From the start of the bar's slot on the epoch's grid too,
+                // in case the bars are stamped on whole hours (as
+                // Databento's are) rather than at the session's open.
+                const auto older =
+                    static_cast<std::int64_t>(counted + n - warmup);
+                const auto slot = it->start + length * older;
+                return slot - slot.time_since_epoch() % length;
+            }
+            counted += n;
+        }
+        t = start;
+    }
+    return calendar;
+}
+
 }  // namespace
 
 types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
@@ -69,20 +140,28 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
     }
     auto replay = std::make_shared<ReplayDataSource>();
     replay->SetHours(source.Hours());
+    // Where each timeframe's bars start, the same for every symbol.
+    std::vector<types::Timestamp> firsts;
+    for (const types::Timeframe timeframe : needs.bar_timeframes) {
+        const auto length = types::FixedDuration(timeframe);
+        if (!length) {
+            return MakeError(ErrorCategory::kUnsupported,
+                             "backtests cannot replay calendar timeframe " +
+                                 std::string(types::ToString(timeframe)));
+        }
+        firsts.push_back(WarmupStart(from, *length, needs.warmup_bars,
+                                     replay->Hours().get()));
+    }
     for (const types::Symbol& symbol : needs.symbols) {
         auto info = source.GetSymbolInfo(symbol);
         if (!info) {
             return std::unexpected(info.error());
         }
         replay->SetSymbolInfo(*info);
-        for (const types::Timeframe timeframe : needs.bar_timeframes) {
+        for (std::size_t i = 0; i < needs.bar_timeframes.size(); ++i) {
+            const types::Timeframe timeframe = needs.bar_timeframes[i];
             const auto length = types::FixedDuration(timeframe);
-            if (!length) {
-                return MakeError(ErrorCategory::kUnsupported,
-                                 "backtests cannot replay calendar timeframe " +
-                                     std::string(types::ToString(timeframe)));
-            }
-            const auto first = from - *length * (needs.warmup_bars + 1);
+            const auto first = firsts[i];
             const std::string name(types::ToString(timeframe));
             if (stored.bars) {
                 auto saved = stored.bars->Load(std::string(source.Name()),
@@ -115,8 +194,9 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
                 if (auto saved = stored.bars->Save(std::string(source.Name()),
                                                    symbol, timeframe, *bars);
                     !saved) {
-                    spdlog::warn("{} {}: could not save bars to the database: {}",
-                                 symbol, name, saved.error().ToString());
+                    spdlog::warn(
+                        "{} {}: could not save bars to the database: {}",
+                        symbol, name, saved.error().ToString());
                 }
             }
             replay->AddBars(symbol, timeframe, std::move(*bars));
@@ -507,8 +587,8 @@ types::Result<BacktestResult> RunBacktest(
         runner.Drain();
         venue->SetDeferMatching(false);
         // With quotes the venue trades on them, so they alone set the marks.
-        observe(*item.symbol, needs.quotes ? std::nullopt
-                                           : std::optional(item.bar.close));
+        observe(*item.symbol,
+                needs.quotes ? std::nullopt : std::optional(item.bar.close));
     }
     // And those after the last event, up to the end.
     run_sessions(options.end);

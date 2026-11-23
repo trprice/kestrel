@@ -48,7 +48,8 @@ const TrendEnsembleParams& Checked(const TrendEnsembleParams& params) {
 
 TrendEnsemble::TrendEnsemble(TrendEnsembleParams params)
     : mParams(std::move(params)),
-      mBook(Checked(mParams).symbols, mParams.timeframe),
+      mBook(Checked(mParams).symbols, mParams.timeframe,
+            mParams.default_quote_asset),
       mGate(mParams.symbols.size()),
       mPeriodsPerYear(0) {
     const auto step = types::FixedDuration(mParams.timeframe);
@@ -56,9 +57,23 @@ TrendEnsemble::TrendEnsemble(TrendEnsembleParams params)
         throw std::invalid_argument("timeframe must have a fixed length");
     }
     mStep = *step;
-    // 365 a year on daily bars: crypto trades every day.
-    mPeriodsPerYear = static_cast<std::size_t>(
-        std::chrono::seconds(std::chrono::days(365)) / *step);
+    if (mParams.days_per_year < 1 || mParams.days_per_year > 366) {
+        throw std::invalid_argument("days_per_year must be 1 to 366");
+    }
+    // Daily bars: one a trading day. Others are taken as round the clock
+    // (crypto), since a stock market's hours are not a whole number of
+    // hourly bars, nor its weeks of 252 / 7 days.
+    if (mParams.timeframe == types::Timeframe::kD1) {
+        mPeriodsPerYear = mParams.days_per_year;
+    } else {
+        if (mParams.days_per_year != 365) {
+            throw std::invalid_argument(
+                "days_per_year other than 365 needs daily bars (timeframe "
+                "1d)");
+        }
+        mPeriodsPerYear = static_cast<std::size_t>(
+            std::chrono::seconds(std::chrono::days(365)) / *step);
+    }
     if (mPeriodsPerYear == 0) {
         throw std::invalid_argument("timeframe must be under a year");
     }

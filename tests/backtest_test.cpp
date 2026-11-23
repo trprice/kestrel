@@ -1,6 +1,8 @@
 #include "kestrel/backtest/backtest.hpp"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 
 #include "kestrel/strategy/ma_crossover.hpp"
 #include "kestrel/types/market_hours.hpp"
@@ -1023,6 +1025,90 @@ TEST(LoadReplayDataTest, LoadsInfoAndBarsIncludingTheWarmup) {
     ASSERT_FALSE(bars.empty());
     EXPECT_LE(bars.front().open_time, Hour(2));
     EXPECT_EQ(bars.back().open_time, Hour(7));
+}
+
+// The bars of a US stock market's regular sessions in 2024, of `timeframe`:
+// daily ones at their day's midnight (UTC), and intraday ones from each
+// session's open (`utc_hours` false, a short one last) or on whole UTC hours
+// (true, as Databento stamps them).
+std::vector<types::Bar> StockBars(Timeframe timeframe, bool utc_hours) {
+    using namespace std::chrono;
+    const types::MarketHours market(std::make_shared<types::UsEquityCalendar>(),
+                                    false);
+    const auto length = *types::FixedDuration(timeframe);
+    std::vector<types::Bar> out;
+    for (auto s =
+             market.CurrentOrNext(types::Timestamp(sys_days(2024y / 1 / 1)));
+         s && s->start < types::Timestamp(sys_days(2025y / 1 / 1));
+         s = market.CurrentOrNext(s->end)) {
+        auto t = s->start;
+        if (timeframe == Timeframe::kD1) {
+            t = floor<days>(t);
+        } else if (utc_hours) {
+            t = floor<hours>(t);
+        }
+        for (; t < s->end; t += length) {
+            types::Bar bar;
+            bar.open_time = t;
+            bar.open = bar.high = bar.low = bar.close = D("10");
+            bar.volume = D("1");
+            out.push_back(bar);
+            if (timeframe == Timeframe::kD1) {
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+// How many of the bars loaded for a backtest from `from` a run can see then
+// (a bar once its whole length has passed), with a warm-up of `warmup`.
+std::int64_t WarmupSeen(Timeframe timeframe, bool utc_hours, std::size_t warmup,
+                        types::Timestamp from) {
+    auto source = std::make_shared<ReplayDataSource>();
+    source->AddBars(kSymbol, timeframe, StockBars(timeframe, utc_hours));
+    source->SetSymbolInfo(
+        {kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    source->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), false));
+    strategy::Requirements needs;
+    needs.symbols = {kSymbol};
+    needs.bar_timeframes = {timeframe};
+    needs.warmup_bars = warmup;
+    auto loaded = backtest::LoadReplayData(
+        *source, needs, from,
+        types::Timestamp(
+            std::chrono::sys_days(std::chrono::December / 31 / 2024)));
+    EXPECT_TRUE(loaded.has_value());
+    if (!loaded) {
+        return 0;
+    }
+    const auto length = *types::FixedDuration(timeframe);
+    return std::ranges::count_if(
+        (*loaded)->Series(kSymbol, timeframe),
+        [&](const types::Bar& b) { return b.open_time + length <= from; });
+}
+
+// A stock market has about 252 daily bars a year: the warm-up is counted
+// in its sessions, not in days.
+TEST(LoadReplayDataTest, CountsTheWarmupInTradingDaysOnAMarketThatCloses) {
+    using namespace std::chrono;
+    const types::Timestamp monday(sys_days(2024y / December / 2));
+    EXPECT_EQ(WarmupSeen(Timeframe::kD1, false, 150, monday), 150);
+    // After Monday's close, its bar (stamped at midnight) is not seen until
+    // the next midnight.
+    EXPECT_EQ(WarmupSeen(Timeframe::kD1, false, 150, monday + hours(22)), 150);
+}
+
+TEST(LoadReplayDataTest, CountsAnIntradayWarmupInTheBarsSeen) {
+    using namespace std::chrono;
+    const types::Timestamp monday(sys_days(2024y / December / 2));
+    // At the 21:00 UTC close the session's short last bar (20:30) is not
+    // seen until 21:30.
+    EXPECT_EQ(WarmupSeen(Timeframe::kH1, false, 70, monday + hours(21)), 70);
+    // Bars on whole hours: the session's first opens (14:00) before it does.
+    EXPECT_EQ(WarmupSeen(Timeframe::kH1, true, 7, monday + hours(24)), 7);
+    EXPECT_EQ(WarmupSeen(Timeframe::kH4, true, 10, monday + hours(24)), 10);
 }
 
 TEST(LoadReplayDataTest, OnlyLoadsBarsBeforeTheEnd) {

@@ -21,13 +21,22 @@ bool IsClosed(OrderState state) {
 }  // namespace
 
 SpotBook::SpotBook(const std::vector<types::Symbol>& symbols,
-                   types::Timeframe timeframe)
+                   types::Timeframe timeframe, const std::string& default_quote)
     : mTimeframe(timeframe) {
     for (const auto& symbol : symbols) {
-        const auto parts = types::SplitSymbol(symbol);
+        auto parts = types::SplitSymbol(symbol);
+        if (parts && !parts->quote && !default_quote.empty()) {
+            parts->quote = default_quote;
+        }
         if (!parts || !parts->quote) {
             throw std::invalid_argument("symbol " + symbol +
                                         " has no quote asset");
+        }
+        if (parts->base == *parts->quote) {
+            // A ticker named like the cash ("USD", an ETF): its holdings
+            // and the cash balance could not be told apart.
+            throw std::invalid_argument("symbol " + symbol +
+                                        " is named like its quote asset");
         }
         if (!mBase.emplace(symbol, parts->base).second) {
             throw std::invalid_argument("symbol " + symbol +

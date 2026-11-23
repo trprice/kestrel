@@ -419,6 +419,73 @@ TEST(TrendEnsemble, SizesToTheTargetVolatility) {
               Decimal::Divide(target, D("11"), 3, types::Rounding::kDown));
 }
 
+// Stocks have no quote asset ("SPY"): they are bought and sold with the
+// default quote asset, the account's USD.
+TEST(TrendEnsemble, TradesStocksInTheDefaultQuoteAsset) {
+    auto params = Params();
+    params.symbols = {"A", "B"};
+    Live live(
+        {{"A", {"10", "10", "10", "11", "12", "13", "12", "11", "10", "9"}},
+         {"B", {"10", "9", "8", "7", "6", "5", "4", "3", "2", "1"}}},
+        params);
+    for (int d = 1; d <= 10; ++d) {
+        live.CloseDay(d);
+    }
+    ASSERT_GE(live.context.venue.orders.size(), 2u);
+    EXPECT_EQ(live.context.venue.orders.front().symbol, "A");
+    EXPECT_EQ(live.context.venue.orders.front().side, Side::kBuy);
+    EXPECT_EQ(live.context.venue.orders.back().side, Side::kSell);
+    EXPECT_EQ(live.context.BalanceOf("A"), Decimal());  // out of the trend
+    EXPECT_GT(live.context.BalanceOf("USD"), D("1000"));
+
+    params.default_quote_asset.clear();
+    EXPECT_THROW(TrendEnsemble{params}, std::invalid_argument);
+    params.default_quote_asset = "USD";
+    params.symbols = {"A", "B/EUR"};  // two cash assets
+    EXPECT_THROW(TrendEnsemble{params}, std::invalid_argument);
+    params.symbols = {"A", "USD"};  // an ETF named like the cash
+    EXPECT_THROW(TrendEnsemble{params}, std::invalid_argument);
+}
+
+// With days_per_year 252 (US stocks) the volatility is annualized over 252
+// bars, so it reads lower and the same target buys more.
+TEST(TrendEnsemble, AnnualizesOverItsTradingDaysAYear) {
+    auto params = Params();
+    params.target_vol = D("0.5");
+    params.invest_fraction = D("0.9");
+    params.days_per_year = 252;
+    Live live(Trending(), params);
+    for (int d = 1; d <= 3; ++d) {
+        live.CloseDay(d);
+    }
+    ASSERT_EQ(live.context.venue.orders.size(), 1u);
+    const auto vol =
+        Volatility(live.context.Bars("A/USD", Timeframe::kD1), 3, 252);
+    ASSERT_TRUE(vol);
+    const Decimal per_model =
+        Decimal::Divide(D("0.5"), *vol, 8, types::Rounding::kDown);
+    ASSERT_LT(per_model, D("1"));  // the cap does not bind
+    const Decimal target =
+        D("1000") * Decimal::Divide(per_model * D("0.45"), D("2"), 8,
+                                    types::Rounding::kDown);
+    EXPECT_EQ(live.context.venue.orders[0].quantity,
+              Decimal::Divide(target, D("11"), 3, types::Rounding::kDown));
+
+    // More than at 365 a year, by about sqrt(365 / 252).
+    Live crypto(Trending(), [] {
+        auto p = Params();
+        p.target_vol = D("0.5");
+        p.invest_fraction = D("0.9");
+        return p;
+    }());
+    for (int d = 1; d <= 3; ++d) {
+        crypto.CloseDay(d);
+    }
+    ASSERT_EQ(crypto.context.venue.orders.size(), 1u);
+    EXPECT_GT(live.context.venue.orders[0].quantity,
+              crypto.context.venue.orders[0].quantity);
+}
+
 // A buy the cash could not pay for is tried again at the next rebalance;
 // once made, the holding is left until it drifts past the threshold.
 TEST(TrendEnsemble, RetriesASignalItCouldNotTrade) {
@@ -596,6 +663,12 @@ TEST(TrendEnsemble, RefusesBadParameters) {
     bad([](TrendEnsembleParams& p) { p.rebalance_threshold = D("-0.1"); });
     bad([](TrendEnsembleParams& p) { p.invest_fraction = D("0"); });
     bad([](TrendEnsembleParams& p) { p.timeframe = Timeframe::kMo1; });
+    bad([](TrendEnsembleParams& p) { p.days_per_year = 0; });
+    bad([](TrendEnsembleParams& p) { p.days_per_year = 367; });
+    bad([](TrendEnsembleParams& p) {  // stock days need daily bars
+        p.timeframe = Timeframe::kH4;
+        p.days_per_year = 252;
+    });
 }
 
 }  // namespace

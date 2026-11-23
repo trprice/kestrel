@@ -59,7 +59,9 @@ coin lists are chosen with hindsight.
 ## How Kestrel runs it
 
 The universe is every symbol in `[general] symbols`: one or more, none
-listed twice, all with one quote asset (the cash).
+listed twice, all with one quote asset (the cash). Stocks have none
+(`SPY`): they are in `[paper] default_quote_asset` in paper mode, USD live;
+set `days_per_year = 252` for them.
 
 **The models.** For each symbol and each of `lookbacks`, a model follows the
 paper's rules on the closes of `timeframe` bars: long on a close at the
@@ -74,8 +76,10 @@ the last close), is
         x invest_fraction / symbols
 
 where volatility is the sample standard deviation of the last `vol_bars`
-close-to-close returns, annualized with the bars in 365 days (crypto trades
-every day). Each symbol has an equal share of `invest_fraction` of equity.
+close-to-close returns, annualized with the bars in a year: `days_per_year`
+of daily bars (365, as crypto trades every day; about 252 for US stocks),
+or, on other timeframes, the bars in 365 days. Each symbol has an equal
+share of `invest_fraction` of equity.
 
 **Rebalancing.** Once every symbol's bar for a period has closed (or a bar of
 the next arrives), each symbol is compared with its target. A symbol that
@@ -128,8 +132,8 @@ neither counted nor sold (see `momentum_rotation`'s
 | Universe | the top 20 by volume, re-chosen monthly, with liquidity exits | the fixed `[general] symbols`, chosen by hand. A symbol without bars leaves its share in cash: LINK, NEAR and ZEC before January 2022, and XRP/USDT, delisted from January 2021 to July 2023 |
 | Capital per coin | an equal share at each month's start, drifting with each coin's results within the month | an equal share of current equity at every rebalance, resized past the threshold, less 5% (`invest_fraction`) kept for fees and moves before the fill |
 | Threshold | "more than 20%" between current and target allocation, for volatility-driven changes | read as 20% of the target, and applied to any drift without a signal change (a price move as well as a volatility change) |
-| Execution | at the daily close, 10 bps a trade | market orders after the 00:00 UTC daily close, filled at the next price: on Binance.US 2 bps taker fee, plus the spread and slippage (5 bps assumed in backtests) |
-| Volatility | "90-day annualized volatility of returns" | the sample deviation of 90 daily simple returns, times the square root of 365 |
+| Execution | at the daily close, 10 bps a trade | market orders after the 00:00 UTC daily close (on stocks, at the next session's open, as the market is closed then), filled at the next price: on Binance.US 2 bps taker fee, plus the spread and slippage (5 bps assumed in backtests) |
+| Volatility | "90-day annualized volatility of returns" | the sample deviation of 90 daily simple returns, times the square root of 365 (`days_per_year`) |
 | History | from each coin's first day | the warm-up window at startup (1,081 days), and only since a gap of more than 7 bars and a week; a backtest starting soon after a listing has less |
 | Equity | the strategy's own capital | the whole quote balance plus the coins it holds, as `momentum_rotation`: run it on an account of its own |
 | Holdings at the start | none | without `adopt_holdings`, coins the account already holds are ignored, so the first rebalance buys full targets on top of them |
@@ -160,6 +164,7 @@ The defaults are the paper's, except where spot trading rules them out.
 | `lookbacks` | the channel lengths in bars, one model each, as an array (default `[5, 10, 20, 30, 60, 90, 150, 250, 360]`); each at least 2 |
 | `vol_bars` | the returns the volatility is measured over (default 90; at least 2) |
 | `target_vol` | the annualized volatility each model is sized to (default 0.25) |
+| `days_per_year` | trading days a year, to annualize the volatility of daily bars (default 365, for crypto; 252 for US stocks); other timeframes need 365 |
 | `max_weight` | the most of a symbol's share a model may hold (default 1; above 0, at most 1: no leverage) |
 | `rebalance_threshold` | resize a holding whose signal has not changed only when it is more than this fraction of its target away from it (default 0.2; 0 resizes at every rebalance) |
 | `invest_fraction` | share of equity the symbols split equally; the rest covers fees and the move to the fill (default 0.95; above 0, at most 1) |

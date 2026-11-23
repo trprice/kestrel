@@ -735,6 +735,8 @@ Result<StrategyPtr> BuildTrendEnsemble(ParamReader& p) {
     Take(p.Counts("lookbacks", params.lookbacks), params.lookbacks, error);
     Take(p.Count("vol_bars", params.vol_bars), params.vol_bars, error);
     Take(p.Number("target_vol", params.target_vol), params.target_vol, error);
+    Take(p.Count("days_per_year", params.days_per_year), params.days_per_year,
+         error);
     Take(p.Number("max_weight", params.max_weight), params.max_weight, error);
     Take(p.Number("rebalance_threshold", params.rebalance_threshold),
          params.rebalance_threshold, error);
@@ -742,6 +744,7 @@ Result<StrategyPtr> BuildTrendEnsemble(ParamReader& p) {
          params.invest_fraction, error);
     Take(p.Flag("adopt_holdings", params.adopt_holdings), params.adopt_holdings,
          error);
+    params.default_quote_asset = p.DefaultQuoteAsset();
     if (error) {
         return std::unexpected(*error);
     }

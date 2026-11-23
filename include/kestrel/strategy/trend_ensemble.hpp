@@ -17,11 +17,18 @@ namespace kestrel::strategy {
 // The parameters are described in docs/strategies/trend-ensemble.md.
 struct TrendEnsembleParams {
     std::vector<types::Symbol> symbols;  // sharing one quote asset, the cash
+    // The cash of symbols without a quote asset (stocks, "SPY"): `[paper]
+    // default_quote_asset` in paper mode, else USD.
+    std::string default_quote_asset = "USD";
     types::Timeframe timeframe = types::Timeframe::kD1;
     // The Donchian channel lengths, one trend model each.
     std::vector<std::size_t> lookbacks = {5, 10, 20, 30, 60, 90, 150, 250, 360};
     std::size_t vol_bars = 90;         // bars of returns for the volatility
     types::Decimal target_vol{25, 2};  // annualized, of each symbol's share
+    // Trading days a year, to annualize the volatility of daily bars: 365
+    // for crypto, about 252 for US stocks. Other timeframes are taken as
+    // trading around the clock, so they need 365.
+    std::size_t days_per_year = 365;
     // The most of a symbol's share a model may hold (spot: no more than 1).
     types::Decimal max_weight{1, 0};
     // A holding off its target by more than this fraction of the target is
@@ -103,7 +110,7 @@ class TrendEnsemble : public Strategy {
     SpotBook mBook;
     PeriodGate mGate;
     std::chrono::seconds mStep{};  // a bar's length
-    std::size_t mPeriodsPerYear;   // bars of timeframe a year
+    std::size_t mPeriodsPerYear;   // bars of timeframe a trading year
     std::map<types::Symbol, SymbolState> mState;
     std::optional<types::Timestamp> mDue;      // waits for the market to open
     std::optional<types::Timestamp> mPending;  // waits for orders to close

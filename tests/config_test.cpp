@@ -880,6 +880,9 @@ TEST(Factory, CreateStrategyBuildsTrendEnsembleFromParameters) {
     EXPECT_FALSE(make("target_vol=0\n").has_value());
     EXPECT_FALSE(make("vol_bars=1\n").has_value());
     EXPECT_FALSE(make("lookback=5\n").has_value());  // misspelled
+    EXPECT_TRUE(make("days_per_year=252\n").has_value());
+    EXPECT_FALSE(make("days_per_year=0\n").has_value());
+    EXPECT_FALSE(make("timeframe='4h'\ndays_per_year=252\n").has_value());
 }
 
 TEST(Factory, CreateStrategyBuildsMaCrossoverFromParameters) {

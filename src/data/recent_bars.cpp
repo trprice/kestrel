@@ -1,5 +1,6 @@
 #include "kestrel/data/recent_bars.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 
@@ -22,6 +23,11 @@ types::Result<std::vector<types::Bar>> RecentBars(DataSource& source,
     // One bar of padding in case the newest slot has no bar yet.
     auto span = duration_cast<types::Timestamp::duration>(
         step * static_cast<std::int64_t>(count + 1));
+    // Two years, or eight times the first span when that is longer: a
+    // stock market is open about 1/1.45 of the days and 1/5.2 of the hours,
+    // so 1,081 daily bars take four years, and 1,200 4h bars over three.
+    const auto max_span =
+        std::max<types::Timestamp::duration>(kMaxSpan, span * 8);
     const auto newest = [count](std::vector<types::Bar> bars) {
         if (bars.size() > count) {
             bars.erase(bars.begin(),
@@ -57,12 +63,12 @@ types::Result<std::vector<types::Bar>> RecentBars(DataSource& source,
         } else {
             const bool enough = bars->size() >= count;
             const bool exhausted = span > kClosure && bars->size() <= previous;
-            if (enough || exhausted || span >= kMaxSpan) {
+            if (enough || exhausted || span >= max_span) {
                 return newest(std::move(*bars));
             }
             previous = bars->size();
             good.emplace(span, std::move(*bars));
-            span = std::min<types::Timestamp::duration>(span * 2, kMaxSpan);
+            span = std::min<types::Timestamp::duration>(span * 2, max_span);
             continue;
         }
         // Past the source's history: halve until a span fits, then search
