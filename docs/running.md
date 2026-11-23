@@ -46,8 +46,8 @@ for the config file.
 
 | Subcommand | Does |
 |---|---|
-| `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances |
-| `stream <seconds> [--store]` | live quotes for that many seconds |
+| `bars <timeframe> <count> [--store]` | the last `count` completed bars per symbol, preceded by symbol info and followed by the venue's balances; with `--store` and a Discord webhook, posts its error lines and a notice when it starts and finishes |
+| `stream <seconds> [--store]` | live quotes for that many seconds; Ctrl-C or SIGTERM stops it early, with the quotes stored; with `--store` and a Discord webhook, posts its error lines and a notice when it starts and stops |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
 | `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |

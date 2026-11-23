@@ -72,8 +72,13 @@ class QuoteWriter {
     // Callback for DataSource::StreamQuotes.
     data::QuoteCallback MakeStreamSink();
 
-    // Writes everything buffered now, on the calling thread.
-    void Flush();
+    // Writes everything buffered now, on the calling thread; false if a
+    // batch failed (logged, and kept for the next flush).
+    bool Flush();
+    // Stops the background thread and flushes everything still buffered; false
+    // if that final flush failed (logged). Idempotent; the destructor calls it.
+    // Do not Push() after Close().
+    bool Close();
 
    private:
     void Run();

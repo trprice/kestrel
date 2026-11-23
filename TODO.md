@@ -205,14 +205,15 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Alerts: error lines for what only warns today. A stream down longer
       than a threshold (say 5 minutes), and an authorization that expired
       mid-run (it leaves the process up but unable to trade, with only
-      repeated warnings in its log; Schwab's `AccessToken()` logs nothing
-      once the refresh token has expired), log one error each, so the
-      Discord alerts send them. Also the risk gate's halts and loss limits,
-      which only warn or log nothing (a `max_daily_loss` refusal in
-      `Admit()`). A deliberate action (a loss-limit close) is not an error:
-      post it as a notice through the alerter instead. For daily bars, a
-      missing bar is noticed a few minutes after the expected close, not
-      a bar's length later.
+      repeated warnings in its log), log one error each, so the Discord
+      alerts send them. Schwab's login does this now (one error under 3
+      days left, one on expiry); Kraken and Binance.US keys do not expire.
+      Also the risk gate's halts and loss limits, which only warn or log
+      nothing (a `max_daily_loss` refusal in `Admit()`). A deliberate
+      action (a loss-limit close) is not an error: post it as a notice
+      through the alerter instead. For daily bars, a missing bar is
+      noticed a few minutes after the expected close, not a bar's length
+      later.
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
 - [ ] Run several strategies in one process, sharing data subscriptions
@@ -837,6 +838,11 @@ the header of the code concerned.
 ## Done
 
 ### Overall
+- [x] Alerts for the Schwab quote recorder: `stream` and `bars` with
+      `--store` post their error lines and start/finish notices; `stream`
+      stops cleanly on Ctrl-C or SIGTERM, storing what it has; a Schwab
+      login under 3 days from expiring, or expired mid-run, logs one
+      error per authorization in each process (Nov 23 2026)
 - [x] Alerts to Discord: `run` posts its error lines, and a notice when it
       starts and stops, to a webhook from the secrets file (`[alerts]`;
       `net::Alerter`). An spdlog sink queues each line without blocking

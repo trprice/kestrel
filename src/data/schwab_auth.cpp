@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <format>
 #include <nlohmann/json.hpp>
 
 #include "kestrel/util/hmac.hpp"
@@ -137,6 +138,7 @@ Result<void> SchwabAuth::Load() {
     }
     std::lock_guard lock(mMutex);
     Adopt(std::move(*tokens));
+    NoteExpiry(mClock());
     return {};
 }
 
@@ -319,6 +321,34 @@ void SchwabAuth::Save(types::Timestamp now) {
     }
 }
 
+void SchwabAuth::NoteExpiry(types::Timestamp now) {
+    const auto deadline = mTokens->refresh_expires_at;
+    if (now >= deadline) {
+        if (mExpiredNotedFor != deadline) {
+            mExpiredNotedFor = deadline;
+            mNearNotedFor = deadline;
+            spdlog::error(
+                "the Schwab login expired at {}: no Schwab data or trading "
+                "until you run `kestrel_app authorize`",
+                types::FormatIso8601(deadline));
+        }
+        return;
+    }
+    if (deadline - now < kExpiryNotice && mNearNotedFor != deadline) {
+        mNearNotedFor = deadline;
+        const auto left = deadline - now;
+        const auto hours = std::chrono::duration_cast<std::chrono::hours>(left);
+        const auto minutes = std::max<std::int64_t>(
+            1, std::chrono::duration_cast<std::chrono::minutes>(left).count());
+        spdlog::error(
+            "the Schwab login expires in {} (at {}): run `kestrel_app "
+            "authorize` before then, or Schwab data and trading stop",
+            hours.count() > 0 ? std::format("{} h", hours.count())
+                              : std::format("{} min", minutes),
+            types::FormatIso8601(deadline));
+    }
+}
+
 Result<std::string> SchwabAuth::AccessToken() {
     std::lock_guard lock(mMutex);
     if (!mTokens) {
@@ -328,27 +358,51 @@ Result<std::string> SchwabAuth::AccessToken() {
     const auto now = mClock();
     if ((mRefreshRefused || now >= mTokens->refresh_expires_at) &&
         !AdoptNewerAuthorization(now)) {
+        if (!mRefreshRefused) {
+            NoteExpiry(now);
+        }
         return std::unexpected(AuthError(
             "the Schwab refresh token is no longer valid; re-authorization "
             "required"));
     }
+    // NoteExpiry runs only after any adoption or renewal, and never once
+    // Schwab has refused the login, so neither a superseded deadline nor an
+    // already-refused login is reported as "expires in N h".
+    const auto finish = [&]() -> Result<std::string> {
+        NoteExpiry(now);
+        return mTokens->access_token;
+    };
     if (mSavePending && now >= mNextSave) {
         Save(now);
     }
+    bool checked_file = false;
     if (now + kRefreshMargin < mTokens->access_expires_at) {
-        return mTokens->access_token;
+        // Before reporting a near-expiry login while its access token is still
+        // cached, check once whether `authorize` already wrote a newer one.
+        if (now < mTokens->refresh_expires_at &&
+            mTokens->refresh_expires_at - now < kExpiryNotice &&
+            mNearNotedFor != mTokens->refresh_expires_at) {
+            checked_file = true;
+            AdoptNewerAuthorization(now);
+        }
+        if (now + kRefreshMargin < mTokens->access_expires_at) {
+            return finish();
+        }
     }
     // Before renewing, take up a re-authorization made since this process
     // read the file, whose access token may well still be good.
-    if (AdoptNewerAuthorization(now) &&
+    if (!checked_file && AdoptNewerAuthorization(now) &&
         now + kRefreshMargin < mTokens->access_expires_at) {
-        return mTokens->access_token;
+        return finish();
     }
     for (int pass = 0; pass < 2; ++pass) {
         const bool usable = now < mTokens->access_expires_at;
         if (now < mNextAttempt) {
             if (usable) {
-                return mTokens->access_token;
+                return finish();
+            }
+            if (!mRefreshRefused && !mRefusalLogged) {
+                NoteExpiry(now);
             }
             return std::unexpected(*mLastError);
         }
@@ -379,6 +433,9 @@ Result<std::string> SchwabAuth::AccessToken() {
                 return std::unexpected(*mLastError);
             }
             if (mRefreshRefused || !usable) {
+                if (!mRefreshRefused && !mRefusalLogged) {
+                    NoteExpiry(now);
+                }
                 return std::unexpected(refreshed.error());
             }
             spdlog::warn(
@@ -386,7 +443,7 @@ Result<std::string> SchwabAuth::AccessToken() {
                 "lasts until {}",
                 refreshed.error().ToString(),
                 types::FormatIso8601(mTokens->access_expires_at));
-            return mTokens->access_token;
+            return finish();
         }
         mLastError.reset();
         mNextAttempt = {};
@@ -398,7 +455,7 @@ Result<std::string> SchwabAuth::AccessToken() {
             break;
         }
     }
-    return mTokens->access_token;
+    return finish();
 }
 
 void SchwabAuth::Invalidate(std::string_view token) {

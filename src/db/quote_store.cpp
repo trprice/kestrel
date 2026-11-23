@@ -189,14 +189,20 @@ QuoteWriter::QuoteWriter(std::shared_ptr<Database> database,
       mInterval(flush_interval),
       mThread([this] { Run(); }) {}
 
-QuoteWriter::~QuoteWriter() {
-    {
-        std::lock_guard lock(mMutex);
-        mStopping = true;
+QuoteWriter::~QuoteWriter() { (void)Close(); }
+
+bool QuoteWriter::Close() {
+    if (mThread.joinable()) {
+        {
+            std::lock_guard lock(mMutex);
+            mStopping = true;
+        }
+        mWake.notify_all();
+        mThread.join();
+        return Flush();
     }
-    mWake.notify_all();
-    mThread.join();
-    Flush();
+    std::lock_guard lock(mMutex);
+    return mBuffer.empty();
 }
 
 Result<void> QuoteWriter::Prime(const std::string& venue,
@@ -250,7 +256,7 @@ data::QuoteCallback QuoteWriter::MakeStreamSink() {
     };
 }
 
-void QuoteWriter::Flush() {
+bool QuoteWriter::Flush() {
     std::lock_guard flush_lock(mFlushMutex);
     std::vector<types::Quote> batch;
     {
@@ -258,11 +264,11 @@ void QuoteWriter::Flush() {
         batch.swap(mBuffer);
     }
     if (batch.empty()) {
-        return;
+        return true;
     }
     auto saved = mStore.Save(batch);
     if (saved) {
-        return;
+        return true;
     }
     spdlog::error("store quotes: {} ({} quotes kept for retry)",
                   saved.error().ToString(), batch.size());
@@ -277,6 +283,7 @@ void QuoteWriter::Flush() {
                     batch.begin() + static_cast<std::ptrdiff_t>(drop));
     }
     mBuffer = std::move(batch);
+    return false;
 }
 
 void QuoteWriter::Run() {

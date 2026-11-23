@@ -69,6 +69,10 @@ class SchwabAuth {
     // After a renewal fails, wait this long before trying again (the current
     // token is handed out meanwhile while it is still valid).
     static constexpr std::chrono::seconds kRetryInterval{10};
+    // Report (at error level, once per authorization) a login this close to
+    // expiring: three days, so a daily job (or the recorder's Friday-close
+    // run) sees it well ahead, even across a weekend.
+    static constexpr std::chrono::hours kExpiryNotice{72};
 
     SchwabAuth(config::SchwabCredentials credentials,
                config::SchwabTokenStore store,
@@ -117,6 +121,11 @@ class SchwabAuth {
     // Saves mTokens, or adopts the file's if it holds a newer authorization;
     // on failure logs and schedules a retry. Requires mMutex.
     void Save(types::Timestamp now);
+    // Logs an error, once per authorization, when its refresh token is
+    // within kExpiryNotice of expiring, and again once it has expired: at
+    // error level so the Discord alerts send them (re-authorizing is the
+    // user's to do). Requires mMutex and mTokens.
+    void NoteExpiry(types::Timestamp now);
 
     const config::SchwabCredentials mCredentials;
     const config::SchwabTokenStore mStore;
@@ -134,6 +143,10 @@ class SchwabAuth {
     bool mSavePending = false;  // mTokens is newer than the token file
     bool mRotated = false;      // ... and holds a refresh token the file lacks
     types::Timestamp mNextSave{};  // when to retry a failed save
+    // The refresh deadlines already reported by NoteExpiry: as near, and as
+    // passed.
+    types::Timestamp mNearNotedFor{};
+    types::Timestamp mExpiredNotedFor{};
 };
 
 // Sends requests to Schwab's API with the access token, within a rate limit.

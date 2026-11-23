@@ -67,7 +67,7 @@ class AlertCommand : public Command {
         }
         if (!config.GetAlerts().enabled) {
             spdlog::warn(
-                "alert: [alerts] enabled = false, so `run` sends nothing; "
+                "alert: [alerts] enabled = false, so commands send nothing; "
                 "sending this test anyway");
         }
         if (auto sent = alerter->SendNow(mMessage); !sent) {

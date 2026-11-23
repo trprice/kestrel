@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "error_lines.hpp"
 #include "kestrel/db/bar_store.hpp"
 #include "test_helpers.hpp"
 
@@ -14,6 +15,7 @@ namespace {
 
 using namespace kestrel;
 using kestrel::testing::D;
+using kestrel::testing::ErrorLines;
 
 std::string Env(const char* name) {
     const char* v = std::getenv(name);
@@ -173,6 +175,58 @@ TEST_F(QuoteStoreTest, WriterFlushesPeriodically) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     FAIL() << "quote was never flushed";
+}
+
+TEST_F(QuoteStoreTest, WriterCloseFlushesAndIsIdempotent) {
+    db::QuoteWriter writer(mDatabase, std::chrono::hours(1));
+    for (int i = 0; i < 3; ++i) {
+        writer.Push(MakeQuote(i));
+    }
+    EXPECT_TRUE(writer.Close());
+    db::QuoteStore store(mDatabase);
+    auto loaded = store.Load(kVenue, "BTC/USD", MakeQuote(0).received_time,
+                             MakeQuote(10).received_time);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->size(), 3U);
+    EXPECT_TRUE(writer.Close());
+}
+
+TEST_F(QuoteStoreTest, WriterCloseReportsFailureAndDestructorDoesNotRetry) {
+    struct ReadOnlyGuard {
+        std::shared_ptr<db::Database> db;
+        ~ReadOnlyGuard() {
+            if (db) {
+                (void)db->Query("SET default_transaction_read_only = off");
+            }
+        }
+    };
+
+    ErrorLines errors;
+    {
+        ReadOnlyGuard ro{mDatabase};
+        db::QuoteWriter writer(mDatabase, std::chrono::hours(1));
+        ASSERT_OK(writer.Prime(kVenue, {"BTC/USD"}));
+        ASSERT_OK(mDatabase->Query("SET default_transaction_read_only = on"));
+        writer.Push(MakeQuote(0));
+        EXPECT_FALSE(writer.Close());
+        EXPECT_FALSE(writer.Close());
+    }  // ~QuoteWriter() runs before ~ReadOnlyGuard() and must not retry Flush()
+    EXPECT_EQ(errors.Count("store quotes:"), 1u);
+}
+
+TEST_F(QuoteStoreTest, WriterCloseRacesPeriodicFlushesWithoutLosingQuotes) {
+    db::QuoteWriter writer(mDatabase, std::chrono::milliseconds(1));
+    ASSERT_OK(writer.Prime(kVenue, {"BTC/USD"}));
+    constexpr int kCount = 250;
+    for (int i = 0; i < kCount; ++i) {
+        writer.Push(MakeQuote(i));
+    }
+    EXPECT_TRUE(writer.Close());
+    db::QuoteStore store(mDatabase);
+    auto loaded = store.Load(kVenue, "BTC/USD", MakeQuote(0).received_time,
+                             MakeQuote(kCount + 1).received_time);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->size(), static_cast<std::size_t>(kCount));
 }
 
 TEST_F(QuoteStoreTest, QuotesTableIsAHypertable) {

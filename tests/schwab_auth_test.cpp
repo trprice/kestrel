@@ -6,7 +6,10 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <string>
+#include <vector>
 
+#include "error_lines.hpp"
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/factory.hpp"
 #include "kestrel/util/hmac.hpp"
@@ -16,6 +19,7 @@ namespace kestrel::data {
 namespace {
 
 using namespace std::chrono_literals;
+using kestrel::testing::ErrorLines;
 
 // Answers from a script and keeps every request it saw.
 class FakeHttp : public net::HttpClient {
@@ -100,7 +104,7 @@ class SchwabAuthTest : public ::testing::Test {
     // A token file whose access token has `access_left` to go and whose
     // refresh token has `refresh_left`.
     void SaveTokens(std::chrono::seconds access_left,
-                    std::chrono::hours refresh_left = 72h) {
+                    std::chrono::seconds refresh_left = 72h) {
         ASSERT_OK(Store().Save({"access-1", "refresh-1", mNow + access_left,
                                 mNow + refresh_left}));
     }
@@ -661,6 +665,173 @@ TEST_F(SchwabAuthTest, FactoryNeedsCredentialsAndTokensEvenInPaperMode) {
     auto ds = CreateDataSource(*cfg);
     ASSERT_OK(ds);
     EXPECT_EQ((*ds)->Name(), "schwab");
+}
+
+TEST_F(SchwabAuthTest, ALoginNearItsEndIsReportedOnce) {
+    SaveTokens(30min, 48h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    ASSERT_OK(auth->AccessToken());
+    mNow += 1h;
+    mHttp->Push(TokenReply("access-2", "refresh-1"));
+    ASSERT_OK(auth->AccessToken());
+    EXPECT_EQ(errors.Count("the Schwab login expires in 48 h"), 1u);
+    EXPECT_EQ(errors.Count("Schwab login"), 1u);
+}
+
+TEST_F(SchwabAuthTest, ALoginWithMoreThanThreeDaysLeftIsNotReported) {
+    SaveTokens(30min, 73h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    ASSERT_OK(auth->AccessToken());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+    // ... until it is within three days.
+    mNow += 2h;
+    mHttp->Push(TokenReply("access-2", "refresh-1"));
+    ASSERT_OK(auth->AccessToken());
+    EXPECT_EQ(errors.Count("the Schwab login expires in 71 h"), 1u);
+}
+
+TEST_F(SchwabAuthTest, UnderAnHourLeftIsGivenInMinutes) {
+    SaveTokens(10min, 1h);
+    mNow += 25min;
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("the Schwab login expires in 35 min"), 1u);
+
+    // Under a minute rounds up to 1 min rather than printing 0 min.
+    SaveTokens(10min, 45s);
+    auto sub_minute = MakeAuth();
+    ASSERT_OK(sub_minute->Load());
+    EXPECT_EQ(errors.Count("the Schwab login expires in 1 min"), 1u);
+}
+
+TEST_F(SchwabAuthTest, ARefusedLoginDoesNotAlsoReportRemainingHours) {
+    SaveTokens(10min, 73h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+
+    mNow += 2h;  // within 72 h, and the access token has expired
+    mHttp->PushStatus(400, R"({"error":"invalid_grant"})");
+    auto first = auth->AccessToken();
+    ASSERT_FALSE(first.has_value());
+    EXPECT_EQ(first.error().category, types::ErrorCategory::kAuth);
+    auto second = auth->AccessToken();
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().category, types::ErrorCategory::kAuth);
+
+    EXPECT_EQ(errors.Count("RE-AUTHORIZATION REQUIRED"), 1u);
+    EXPECT_EQ(errors.Count("the Schwab login expires in"), 0u);
+    EXPECT_EQ(errors.Count("the Schwab login expired at"), 0u);
+}
+
+TEST_F(SchwabAuthTest,
+       ReauthorizingBeforeRenewalSuppressesStaleNearExpiryError) {
+    SaveTokens(10min, 73h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+
+    mNow += 2h;  // old token is within 72 h, but a newer save sits on disk
+    ASSERT_OK(Store().Save(Reauthorized()));
+    ASSERT_OK(auth->AccessToken());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+}
+
+TEST_F(SchwabAuthTest,
+       ReauthorizingWhileAccessTokenStillValidSuppressesNearExpiryError) {
+    SaveTokens(30min, 72h + 10min);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+
+    // 15 min later: access token still has 15 min (> kRefreshMargin), while
+    // the old refresh token crossed < 72 h, and `authorize` wrote a fresh file.
+    mNow += 15min;
+    ASSERT_OK(Store().Save(Reauthorized()));
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-new");
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+}
+
+TEST_F(SchwabAuthTest, AdoptedAuthorizationWithExpiringAccessTokenStillRenews) {
+    SaveTokens(30min, 72h + 10min);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+
+    mNow += 15min;  // old access token has 15 min left; old login < 72 h
+    auto newer = Reauthorized();
+    newer.access_expires_at = mNow + 1min;  // within kRefreshMargin
+    ASSERT_OK(Store().Save(newer));
+    mHttp->Push(TokenReply("access-renewed", "refresh-new"));
+    auto token = auth->AccessToken();
+    ASSERT_OK(token);
+    EXPECT_EQ(*token, "access-renewed");
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+}
+
+TEST_F(SchwabAuthTest, AnUnrecognisedRefusalSuppressesRemainingHoursNotice) {
+    SaveTokens(10min, 73h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+
+    mNow += 2h;  // < 72 h left, access token expired
+    mHttp->PushStatus(400, R"({"error":"something_unexpected"})");
+    auto first = auth->AccessToken();
+    ASSERT_FALSE(first.has_value());
+    EXPECT_EQ(first.error().category, types::ErrorCategory::kAuth);
+
+    // Even if a later retry hits a transient 503, mRefusalLogged still holds.
+    mNow += SchwabAuth::kRetryInterval;
+    mHttp->PushStatus(503, "unavailable");
+    auto second = auth->AccessToken();
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error().category, types::ErrorCategory::kServer);
+
+    EXPECT_EQ(errors.Count("RE-AUTHORIZATION REQUIRED"), 1u);
+    EXPECT_EQ(errors.Count("the Schwab login expires in"), 0u);
+}
+
+TEST_F(SchwabAuthTest, ATransientRenewalFailureStillNotesApproachingExpiry) {
+    SaveTokens(10min, 73h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("Schwab login"), 0u);
+
+    mNow += 2h;  // < 72 h left, access token expired
+    mHttp->PushStatus(503, "unavailable");
+    auto token = auth->AccessToken();
+    ASSERT_FALSE(token.has_value());
+    EXPECT_EQ(token.error().category, types::ErrorCategory::kServer);
+    EXPECT_EQ(errors.Count("the Schwab login expires in 71 h"), 1u);
+}
+
+TEST_F(SchwabAuthTest, ALoginThatExpiresMidRunIsReportedOnce) {
+    SaveTokens(30min, 1h);
+    ErrorLines errors;
+    auto auth = MakeAuth();
+    ASSERT_OK(auth->Load());
+    EXPECT_EQ(errors.Count("the Schwab login expires in 1 h"), 1u);
+    mNow += 2h;
+    EXPECT_FALSE(auth->AccessToken().has_value());
+    EXPECT_FALSE(auth->AccessToken().has_value());
+    EXPECT_EQ(errors.Count("the Schwab login expired at"), 1u);
+
+    // A re-authorization, with its full 7 days, is taken up and not reported.
+    ASSERT_OK(Store().Save(Reauthorized()));
+    ASSERT_OK(auth->AccessToken());
+    EXPECT_EQ(errors.Count("Schwab login"), 2u);
 }
 
 }  // namespace

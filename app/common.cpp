@@ -1,5 +1,10 @@
 #include "common.hpp"
 
+#include <pthread.h>
+#include <signal.h>
+#include <spdlog/spdlog.h>
+
+#include <cstdlib>
 #include <sstream>
 
 #include "kestrel/types/timeframe.hpp"
@@ -65,6 +70,63 @@ types::Result<std::shared_ptr<db::Database>> OpenDatabase(
         return std::unexpected(migrated.error());
     }
     return shared;
+}
+
+sigset_t StopSignals() {
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGTERM);
+    return set;
+}
+
+void BlockStopSignals() {
+    const sigset_t set = StopSignals();
+    pthread_sigmask(SIG_BLOCK, &set, nullptr);
+}
+
+void IgnoreSigpipe() { std::signal(SIGPIPE, SIG_IGN); }
+
+StopSignalWatcher::StopSignalWatcher(std::function<void()> on_stop)
+    : mThread([this, on_stop = std::move(on_stop)] {
+          const sigset_t set = StopSignals();
+          bool stopping = false;
+          while (!mDone) {
+              const timespec timeout{0, 200'000'000};
+              const int sig = sigtimedwait(&set, nullptr, &timeout);
+              if (sig < 0) {
+                  continue;  // timed out, or interrupted
+              }
+              if (stopping) {
+                  spdlog::error("second signal: exiting immediately");
+                  std::_Exit(128 + sig);
+              }
+              stopping = true;
+              spdlog::info("stopping on a signal (signal again to force exit)");
+              {
+                  std::lock_guard lock(mMutex);
+                  mStopping = true;
+              }
+              mSignalled.notify_all();
+              if (on_stop) {
+                  on_stop();
+              }
+          }
+      }) {}
+
+StopSignalWatcher::~StopSignalWatcher() {
+    mDone = true;
+    mThread.join();
+}
+
+bool StopSignalWatcher::Stopping() const {
+    std::lock_guard lock(mMutex);
+    return mStopping;
+}
+
+bool StopSignalWatcher::Wait(std::chrono::steady_clock::time_point deadline) {
+    std::unique_lock lock(mMutex);
+    return mSignalled.wait_until(lock, deadline, [this] { return mStopping; });
 }
 
 }  // namespace kestrel::app

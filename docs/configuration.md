@@ -64,7 +64,10 @@ automatically, and each renewal is saved to the file. The refresh token lasts
 7 days from the authorization, and renewing does not extend it; only running
 `authorize` again replaces it. Kestrel logs a warning in its last 24 hours,
 and a `SCHWAB RE-AUTHORIZATION REQUIRED` error, saying to run `authorize`,
-once it has expired or Schwab refuses it.
+once it has expired or Schwab refuses it. Each process also logs one error
+when it sees the login has under 3 days left ("the Schwab login expires in
+N h"), and one when it expires while running, so the
+[Discord alerts](#alerts) send them.
 
 ## Provider tables
 
@@ -227,8 +230,10 @@ Whether `run` stores what it does in the `[database]`; see
 
 ## `[alerts]`
 
-`run` posts its error lines, and a notice when it starts and stops, to a
-Discord webhook. The webhook URL holds its token, so it is a credential:
+`run`, and `stream` and `bars` when recording (`--store`, as the Schwab
+quote recorder does), post their error lines, and a notice when they start
+and stop, to a Discord webhook. Looking at quotes or bars without `--store`
+posts nothing. The webhook URL holds its token, so it is a credential:
 `[alerts] discord_webhook_url` in the secrets file, or
 `KESTREL_ALERTS_DISCORD_WEBHOOK_URL` (it must be
 `https://discord.com/api/webhooks/<id>/<token>`; a URL in the main config is
@@ -240,7 +245,7 @@ channel's Edit Channel → Integrations → Webhooks, and check it with
 | Key | Meaning |
 |---|---|
 | `enabled` | default `true`; `false` mutes a configured webhook |
-| `lifecycle` | also post when `run` starts and stops (default `true`); a start with no stop before it means the process died |
+| `lifecycle` | also post when the command starts and stops (default `true`); a start with no stop before it means the process died |
 | `name` | what the messages call this process: 1-100 bytes on one line (default the config file's name, e.g. `trend-paper`) |
 
 Each message is headed with the name, the strategy, the mode and the

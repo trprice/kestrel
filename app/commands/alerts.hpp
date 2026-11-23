@@ -16,11 +16,12 @@ namespace kestrel::app {
 std::unique_ptr<net::Alerter> MakeAlerter(const config::Configuration& config,
                                           std::string_view strategy);
 
-// Alerts for one `run`: error lines from the log, and notices when it starts
-// and stops ([alerts] lifecycle). Make it after BlockStopSignals, so the
-// worker thread inherits the blocked signals, and before anything else
-// starts a thread, since spdlog's list of sinks is not safe to change while
-// another thread logs. Does nothing when alerts are off or not configured.
+// Alerts for one command (`run`, or `stream`/`bars` with `--store`): error
+// lines from the log, and notices when it starts and stops ([alerts]
+// lifecycle). Make it after BlockStopSignals, so the worker thread inherits
+// the blocked signals, and before anything else starts a thread, since
+// spdlog's list of sinks is not safe to change while another thread logs.
+// Does nothing when alerts are off or not configured.
 class AlertSession {
    public:
     AlertSession(const config::Configuration& config,

@@ -1,8 +1,11 @@
 #include <spdlog/spdlog.h>
 
+#include <format>
 #include <iostream>
 #include <limits>
+#include <optional>
 
+#include "alerts.hpp"
 #include "command.hpp"
 #include "common.hpp"
 #include "kestrel/data/recent_bars.hpp"
@@ -19,12 +22,25 @@ class BarsCommand : public Command {
         : mTimeframe(timeframe), mCount(count), mStore(store) {}
 
     int Run(const config::Configuration& config) override {
+        // Recording (--store) is a job no one watches, so it alerts; a look
+        // at the bars does not. Made before any other thread starts.
+        std::optional<AlertSession> alerts;
+        if (mStore) {
+            IgnoreSigpipe();
+            alerts.emplace(config, "bars");
+        }
+        const auto failed = [&alerts] {
+            if (alerts) {
+                alerts->Stopped("could not start");
+            }
+            return 1;
+        };
         std::unique_ptr<db::BarStore> bar_store;
         if (mStore) {
             auto database = OpenDatabase(config);
             if (!database) {
                 spdlog::error("database: {}", database.error().ToString());
-                return 1;
+                return failed();
             }
             bar_store = std::make_unique<db::BarStore>(std::move(*database));
         }
@@ -32,7 +48,7 @@ class BarsCommand : public Command {
         auto components = CreateComponents(config);
         if (!components) {
             spdlog::error("startup: {}", components.error().ToString());
-            return 1;
+            return failed();
         }
         auto& [data_source, venue] = *components;
         spdlog::info("provider={} mode={} data={} venue={}",
@@ -40,9 +56,16 @@ class BarsCommand : public Command {
                      config::ToString(config.GetMode()), data_source->Name(),
                      venue->Name());
 
-        for (const auto& symbol : config.GetSymbols()) {
-            PrintBars(*data_source, bar_store.get(), symbol);
+        if (alerts) {
+            alerts->Started(std::format("storing {} {} bars for {} symbols",
+                                        mCount, types::ToString(mTimeframe),
+                                        config.GetSymbols().size()));
         }
+        std::size_t done = 0;
+        for (const auto& symbol : config.GetSymbols()) {
+            done += PrintBars(*data_source, bar_store.get(), symbol) ? 1 : 0;
+        }
+
         if (auto balances = venue->GetBalances()) {
             for (const auto& b : *balances) {
                 std::cout << "balance " << b.asset << ": total=" << b.total
@@ -52,11 +75,22 @@ class BarsCommand : public Command {
         } else {
             spdlog::warn("balances: {}", balances.error().ToString());
         }
+        if (alerts) {
+            const auto total = config.GetSymbols().size();
+            alerts->Stopped(
+                done == total
+                    ? std::format("done: bars for all {} symbols", total)
+                    : std::format("done: bars for {} of {} symbols (see the "
+                                  "log)",
+                                  done, total));
+        }
         return 0;
     }
 
    private:
-    void PrintBars(data::DataSource& data_source, db::BarStore* bar_store,
+    // Whether the symbol's bars were fetched (non-empty) and, with a store,
+    // saved.
+    bool PrintBars(data::DataSource& data_source, db::BarStore* bar_store,
                    const types::Symbol& symbol) const {
         if (auto info = data_source.GetSymbolInfo(symbol)) {
             std::cout << symbol << ": tick=" << info->tick_size
@@ -65,7 +99,7 @@ class BarsCommand : public Command {
         } else {
             spdlog::error("{}: {}", symbol, info.error().ToString());
             if (info.error().category == types::ErrorCategory::kNotFound) {
-                return;  // no bars to look for
+                return false;  // no bars to look for
             }
         }
         auto result =
@@ -73,8 +107,13 @@ class BarsCommand : public Command {
                              static_cast<std::size_t>(mCount), types::Now());
         if (!result) {
             spdlog::error("{}: {}", symbol, result.error().ToString());
-            return;
+            return false;
         }
+        if (result->empty()) {
+            spdlog::warn("{}: no {} bars", symbol, types::ToString(mTimeframe));
+            return false;
+        }
+        bool ok = true;
         if (bar_store) {
             auto saved = bar_store->Save(std::string(data_source.Name()),
                                          symbol, mTimeframe, *result);
@@ -84,11 +123,13 @@ class BarsCommand : public Command {
             } else {
                 spdlog::error("{}: store: {}", symbol,
                               saved.error().ToString());
+                ok = false;
             }
         }
         for (const auto& b : *result) {
             std::cout << symbol << ' ' << FormatBar(b) << '\n';
         }
+        return ok;
     }
 
     types::Timeframe mTimeframe;
