@@ -9,6 +9,10 @@
 #include <condition_variable>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <string>
+#include <vector>
+
+#include "kestrel/util/notice.hpp"
 
 namespace {
 
@@ -20,6 +24,20 @@ constexpr const char* kWebhook =
     "https://discord.com/api/webhooks/123456/abc-DEF_ghi";
 
 // --- the pure parts ---------------------------------------------------------
+
+// A notice is logged, and handed to the handler while one is set.
+TEST(Alerts, NoticesGoToTheHandlerWhileOneIsSet) {
+    std::vector<std::string> seen;
+    struct Guard {
+        ~Guard() { util::SetNoticeHandler({}); }
+    } guard;
+    util::SetNoticeHandler(
+        [&seen](std::string_view text) { seen.emplace_back(text); });
+    util::Notice("risk: trading halted: test");
+    util::SetNoticeHandler({});
+    util::Notice("not handed on");
+    EXPECT_EQ(seen, std::vector<std::string>{"risk: trading halted: test"});
+}
 
 TEST(Alerts, RecognisesDiscordWebhookUrls) {
     EXPECT_TRUE(net::IsDiscordWebhookUrl(kWebhook));

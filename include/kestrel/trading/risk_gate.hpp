@@ -157,7 +157,9 @@ struct RiskLimits {
 // max_drawdown_close still halts and calls CancelAll at once, and its close
 // is sent when the market opens, whatever the price then. max_loss_per_position
 // still pauses the symbol at once, but cancels and closes only if the loss
-// stands at a price noted in the session that is open.
+// stands at a price noted in the session that is open. Halts, closes at
+// market, shut-market pauses and once-a-day loss-limit entry refusals are
+// reported through util::Notice so configured alerts post them.
 //
 // Thread-safe. Orders are checked and placed one at a time, so two concurrent
 // orders cannot together exceed a limit; that means the venue call is made
@@ -214,7 +216,10 @@ class RiskGatedVenue : public TradingVenue {
     // holds even if a cancel fails; if the second cancel fails its error is
     // returned.
     types::Result<std::vector<std::string>> Halt(const std::string& reason);
-    void Resume() { mHalted = false; }
+    void Resume() {
+        mDrawdownNoticed = false;
+        mHalted = false;
+    }
     bool IsHalted() const { return mHalted; }
 
     std::string_view Name() const override { return mVenue->Name(); }
@@ -268,9 +273,15 @@ class RiskGatedVenue : public TradingVenue {
     // Starts the loss count if needed and applies the venue's fills since
     // the last call to mPnl.
     types::Result<void> CatchUpFills(types::Timestamp now);
-    // Why the daily loss, consecutive loss or drawdown limit blocks trading,
-    // if one does; the fills must have been caught up on.
-    std::optional<std::string> Losses(types::Timestamp now);
+    // Why trading is blocked by the losses, and whether a limit was reached
+    // (not when the drawdown is only unknown, a held symbol unpriced).
+    struct LossBlock {
+        std::string reason;
+        bool limit_reached = true;
+    };
+    // Whether the daily loss, consecutive loss or drawdown limit blocks
+    // trading; the fills must have been caught up on.
+    std::optional<LossBlock> Losses(types::Timestamp now);
     // The unrealized P&L of everything held, or nullopt if a held symbol has
     // no usable reference price.
     std::optional<types::Decimal> Unrealized(types::Timestamp now) const;
@@ -327,6 +338,9 @@ class RiskGatedVenue : public TradingVenue {
     const types::MarketHours mHours;  // the regular session
 
     std::atomic<bool> mHalted{false};
+    // max_drawdown_close's halt has been posted (util::Notice); cleared by
+    // Resume and StartLossCount. Atomic, as Resume takes no lock.
+    std::atomic<bool> mDrawdownNoticed{false};
 
     mutable std::mutex mPriceMutex;
     std::map<types::Symbol, ReferencePrice> mPrices;
@@ -356,6 +370,8 @@ class RiskGatedVenue : public TradingVenue {
     std::map<types::Symbol, std::chrono::sys_days> mStopped;
     std::map<types::Symbol, types::Timestamp> mLastClose;
     bool mDrawdownClosed = false;  // max_drawdown_close has halted the gate
+    // The day a loss limit's refusal was last posted as a notice.
+    std::optional<std::chrono::sys_days> mLossNoticeDay;
     std::optional<types::Timestamp> mLastDrawdownClose;
     // Why max_drawdown_close closes everything, while that waits for the
     // market to open.

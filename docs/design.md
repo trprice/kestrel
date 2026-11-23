@@ -87,6 +87,8 @@ order, on one thread and a simulated clock.
 | `Strategy` / `Context` (`strategy/`) | A strategy implements the hooks (`OnStart`, `OnBar`, `OnQuote`, `OnFill`, `OnOrderUpdate`, `OnSessionOpen`, `OnSessionClosing`, `OnTimer`, `OnStop`) and declares `Requirements`. `Context` is what it can see: the clock, its venue, symbol info, its bar history, the market's hours and, if asked for, its state store. Four are included: `MaCrossover` (SMA or EMA crossover), `MarketMaker` (quotes both sides from the quote stream), `Breakout` (bar-pattern setups from `patterns.hpp`, with an optional trend filter and ATR stop) and `MomentumRotation` (several symbols at once); each is described in [strategies/](strategies/README.md). |
 | `Runner` | Owns one strategy, run on one thread, with venue polling on a second. Cancels every order already open on the venue's symbols before the strategy starts (it assumes sole control of the account's orders), and with `cancel_entries_on_stop` (`run`) cancels the entries left open when it stops, keeping the orders that close a position. Queues events (conflating quotes per symbol; at most `max_queued_bars` bars, past which a bar is dropped and later backfilled), runs the strategy on one thread, calls its timer, takes fills and order updates pushed by the venue or polls for them, and puts the order tracker and risk gate between the strategy and the venue. `Begin`/`Drain`/`End` let a backtest drive it step by step. |
 | `TimedHttpClient` (`net/`) | Wraps any `HttpClient` and times each call into `LatencyStats`, per endpoint. The factory wraps every client it builds, so all venue traffic is measured. |
+| `Alerter` (`net/`) / `Notice` (`util/`) | Posts error-level log lines and `util::Notice` messages (risk-gate actions, low database disk, start/stop) to a Discord webhook on a background thread, batching bursts, deduplicating repeated errors, and redacting credentials, hashes and balances. |
+| `FeedWatch` (`data/`) | Tracks open-market silence across a whole quote stream so `Runner` and `stream` log one error when the stream is down and one info line when quotes return. |
 | `RunRecorder` | Inside the runner. Tracks P&L from the fills the runner sees and the latest marks, and writes fills, periodic snapshots and response-time windows to a `TradeLog`. Failures are logged and retried, never fatal. |
 | `StateStore` / `StrategyStateStore` | A key-value store a strategy keeps state in across restarts (`Context::State`, when `Requirements::state` asks); `StrategyStateStore` implements it on the `strategy_state` table, scoped by provider and mode. |
 | `TradeLog` / `TradeStore` | `TradeLog` is the recorder's output interface; `TradeStore` implements it on PostgreSQL (`runs`, `fills`, `pnl_snapshots`, `venue_latency`). |
@@ -115,9 +117,12 @@ provider; the providers know nothing about strategies.
   `OnStop`. `Drain()` (backtests) polls on the calling thread instead, so a
   backtest stays deterministic. A venue the poller calls must be safe to call
   from two threads at once, as the paper and Binance.US venues are.
-- **Watch thread** (`run` only): collects SIGINT and SIGTERM and calls
-  `Runner::Stop()`, which is not async-signal-safe.
+- **Watch thread** (`run`, `stream`): collects SIGINT and SIGTERM so the first
+  signal stops cleanly and a second exits immediately.
 - **Quote writer thread** (`--store` only): inserts buffered quotes in batches.
+- **Alert worker thread** (`run`, `stream --store`, `bars --store`, when a
+  Discord webhook is configured): redacts, batches and posts queued error lines
+  and notices to Discord without blocking callers.
 
 ## Design notes
 
@@ -167,18 +172,20 @@ provider; the providers know nothing about strategies.
 ```
 include/kestrel/   public headers, one directory per area:
   types/             Decimal, Symbol, Timeframe, orders, errors, latency
-  util/              retry, rate limiter, HMAC, JSON
-  net/               HTTP client and its timing wrapper
+  util/              retry, rate limiter, HMAC, JSON, notices
+  net/               HTTP client, its timing wrapper, Discord alerter
   config/            configuration, credentials, Schwab token store
-  data/              DataSource and the provider data sources, streams
+  data/              DataSource and the provider data sources, streams,
+                     FeedWatch
   db/                database; bar, quote, trade, account-fill,
                      market-trade and strategy-state stores
   trading/           TradingVenue, paper and live venues, Binance.US API,
                      order rules, PnlTracker, RiskGatedVenue
   strategy/          Strategy, Runner, LogContext, RunRecorder, the strategies
                      (MaCrossover, MeanReversion, MarketMaker, Breakout,
-                     MomentumRotation) and bar patterns and indicators
-                     (patterns.hpp: SMA, EMA, RSI, ATR, Bollinger, MACD)
+                     MomentumRotation, TrendEnsemble) and bar patterns and
+                     indicators (patterns.hpp: SMA, EMA, RSI, ATR, Bollinger,
+                     MACD)
   backtest/          ReplayDataSource, LoadReplayData, RunBacktest,
                      SummaryBuilder (the P&L summary and markouts)
   factory.hpp        builds a provider's data source and venue, a strategy by
@@ -187,7 +194,7 @@ src/               implementation, same directories (plus factory.cpp)
 app/main.cpp       kestrel_app: parses the command line and runs one command
 app/commands/      one class per subcommand (bars, account, order, cancel,
                    stream, stream-bars, init-db, run, backtest, trades,
-                   authorize);
+                   authorize, alerts);
                    command.hpp is the interface
 app/common.*       helpers shared by the commands (argument validators, printing)
 tests/             kestrel_tests; tests/data and cli_check.cmake drive the cli_* tests

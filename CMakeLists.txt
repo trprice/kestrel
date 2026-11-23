@@ -64,6 +64,7 @@ add_library(kestrel
   src/types/market_hours.cpp
   src/net/alerts.cpp
   src/util/hmac.cpp
+  src/util/notice.cpp
   src/util/json.cpp
   src/util/rate_limiter.cpp
   src/util/url.cpp
@@ -77,6 +78,7 @@ add_library(kestrel
   src/data/schwab_data_source.cpp
   src/data/schwab_streamer.cpp
   src/data/recent_bars.cpp
+  src/data/feed_watch.cpp
   src/data/binanceus_data_source.cpp
   src/data/binanceus_errors.cpp
   src/data/binanceus_quote_stream.cpp
@@ -232,6 +234,7 @@ if(KESTREL_BUILD_TESTS)
     tests/timeframe_test.cpp
     tests/market_hours_test.cpp
     tests/recent_bars_test.cpp
+    tests/feed_watch_test.cpp
     tests/patterns_test.cpp
     tests/breakout_test.cpp
     tests/util_test.cpp

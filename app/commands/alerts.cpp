@@ -7,6 +7,7 @@
 #include "command.hpp"
 #include "common.hpp"
 #include "kestrel/net/http_client.hpp"
+#include "kestrel/util/notice.hpp"
 
 namespace kestrel::app {
 
@@ -120,17 +121,23 @@ AlertSession::AlertSession(const config::Configuration& config,
     // Never removed: other threads may still log while the run stops, and
     // the sink drops what it gets once the Alerter has closed.
     spdlog::default_logger()->sinks().push_back(std::move(sink));
-    spdlog::info("alerts: error lines go to Discord");
+    util::SetNoticeHandler(
+        [alerter = mAlerter](std::string_view text) { alerter->Notify(text); });
+    spdlog::info("alerts: error lines and notices go to Discord");
 }
 
-AlertSession::~AlertSession() {
+AlertSession::~AlertSession() { Close(); }
+
+void AlertSession::Close() {
     if (!mAlerter) {
         return;
     }
+    util::SetNoticeHandler({});
     if (!mStopped && mLifecycle) {
         mAlerter->Notify("stopped unexpectedly (see the log)");
     }
     mAlerter->Close();
+    mAlerter.reset();
 }
 
 void AlertSession::Started(std::string_view what) {

@@ -406,8 +406,26 @@ types::Result<void> Runner::Begin() {
     // trade against, and a loss limit and the recorded marks would be up to a
     // bar behind the market.
     if (requirements.quotes || mPaper || mGate || mRecorder) {
+        // Before the stream's thread starts, which notes each quote as it
+        // arrives (PushQuote), so a strategy slow to take them from the
+        // queue does not look like a stream down. Checked only in Run().
+        if (mOptions.quote_stream_down > std::chrono::milliseconds::zero()) {
+            mQuoteFeed = std::make_unique<data::FeedWatch>(
+                mOptions.quote_stream_down,
+                std::make_shared<const types::MarketHours>(mHours->Regular()));
+        }
         auto sub = mData->StreamQuotes(
             requirements.symbols, [this](const types::Quote& quote) {
+                if (mQuoteFeed) {
+                    if (const auto lasted = mQuoteFeed->Note(mClock())) {
+                        mLog.Info(
+                            "quotes again, after {} s of open market without "
+                            "any",
+                            std::chrono::duration_cast<std::chrono::seconds>(
+                                *lasted)
+                                .count());
+                    }
+                }
                 if (mPaper) {
                     mPaper->OnQuote(quote);
                 }
@@ -590,6 +608,87 @@ void Runner::CheckQuoteFeeds(types::Timestamp now) {
                 std::chrono::duration_cast<std::chrono::seconds>(quiet)
                     .count());
         }
+    }
+}
+
+std::optional<types::Timestamp> Runner::BarDue(
+    const types::Bar& last, types::Timeframe timeframe) const {
+    const auto step = types::FixedDuration(timeframe);
+    if (mOptions.late_bar_error <= std::chrono::milliseconds::zero() || !step ||
+        *step < std::chrono::days(1)) {
+        return std::nullopt;
+    }
+    // Daily bars are taken to open at 00:00 UTC (SchwabDataSource's, the
+    // crypto exchanges'), with each regular session inside one UTC day; a
+    // market whose session crosses midnight UTC would need its trading date.
+    // The next bar with a regular session in it: in winter after-hours runs
+    // to 01:00 UTC the next day, which does not give Saturday or a holiday a
+    // daily candle (see SchwabDataSource's DailyBarPoller).
+    const types::MarketHours regular = mHours->Regular();
+    auto open = last.open_time + *step;
+    for (int i = 0; i < 30; ++i, open += *step) {
+        if (regular.AnyOpen(open, open + *step)) {
+            return open + *step + mOptions.late_bar_error;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<types::Timestamp> Runner::NextBarDue() const {
+    std::optional<types::Timestamp> next;
+    for (const auto& [series, window] : mBars) {
+        if (window.empty() || mLateBars.contains(series)) {
+            continue;
+        }
+        if (const auto due = BarDue(window.back(), series.second)) {
+            next = next ? std::min(*next, *due) : *due;
+        }
+    }
+    return next;
+}
+
+void Runner::CheckBarFeeds(types::Timestamp now) {
+    for (const auto& [series, window] : mBars) {
+        if (window.empty() || mLateBars.contains(series)) {
+            continue;
+        }
+        const auto due = BarDue(window.back(), series.second);
+        if (!due || now < *due) {
+            continue;
+        }
+        mLateBars.insert(series);
+        const auto close = *due - mOptions.late_bar_error;
+        mLog.Error(
+            "no {} bar for {} {} min after it closed at {}; the bar stream "
+            "may be down",
+            types::ToString(series.second), series.first,
+            std::chrono::duration_cast<std::chrono::minutes>(now - close)
+                .count(),
+            types::FormatIso8601(close));
+    }
+}
+
+void Runner::CheckStreams(types::Timestamp now) {
+    // Once a second at most, as it runs after every event; a clock that
+    // stepped back checks again.
+    if (mLastStreamCheck && now >= *mLastStreamCheck &&
+        now - *mLastStreamCheck < std::chrono::seconds(1)) {
+        return;
+    }
+    mLastStreamCheck = now;
+    if (mQuoteFeed) {
+        if (const auto quiet = mQuoteFeed->Check(now)) {
+            mLog.Error(
+                "no quotes for any symbol for {} s of open market; the quote "
+                "stream may be down",
+                std::chrono::duration_cast<std::chrono::seconds>(*quiet)
+                    .count());
+        }
+    }
+    // Only once a bar is due: DeliverBar keeps mNextBarDue current otherwise.
+    if (mNextBarDue && now >= *mNextBarDue) {
+        CheckBarFeeds(now);
+        mNextBarDue = NextBarDue();
     }
 }
 
@@ -787,6 +886,11 @@ types::Result<void> Runner::Run() {
     if (polling) {
         StartPoller(interval);
     }
+    if (mQuoteFeed) {
+        mQuoteFeed->Start(mClock());
+    }
+    mWatchingStreams = true;
+    mNextBarDue = NextBarDue();
     for (bool running = true; running;) {
         // The deadline paces the recorder's ticks when nothing arrives, and
         // wakes the loop for the next session hook.
@@ -795,9 +899,10 @@ types::Result<void> Runner::Run() {
         if (polling) {
             deadline = steady + interval;
         }
-        if (!mLastQuote.empty() &&
-            (mOptions.stale_quote_warning > std::chrono::milliseconds::zero() ||
-             (mGate && mOptions.risk->max_quote_age))) {
+        if (mQuoteFeed || (!mLastQuote.empty() &&
+                           (mOptions.stale_quote_warning >
+                                std::chrono::milliseconds::zero() ||
+                            (mGate && mOptions.risk->max_quote_age)))) {
             // Often enough to notice a feed gone quiet with nothing else
             // arriving.
             const SteadyTime check = steady + std::chrono::seconds(10);
@@ -808,6 +913,15 @@ types::Result<void> Runner::Run() {
             // meanwhile is seen (CheckSession re-reads it).
             const auto wait = std::clamp<types::Timestamp::duration>(
                 *due - mClock(), types::Timestamp::duration::zero(),
+                std::chrono::minutes(1));
+            const SteadyTime at = steady + wait;
+            deadline = deadline ? std::min(*deadline, at) : at;
+        }
+        if (mNextBarDue) {
+            // At most a minute, like the session events; at least a second,
+            // as CheckStreams runs at most once a second.
+            const auto wait = std::clamp<types::Timestamp::duration>(
+                *mNextBarDue - mClock(), std::chrono::seconds(1),
                 std::chrono::minutes(1));
             const SteadyTime at = steady + wait;
             deadline = deadline ? std::min(*deadline, at) : at;
@@ -828,6 +942,8 @@ types::Result<void> Runner::Run() {
         if (event) {
             running = Handle(*event);
         }
+        // After the event: a bar that was waiting in the queue counts.
+        CheckStreams(mClock());
         if (mRecorder) {
             mRecorder->Tick(mClock());
         }
@@ -954,9 +1070,12 @@ void Runner::HandleBar(const BarEvent& event) {
     if (step && !window.empty()) {
         const types::Timestamp expected = window.back().open_time + *step;
         // A gap that is all closed time (a night, a weekend, a holiday) has
-        // no bars to fetch.
-        if (event.bar.open_time > expected &&
-            mHours->AnyOpen(expected, event.bar.open_time)) {
+        // no bars to fetch; daily bars exist only on regular-session days.
+        const bool had_session =
+            *step >= std::chrono::days(1)
+                ? mHours->Regular().AnyOpen(expected, event.bar.open_time)
+                : mHours->AnyOpen(expected, event.bar.open_time);
+        if (event.bar.open_time > expected && had_session) {
             // Bars that closed while the stream was down are not replayed.
             auto gap = mData->GetBars(event.symbol, event.timeframe, expected,
                                       event.bar.open_time);
@@ -983,6 +1102,16 @@ void Runner::DeliverBar(const types::Symbol& symbol, types::Timeframe timeframe,
     window.push_back(bar);
     if (window.size() > mWindowSize) {
         window.erase(window.begin());
+    }
+    const auto step = types::FixedDuration(timeframe);
+    if (step && *step >= std::chrono::days(1)) {
+        if (mLateBars.erase({symbol, timeframe}) > 0) {
+            mLog.Info("{} bars for {} again", types::ToString(timeframe),
+                      symbol);
+        }
+        if (mWatchingStreams) {  // not in a backtest, which never Run()s
+            mNextBarDue = NextBarDue();
+        }
     }
     if (mGate) {
         mGate->NoteReferencePrice(symbol, bar.close);

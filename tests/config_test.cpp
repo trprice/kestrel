@@ -6,6 +6,7 @@
 #include "kestrel/backtest/replay_data_source.hpp"
 #include "kestrel/config/configuration.hpp"
 #include "kestrel/config/schwab_token_store.hpp"
+#include "kestrel/db/database.hpp"
 #include "kestrel/factory.hpp"
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
@@ -197,6 +198,39 @@ TEST(Config, UnknownKeysAndTablesAreErrors) {
         base + "\n[database]\npassword = \"x\"\n", NoEnv());
     ASSERT_FALSE(secret.has_value());
     EXPECT_NE(secret.error().message.find("credentials"), std::string::npos);
+}
+
+// The database's disk is checked at / when it runs here, at disk_path if
+// set (empty: not at all), and not otherwise.
+TEST(Config, DatabaseDiskPath) {
+    const auto disk = [](const std::string& section) {
+        auto cfg = config::KrakenConfiguration::Parse(
+            std::string(kKrakenToml) + "\n[database]\n" + section, NoEnv());
+        EXPECT_TRUE(cfg.has_value());
+        return cfg ? cfg->GetDatabase()->disk_path : "?";
+    };
+    EXPECT_EQ(disk(""), "/");
+    EXPECT_EQ(disk("host = \"localhost\"\n"), "/");
+    EXPECT_EQ(disk("host = \"/var/run/postgresql\"\n"), "/");
+    EXPECT_EQ(disk("host = \"db.local\"\n"), "");
+    EXPECT_EQ(disk("host = \"db.local\"\ndisk_path = \"/srv\"\n"), "/srv");
+    EXPECT_EQ(disk("disk_path = \"\"\n"), "");
+    EXPECT_FALSE(
+        config::KrakenConfiguration::Parse(
+            std::string(kKrakenToml) + "\n[database]\ndisk_path = 1\n", NoEnv())
+            .has_value());
+}
+
+TEST(Config, LowDiskMessage) {
+    constexpr std::uintmax_t kGb = 1'000'000'000;
+    EXPECT_FALSE(db::LowDiskMessage("/", 58 * kGb, 111 * kGb));
+    EXPECT_FALSE(db::LowDiskMessage("/", 0, 0));  // nothing read
+    // Under 10% free, or under 5 GB.
+    EXPECT_EQ(db::LowDiskMessage("/", 9 * kGb, 100 * kGb),
+              "database disk nearly full: 9.0 GB free of 100.0 GB (9%) at /");
+    EXPECT_EQ(db::LowDiskMessage("/data", 4'500'000'000, 20 * kGb),
+              "database disk nearly full: 4.5 GB free of 20.0 GB (22%) at "
+              "/data");
 }
 
 TEST(Config, DatabaseStatementTimeout) {

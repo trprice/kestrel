@@ -588,9 +588,10 @@ class ConfigParser {
         if (auto ok = RejectSecrets(&section, "database"); !ok) {
             return std::unexpected(ok.error());
         }
-        if (auto ok = RejectUnknownKeys(&section, "database",
-                                        {"host", "port", "dbname", "user",
-                                         "sslmode", "statement_timeout_ms"});
+        if (auto ok =
+                RejectUnknownKeys(&section, "database",
+                                  {"host", "port", "dbname", "user", "sslmode",
+                                   "statement_timeout_ms", "disk_path"});
             !ok) {
             return std::unexpected(ok.error());
         }
@@ -622,6 +623,18 @@ class ConfigParser {
                                  "or more");
             }
             d.statement_timeout = std::chrono::milliseconds(*ms);
+        }
+        if (section.contains("disk_path")) {
+            auto path = Str(&section, "database", "disk_path", "");
+            if (!path) {
+                return std::unexpected(path.error());
+            }
+            d.disk_path = std::move(*path);
+        } else if (d.host.empty() || d.host.starts_with('/') ||
+                   d.host == "localhost" || d.host == "127.0.0.1" ||
+                   d.host == "::1") {
+            // On this machine: most likely on the root disk.
+            d.disk_path = "/";
         }
         auto secrets = Secrets(root, o);
         if (!secrets) {

@@ -10,6 +10,7 @@
 #include <thread>
 #include <tuple>
 
+#include "error_lines.hpp"
 #include "kestrel/trading/paper_trading_venue.hpp"
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
@@ -1334,6 +1335,146 @@ class DailyCalendar : public types::TradingCalendar {
     }
 };
 
+// Collects what is logged while it lives.
+class LogCapture {
+   public:
+    LogCapture()
+        : mSink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
+        spdlog::default_logger()->sinks().push_back(mSink);
+    }
+    ~LogCapture() {
+        auto& sinks = spdlog::default_logger()->sinks();
+        sinks.erase(std::remove(sinks.begin(), sinks.end(), mSink),
+                    sinks.end());
+    }
+    bool Saw(const std::string& text) const {
+        for (const auto& line : mSink->last_formatted()) {
+            if (line.find(text) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+   private:
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> mSink;
+};
+
+// A daily bar that has not come half an hour (late_bar_error) after its
+// day ended is one error (the alerts send it), and its coming is logged.
+TEST_F(RunnerTest, ADailyBarLateByMinutesIsOneError) {
+    kestrel::testing::ErrorLines errors;
+    LogCapture log;
+    const auto day = [](int d) { return Hour(24 * d); };
+    data->history.clear();
+    for (int d = 0; d < 5; ++d) {
+        types::Bar bar = BarAt(0);
+        bar.open_time = day(d);
+        data->history.push_back(bar);
+    }
+    strategy->requirements.bar_timeframes = {Timeframe::kD1};
+    options.fill_poll_interval = std::chrono::milliseconds(10);
+    std::atomic<std::int64_t> clock_ms{
+        types::ToEpochMillis(day(5) + std::chrono::minutes(1))};
+    const auto set = [&](types::Timestamp t) {
+        clock_ms = types::ToEpochMillis(t);
+    };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&clock_ms] { return types::FromEpochMillis(clock_ms.load()); });
+    auto started = strategy->started.get_future();
+    thread = std::thread([this] { result = runner->Run(); });
+    started.wait();
+    const auto settle = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    };
+    const std::string late = "no 1d bar for BTC/USD";
+
+    // The warm-up ends with day 4's bar; day 5's, which closes at day 6's
+    // start, never comes.
+    set(day(6) + std::chrono::minutes(29));
+    settle();
+    EXPECT_EQ(errors.Count(late), 0u);
+    set(day(6) + std::chrono::minutes(30));
+    settle();
+    EXPECT_EQ(errors.Count(late + " 30 min after it closed at"), 1u);
+    set(day(6) + std::chrono::hours(2));
+    settle();
+    EXPECT_EQ(errors.Count(late), 1u);  // once
+
+    types::Bar bar = BarAt(0);
+    bar.open_time = day(5);
+    data->bar_callback(kSymbol, Timeframe::kD1, bar);
+    settle();
+    EXPECT_TRUE(log.Saw("1d bars for BTC/USD again"));
+    Finish();
+}
+
+// In winter US equity after-hours ends at 01:00 UTC the next day, but neither
+// Saturday nor a holiday has a daily candle (or a gap to backfill), even with
+// extended_hours.
+TEST_F(RunnerTest,
+       ADailyBarExpectsNoneOnAWinterHolidayOrWeekendWithExtendedHours) {
+    using namespace std::chrono;
+    kestrel::testing::ErrorLines errors;
+    data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), true);
+    data->history.clear();
+    // Wednesday Nov 27 2024, before Thanksgiving (EST: after-hours runs to
+    // 2024-11-28T01:00Z on Thanksgiving Day).
+    types::Bar wed = BarAt(0);
+    wed.open_time = types::Timestamp(sys_days(2024y / November / 27));
+    data->history.push_back(wed);
+    strategy->requirements.warmup_bars = 1;
+    strategy->requirements.bar_timeframes = {Timeframe::kD1};
+    options.fill_poll_interval = milliseconds(10);
+    std::atomic<std::int64_t> clock_ms{types::ToEpochMillis(
+        types::Timestamp(sys_days(2024y / November / 28)) + minutes(10))};
+    const auto set = [&](types::Timestamp t) {
+        clock_ms = types::ToEpochMillis(t);
+    };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&clock_ms] { return types::FromEpochMillis(clock_ms.load()); });
+    auto started = strategy->started.get_future();
+    thread = std::thread([this] { result = runner->Run(); });
+    started.wait();
+    const std::size_t warmup_fetches = data->get_bars_ranges.size();
+    const auto settle = [] { std::this_thread::sleep_for(milliseconds(100)); };
+    const std::string late = "no 1d bar for BTC/USD";
+
+    // Past Friday 00:30 UTC: no Thanksgiving bar was due, and Black Friday's
+    // daily bar avoids a gap backfill over closed Thanksgiving.
+    set(types::Timestamp(sys_days(2024y / November / 29)) + hours(1));
+    settle();
+    EXPECT_EQ(errors.Count(late), 0u);
+    types::Bar fri = BarAt(0);
+    fri.open_time = types::Timestamp(sys_days(2024y / November / 29));
+    data->bar_callback(kSymbol, Timeframe::kD1, fri);
+    settle();
+    EXPECT_EQ(data->get_bars_ranges.size(), warmup_fetches);
+
+    // Past Sunday 00:30 UTC and Monday open: no weekend bar due, and Monday's
+    // daily bar does not backfill the weekend either.
+    set(types::Timestamp(sys_days(2024y / December / 1)) + hours(1));
+    settle();
+    EXPECT_EQ(errors.Count(late), 0u);
+    types::Bar mon = BarAt(0);
+    mon.open_time = types::Timestamp(sys_days(2024y / December / 2));
+    data->bar_callback(kSymbol, Timeframe::kD1, mon);
+    settle();
+    EXPECT_EQ(data->get_bars_ranges.size(), warmup_fetches);
+
+    // Tuesday Dec 3's daily bar closes at Wednesday 00:00 UTC.
+    set(types::Timestamp(sys_days(2024y / December / 4)) + minutes(29));
+    settle();
+    EXPECT_EQ(errors.Count(late), 0u);
+    set(types::Timestamp(sys_days(2024y / December / 4)) + minutes(30));
+    settle();
+    EXPECT_EQ(errors.Count(late + " 30 min after it closed at"), 1u);
+    Finish();
+}
+
 // Records the session hooks and what the context said at each.
 class SessionStrategy : public strategy::Strategy {
    public:
@@ -1598,31 +1739,6 @@ TEST_F(RunnerSessionTest, ARestrictionLearnedAfterStartingMovesTheHooks) {
     runner->End();
 }
 
-// Collects what is logged while it lives.
-class LogCapture {
-   public:
-    LogCapture()
-        : mSink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
-        spdlog::default_logger()->sinks().push_back(mSink);
-    }
-    ~LogCapture() {
-        auto& sinks = spdlog::default_logger()->sinks();
-        sinks.erase(std::remove(sinks.begin(), sinks.end(), mSink),
-                    sinks.end());
-    }
-    bool Saw(const std::string& text) const {
-        for (const auto& line : mSink->last_formatted()) {
-            if (line.find(text) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-   private:
-    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> mSink;
-};
-
 // Run() logs a quote feed gone quiet while the market is open, counting
 // only open time, and logs it again when quotes come back.
 TEST_F(RunnerSessionTest, AQuietQuoteFeedIsStaleOnlyWhileTheMarketIsOpen) {
@@ -1659,6 +1775,52 @@ TEST_F(RunnerSessionTest, AQuietQuoteFeedIsStaleOnlyWhileTheMarketIsOpen) {
     data->quote_callback(quote);
     settle();
     EXPECT_TRUE(log.Saw("quotes for BTC/USD again, after 120 s of open"));
+    runner->Stop();
+    thread.join();
+}
+
+// Run() logs one error when no quote has come for any symbol for
+// quote_stream_down of open market (the alerts send it), and a line when
+// quotes come back.
+TEST_F(RunnerSessionTest, AQuoteStreamDownForMinutesOfOpenMarketIsOneError) {
+    kestrel::testing::ErrorLines errors;
+    LogCapture log;
+    std::atomic<std::int64_t> clock_ms{0};  // 00:00, before the 01:00 open
+    const auto set = [&](types::Timestamp t) {
+        clock_ms = types::ToEpochMillis(t);
+    };
+    options.fill_poll_interval = std::chrono::milliseconds(10);
+    options.stale_quote_warning = std::chrono::milliseconds::zero();
+    options.quote_stream_down = std::chrono::minutes(3);
+    std::promise<void> started;
+    strategy->on_start = [&started] { started.set_value(); };
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options,
+        [&clock_ms] { return types::FromEpochMillis(clock_ms.load()); });
+    std::thread thread([this] { (void)runner->Run(); });
+    started.get_future().wait();
+    const auto settle = [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    };
+    const std::string down = "no quotes for any symbol for";
+
+    set(Hour(0) + std::chrono::minutes(50));  // closed: not counted
+    settle();
+    set(Hour(1) + std::chrono::minutes(2));
+    settle();
+    EXPECT_EQ(errors.Count(down), 0u);
+    set(Hour(1) + std::chrono::minutes(3));
+    settle();
+    EXPECT_EQ(errors.Count(down + " 180 s of open market"), 1u);
+    set(Hour(1) + std::chrono::minutes(10));
+    settle();
+    EXPECT_EQ(errors.Count(down), 1u);  // once
+
+    types::Quote quote;
+    quote.symbol = kSymbol;
+    data->quote_callback(quote);
+    settle();
+    EXPECT_TRUE(log.Saw("quotes again, after 600 s of open market"));
     runner->Stop();
     thread.join();
 }

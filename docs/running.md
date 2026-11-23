@@ -204,17 +204,21 @@ refresh token had expired or been refused); there is no need to restart them.
   strategy's `OnFill`, which places its stop, before `OnStop`. It logs what
   it cancelled and what it left, and warns about a symbol held with no
   closing order left. A sell beyond what is held is cancelled. If the
-  holdings cannot be read, it keeps every sell and cancels every buy. The next `run` cancels what was
-  left before it starts, and does not know the position it protected: close
-  that position or watch it.
+  holdings cannot be read, it keeps every sell and cancels every buy. The next
+  `run` cancels what was left before it starts, and does not know the position
+  it protected: close that position or watch it.
 - With `[recording] enabled = true`, `run` stores its fills, P&L snapshots and
   response times as it goes; see [database.md](database.md#recording-a-run).
-- `run` logs a quote feed that has gone quiet for 2 minutes of open market
-  time (nights and weekends do not count), and again when quotes return. It
-  only logs: the strategy carries on. Every stream pings its WebSocket every
-  20 s and reconnects one whose reply does not come back by the next ping;
-  Schwab's streamer also reconnects a connection that has sent nothing, not
-  even a heartbeat, for 60 s.
+- `run` warns when a symbol's quote feed has gone quiet for 2 minutes of open
+  market time (nights and weekends do not count; `[risk] max_quote_age_ms`
+  also refuses new positions in that symbol until quotes return), logs an
+  error when no quote has come for any symbol for 5 minutes of regular open
+  market time (`stream` does too) or when a daily (or longer) bar is 30
+  minutes late, and logs when each returns; see
+  [configuration.md](configuration.md#alerts). Every stream pings its
+  WebSocket every 20 s and reconnects one whose reply does not come back by
+  the next ping; Schwab's streamer also reconnects a connection that has sent
+  nothing, not even a heartbeat, for 60 s.
 
 The strategies, with their parameters, are described in
 [strategies/](strategies/README.md), and the risk limits in

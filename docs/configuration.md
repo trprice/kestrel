@@ -256,19 +256,29 @@ Logging never waits for Discord: up to 64 lines wait to be posted, and the
 rest are counted and reported as dropped. When Discord refuses the webhook
 (401, 403 or 404), alerts stop for the rest of the run, with a warning in the
 log; a message it rejects (another 4xx, such as a 400) is dropped, with a
-warning, and the next is sent; a 429 is retried after the wait Discord asks for, other failures after 5
-seconds, doubling to a minute. Stopping posts what is left, a post every
-half second, for up to 10 seconds (less when a retry would come after that),
-and logs how many lines it could not send.
+warning, and the next is sent; a 429 is retried after the wait Discord asks
+for, other failures after 5 seconds, doubling to a minute. Stopping posts what
+is left, a post every half second, for up to 10 seconds (less when a retry
+would come after that), and logs how many lines it could not send.
 
 Before a message leaves the machine, every credential in the configuration,
 the Schwab account number and the webhook (and its token on its own) are
 masked, as is any run of 32 or more letters and digits (a
 Schwab account hash, a token) and the amount after "balance of", "balance
-is", "balance is still" and "equity" (in any case, with or without a `$`). The amounts are matched by wording, so
-a new log line that prints a balance another way is not masked. Prices,
-quantities, P&L and order IDs are kept. A line is cut at 4 KB, after the
-masking.
+is", "balance is still" and "equity" (in any case, with or without a `$`).
+The amounts are matched by wording, so a new log line that prints a balance
+another way is not masked. Prices, quantities, P&L and order IDs are kept. A
+line is cut at 4 KB, after the masking.
+
+Besides the error lines, these are posted as notices (logged as warnings):
+what the risk gate does on its own (a halt, a close at market, a symbol
+paused for the day, and a loss limit's refusal of an order that adds to a
+position, once a day) and a database disk nearly full at startup (see
+`[database]`). Some problems log an error so that they reach Discord: no
+quote for any symbol for 5 minutes of regular open market (`run`, and `stream
+--store`; plain `stream` logs it locally; the stream is down, where one quiet
+symbol only warns), and a daily bar 30 minutes late (`run`; the bar stream may
+be down). Each is posted once, and its end is logged.
 
 Alerts cannot report a process that has died (a kill, an out-of-memory
 kill, a VM restart); a heartbeat for that is on the TODO.
@@ -280,6 +290,13 @@ password comes from `KESTREL_DATABASE_PASSWORD`, `[database] password` in the
 secrets file, or libpq's `PGPASSWORD` / `~/.pgpass`. Use `host = "localhost"`
 when the role has a password, since the local socket normally uses peer
 authentication. See [database.md](database.md) for setting the database up.
+
+`disk_path`: a path on the database's disk. `run`, `stream --store` and
+`bars --store` post a notice at startup when that disk has under 10% or
+5 GB free. The default is `/` when the database is on this machine (no
+`host`, a socket directory, `localhost`, `127.0.0.1` or `::1`); set it to
+where PostgreSQL keeps its data if that is another disk, or to `""` for no
+check. A remote database is not checked unless set.
 
 `statement_timeout_ms` (default 300000, 5 minutes; 0 for no limit) cancels a
 statement that runs longer. The connection also gives up connecting after

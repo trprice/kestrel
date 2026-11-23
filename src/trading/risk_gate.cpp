@@ -4,6 +4,8 @@
 
 #include <algorithm>
 
+#include "kestrel/util/notice.hpp"
+
 namespace kestrel::trading {
 
 using types::Decimal;
@@ -145,6 +147,7 @@ types::Result<void> RiskGatedVenue::StartLossCount() {
     mConsecutiveLosses = 0;
     mTotalRealized = Decimal();
     mPeakEquity = Decimal();
+    mDrawdownNoticed = false;
     mCounting = true;
     return {};
 }
@@ -157,7 +160,7 @@ types::Result<void> RiskGatedVenue::ResetDailyBaseline() {
 types::Result<std::vector<std::string>> RiskGatedVenue::Halt(
     const std::string& reason) {
     mHalted = true;
-    spdlog::warn("risk: trading halted: {}", reason);
+    util::Notice("risk: trading halted: " + reason);
     auto cancelled = mVenue->CancelAll();
 
     // An order already inside PlaceOrder read the flag before it was set and
@@ -341,8 +344,8 @@ void RiskGatedVenue::Close(const types::Symbol& symbol, const Decimal& held,
                       placed.error().ToString());
         return;
     }
-    spdlog::warn("risk: closing {} {} at market ({}): order {}",
-                 quantity.ToString(), symbol, reason, placed->order_id);
+    util::Notice("risk: closing " + quantity.ToString() + " " + symbol +
+                 " at market (" + reason + "): order " + placed->order_id);
 }
 
 types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
@@ -389,10 +392,19 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
             mPendingDrawdownClose = reason;
         }
         mHalted = true;  // again after a Resume, while the fall stands
-        if (!mDrawdownClosed) {
+        // A new breach (not the same fall seen again) logs and cancels. Only
+        // the first since Resume or the day's start is posted: a fall that
+        // keeps crossing the limit would post at every crossing.
+        const bool new_breach = !mDrawdownClosed;
+        const std::string message =
+            "risk: trading halted: " + reason + "; closing every position";
+        if (!mDrawdownNoticed.exchange(true)) {
+            util::Notice(message);
+        } else if (new_breach) {
+            spdlog::warn("{}", message);
+        }
+        if (new_breach) {
             mDrawdownClosed = true;
-            spdlog::warn("risk: trading halted: {}; closing every position",
-                         reason);
             if (auto cancelled = mVenue->CancelAll(); !cancelled) {
                 spdlog::warn("risk: could not cancel the open orders: {}",
                              cancelled.error().ToString());
@@ -431,11 +443,11 @@ types::Result<void> RiskGatedVenue::Watch(types::Timestamp now) {
                 // A quote from a shut market can be far from where it opens:
                 // it pauses the symbol, and only a loss that stands at a
                 // price from the open session sells.
-                spdlog::warn(
-                    "risk: no new positions in {} today: {}; that is not at "
-                    "a price from the open market, so the position is closed "
-                    "only if the loss stands at one",
-                    position.symbol, reason);
+                util::Notice("risk: no new positions in " + position.symbol +
+                             " today: " + reason +
+                             "; that is not at a price from the open market, "
+                             "so the position is closed only if the loss "
+                             "stands at one");
             }
         }
     }
@@ -480,32 +492,34 @@ void RiskGatedVenue::CloseHeld(
     }
 }
 
-std::optional<std::string> RiskGatedVenue::Losses(types::Timestamp now) {
+std::optional<RiskGatedVenue::LossBlock> RiskGatedVenue::Losses(
+    types::Timestamp now) {
     if (mLimits.max_daily_loss) {
         const Decimal loss = -mPnl.Realized();
         if (loss >= *mLimits.max_daily_loss) {
-            return "daily loss limit reached (lost " + loss.ToString() +
-                   ", limit " + mLimits.max_daily_loss->ToString() + ")";
+            return LossBlock{"daily loss limit reached (lost " +
+                             loss.ToString() + ", limit " +
+                             mLimits.max_daily_loss->ToString() + ")"};
         }
     }
     if (mLimits.max_consecutive_losses &&
         mConsecutiveLosses >= *mLimits.max_consecutive_losses) {
-        return std::to_string(mConsecutiveLosses) +
-               " consecutive losing sells (limit " +
-               std::to_string(*mLimits.max_consecutive_losses) + ")";
+        return LossBlock{std::to_string(mConsecutiveLosses) +
+                         " consecutive losing sells (limit " +
+                         std::to_string(*mLimits.max_consecutive_losses) + ")"};
     }
     if (mLimits.max_drawdown) {
         // Fails closed: with something held that cannot be priced, the
         // drawdown is unknown.
         const auto drawdown = Drawdown(now);
         if (!drawdown) {
-            return std::string(
-                "drawdown unknown: a held symbol has no current price");
+            return LossBlock{
+                "drawdown unknown: a held symbol has no current price", false};
         }
         if (*drawdown >= *mLimits.max_drawdown) {
-            return "drawdown limit reached (down " + drawdown->ToString() +
-                   " from the peak, limit " + mLimits.max_drawdown->ToString() +
-                   ")";
+            return LossBlock{"drawdown limit reached (down " +
+                             drawdown->ToString() + " from the peak, limit " +
+                             mLimits.max_drawdown->ToString() + ")"};
         }
     }
     return std::nullopt;
@@ -731,10 +745,14 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
         }
         caught_up = watched.has_value();
     }
+    bool loss_limit = false;  // blocked by a reached loss limit, not a halt
     if (mHalted) {
         blocked = "trading is halted";
     } else if (counting) {
-        blocked = Losses(now);
+        if (auto losses = Losses(now)) {
+            blocked = std::move(losses->reason);
+            loss_limit = losses->limit_reached;
+        }
     }
     if (!blocked) {
         if (const auto stopped = mStopped.find(request.symbol);
@@ -795,6 +813,12 @@ types::Result<void> RiskGatedVenue::Admit(const types::OrderRequest& request,
     const bool reduces = !buy ? request.quantity <= held
                               : mLimits.shorts && request.quantity <= -held;
     if (blocked && !reduces) {
+        if (loss_limit && mLossNoticeDay != DayOf(now)) {
+            // Once a day: the strategy may try again at every bar.
+            mLossNoticeDay = DayOf(now);
+            util::Notice("risk: refusing orders that add to a position: " +
+                         *blocked + " (exits still pass)");
+        }
         return Reject(*blocked);
     }
 

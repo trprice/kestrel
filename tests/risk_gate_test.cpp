@@ -4,6 +4,7 @@
 #include <future>
 #include <mutex>
 
+#include "error_lines.hpp"
 #include "strategy_fakes.hpp"
 #include "test_helpers.hpp"
 
@@ -852,6 +853,7 @@ TEST_F(RiskGateTest, DrawdownCloseHaltsAndClosesEverything) {
 }
 
 TEST_F(RiskGateTest, ADrawdownAtTheLimitClosesAtMostOnceAMinute) {
+    kestrel::testing::Notices notices;
     limits.max_drawdown_close = D("50");
     venue->positions = {HoldingOf("2", "100")};
     Build();
@@ -863,9 +865,20 @@ TEST_F(RiskGateTest, ADrawdownAtTheLimitClosesAtMostOnceAMinute) {
     }
     EXPECT_EQ(venue->orders.size(), 1u);
     EXPECT_EQ(venue->cancel_all_calls, 3);  // at each breach
+    // Noticed once while halted, not on every tick across the limit.
+    EXPECT_EQ(notices.Count("risk: trading halted: drawdown close limit"), 1u);
     now += std::chrono::minutes(1);
     gate->NoteReferencePrice(kSymbol, D("74"));
     EXPECT_EQ(venue->orders.size(), 2u);
+    EXPECT_EQ(notices.Count("risk: trading halted: drawdown close limit"), 1u);
+
+    // Resuming re-arms the halt notice if the fall still stands or trips again,
+    // without re-cancelling protective exits placed meanwhile.
+    gate->Resume();
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("74"));
+    EXPECT_EQ(venue->cancel_all_calls, 3);
+    EXPECT_EQ(notices.Count("risk: trading halted: drawdown close limit"), 2u);
 }
 
 TEST_F(RiskGateTest, DrawdownCloseClosesAGateHaltedBefore) {
@@ -937,6 +950,40 @@ TEST_F(RiskGateTest, PositionLossClosesThatSymbolAndBlocksItForTheDay) {
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1", "ETH/USD")));
     now += std::chrono::hours(24);
     ASSERT_OK(gate->PlaceOrder(Market(Side::kBuy, "1")));
+}
+
+// What the gate does on its own reaches the alerts as notices: a halt, a
+// close at market, and a loss limit's refusals (once a day, as a strategy
+// may try at every bar).
+TEST_F(RiskGateTest, HaltsClosesAndLossRefusalsAreNotices) {
+    kestrel::testing::Notices notices;
+    limits.max_daily_loss = D("50");
+    limits.max_drawdown = D("100");
+    limits.max_loss_per_position = D("30");
+    venue->positions = {HoldingOf("1", "100")};
+    Build();
+    ASSERT_OK(gate->ResetDailyBaseline());
+    // A missing price fails closed ("drawdown unknown") without spending the
+    // day's loss-limit notice.
+    ExpectRejected(Market(Side::kBuy, "1", "ETH/USD"));
+    EXPECT_EQ(notices.Count("risk: refusing orders"), 0u);
+
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("70"));  // -30
+    EXPECT_EQ(notices.Count("risk: closing 1 BTC/USD at market (position "
+                            "loss limit reached"),
+              1u);
+
+    venue->fills = {FillOf("close", Side::kSell, "1", "40", now)};  // -60
+    venue->positions.clear();
+    ExpectRejected(Market(Side::kBuy, "1", "ETH/USD"));
+    ExpectRejected(Market(Side::kBuy, "1", "ETH/USD"));
+    EXPECT_EQ(notices.Count("risk: refusing orders that add to a position: "
+                            "daily loss limit reached"),
+              1u);
+
+    ASSERT_OK(gate->Halt("test"));
+    EXPECT_EQ(notices.Count("risk: trading halted: test"), 1u);
 }
 
 TEST_F(RiskGateTest, AFailedCloseIsTriedAgainAfterAMinute) {

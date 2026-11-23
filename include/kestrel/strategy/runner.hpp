@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "kestrel/data/data_source.hpp"
+#include "kestrel/data/feed_watch.hpp"
 #include "kestrel/strategy/strategy.hpp"
 #include "kestrel/trading/risk_gate.hpp"
 #include "kestrel/trading/trade_log.hpp"
@@ -73,6 +74,24 @@ struct RunnerOptions {
     // again when quotes come back). Closed time does not count, so a quiet
     // night or weekend is not stale. Zero turns it off.
     std::chrono::milliseconds stale_quote_warning{std::chrono::minutes(2)};
+    // Run() only, when the runner takes quotes (for the strategy, the paper
+    // venue, the risk gate or the recorder): no quote for any symbol for this
+    // long while the regular market is open is logged as an error, so the
+    // alerts send it (once, and at info when quotes come back): the stream is
+    // down, not just one symbol quiet (extended hours are thin enough to go
+    // minutes without a quote). Zero turns it off.
+    std::chrono::milliseconds quote_stream_down{std::chrono::minutes(5)};
+    // Run() only: a daily (or longer) bar that has not come this long after
+    // it closed is logged as an error (once per series, and at info when its
+    // bars come back): the bar stream may be down. A day with no regular
+    // session has no bar to wait for, and a series the warm-up found no bar
+    // for is not checked (there is no last bar to count from). Long enough for
+    // Schwab's daily candle, fetched 2 minutes after the day and then every
+    // 5 (see SchwabDataSource), to come a little late without an alert.
+    // Shorter bars are not checked: on a market that closes, one with no
+    // trade in its last minute closes only with the next trade. Zero turns
+    // it off.
+    std::chrono::milliseconds late_bar_error{std::chrono::minutes(30)};
     // End() cancels the orders open on the strategy's symbols that would open
     // or add to a position (entries), and leaves those that close it (a
     // protective stop), so a position stays protected while nothing runs. It
@@ -171,6 +190,8 @@ class Runner : private Context {
     // than that is dropped as stale (and logged).
     static constexpr std::chrono::minutes kSeenFillHorizon{10};
 
+    // `clock` may be called from the stream and poller threads as well as
+    // Run()'s, so it must be thread-safe.
     Runner(std::shared_ptr<data::DataSource> data_source,
            std::shared_ptr<trading::TradingVenue> venue,
            std::unique_ptr<Strategy> strategy, RunnerOptions options = {},
@@ -312,6 +333,19 @@ class Runner : private Context {
     void CheckQuoteFeeds(types::Timestamp now);
     // A quote arrived for `symbol` at `now`.
     void NoteQuote(const types::Symbol& symbol, types::Timestamp now);
+    // When the bar after `last` (of `timeframe`) is due: its close, plus
+    // options.late_bar_error. Nullopt for a series not checked (see
+    // RunnerOptions::late_bar_error).
+    std::optional<types::Timestamp> BarDue(const types::Bar& last,
+                                           types::Timeframe timeframe) const;
+    // Logs the daily bars that are late (options.late_bar_error). Run()
+    // thread only.
+    void CheckBarFeeds(types::Timestamp now);
+    // The earliest BarDue of a series not reported late.
+    std::optional<types::Timestamp> NextBarDue() const;
+    // The quote stream (options.quote_stream_down) and CheckBarFeeds, at
+    // most once a second. Run() thread only.
+    void CheckStreams(types::Timestamp now);
     // options.session_closing_lead, at least 1 ms.
     std::chrono::milliseconds Lead() const {
         return std::max(mOptions.session_closing_lead,
@@ -359,6 +393,10 @@ class Runner : private Context {
     std::set<types::Symbol> mStaleQuotes;
     // Those the risk gate has been told are stale (RiskLimits::max_quote_age).
     std::set<types::Symbol> mGateStale;
+    // Whether the quote stream as a whole is down (options.quote_stream_down):
+    // noted on the stream's thread, checked on Run()'s. Null when the runner
+    // streams no quotes or the check is off.
+    std::unique_ptr<data::FeedWatch> mQuoteFeed;
     // When the venue is a PaperTradingVenue, the runner's quote stream also
     // feeds its book (OnQuote), so a paper run opens one quote stream rather
     // than two.
@@ -403,6 +441,14 @@ class Runner : private Context {
     bool mBegun = false;
     bool mPushed = false;  // the venue pushes executions
     std::map<Series, std::vector<types::Bar>> mBars;
+    // The series reported late (options.late_bar_error), and when the
+    // quote stream and the bars were last checked. Run() thread only.
+    std::set<Series> mLateBars;
+    std::optional<types::Timestamp> mLastStreamCheck;
+    // NextBarDue, kept up to date as bars come and are reported late, once
+    // Run() watches the streams (a backtest never does).
+    std::optional<types::Timestamp> mNextBarDue;
+    bool mWatchingStreams = false;
     std::size_t mWindowSize = 1;
     types::Timestamp mRunStart;    // when Begin() ran; no fill before it counts
     types::Timestamp mFillCursor;  // the newest fill time seen

@@ -43,6 +43,7 @@ class BarsCommand : public Command {
                 return failed();
             }
             bar_store = std::make_unique<db::BarStore>(std::move(*database));
+            CheckDatabaseDisk(config);
         }
 
         auto components = CreateComponents(config);

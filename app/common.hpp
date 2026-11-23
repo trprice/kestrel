@@ -45,6 +45,11 @@ std::string FormatBar(const types::Bar& bar);
 types::Result<std::shared_ptr<db::Database>> OpenDatabase(
     const config::Configuration& config);
 
+// A notice (util::Notice, so the alerts post it) when the [database]'s disk
+// is nearly full: under 10% or 5 GB free at its disk_path. A warning if the
+// disk cannot be read; nothing without a [database] or a disk_path.
+void CheckDatabaseDisk(const config::Configuration& config);
+
 // Ctrl-C and SIGTERM, for a command to stop cleanly on. They are blocked
 // in every thread (call BlockStopSignals before any thread starts, so each
 // inherits the mask) and collected with sigtimedwait, since what a stop

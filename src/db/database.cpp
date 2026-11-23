@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <charconv>
 #include <deque>
+#include <format>
 #include <string_view>
 
 #include "migrations.hpp"
@@ -113,6 +114,21 @@ Database::~Database() {
     if (mConn) {
         PQfinish(mConn);
     }
+}
+
+std::optional<std::string> LowDiskMessage(const std::string& path,
+                                          std::uintmax_t available,
+                                          std::uintmax_t capacity) {
+    constexpr std::uintmax_t kGb = 1'000'000'000;
+    if (capacity == 0 || (available >= 5 * kGb && available * 10 >= capacity)) {
+        return std::nullopt;
+    }
+    const auto tenths = [](std::uintmax_t bytes) {
+        return std::format("{}.{}", bytes / kGb, bytes % kGb / (kGb / 10));
+    };
+    return std::format(
+        "database disk nearly full: {} GB free of {} GB ({}%) at {}",
+        tenths(available), tenths(capacity), available * 100 / capacity, path);
 }
 
 Result<std::unique_ptr<Database>> Database::Connect(

@@ -1,5 +1,6 @@
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <chrono>
 #include <format>
 #include <iostream>
@@ -10,6 +11,7 @@
 #include "alerts.hpp"
 #include "command.hpp"
 #include "common.hpp"
+#include "kestrel/data/feed_watch.hpp"
 #include "kestrel/db/quote_store.hpp"
 #include "kestrel/factory.hpp"
 
@@ -49,6 +51,16 @@ class StreamQuotesCommand : public Command {
             alerts.emplace(config, "stream");
         }
         StopSignalWatcher stop;
+        // Gone before `stop`: the alerts post what is left while a second
+        // signal can still force an exit.
+        struct CloseAlerts {
+            std::optional<AlertSession>& alerts;
+            ~CloseAlerts() {
+                if (alerts) {
+                    alerts->Close();
+                }
+            }
+        } close_alerts{alerts};
         const auto failed = [&alerts] {
             if (alerts) {
                 alerts->Stopped("could not start");
@@ -64,6 +76,7 @@ class StreamQuotesCommand : public Command {
             }
             quote_writer =
                 std::make_unique<db::QuoteWriter>(std::move(*database));
+            CheckDatabaseDisk(config);
         }
 
         auto source = CreateDataSource(config);
@@ -90,11 +103,25 @@ class StreamQuotesCommand : public Command {
             return 0;
         }
 
+        // No quote for any symbol for 5 minutes of regular open market is an
+        // error (so the alerts send it): the stream is down.
+        data::FeedWatch feed(std::chrono::minutes(5),
+                             std::make_shared<const types::MarketHours>(
+                                 (*source)->Hours()->Regular()));
+        feed.Start(types::Now());
         // Quotes arrive on the stream thread, and several symbols can update
         // at once, so output is serialised.
         std::mutex out_mutex;
         auto sub = (*source)->StreamQuotes(
             config.GetSymbols(), [&](const types::Quote& q) {
+                if (const auto lasted = feed.Note(types::Now())) {
+                    spdlog::info(
+                        "stream: quotes again, after {} s of open market "
+                        "without any",
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            *lasted)
+                            .count());
+                }
                 std::lock_guard lock(out_mutex);
                 std::cout << types::FormatIso8601(q.received_time) << ' '
                           << q.symbol << " bid=" << Opt(q.bid)
@@ -113,8 +140,22 @@ class StreamQuotesCommand : public Command {
                 "recording quotes for {} symbols for {}",
                 config.GetSymbols().size(), FormatDuration(mSeconds)));
         }
-        const bool signalled = stop.Wait(std::chrono::steady_clock::now() +
-                                         std::chrono::seconds(mSeconds));
+        const auto end =
+            std::chrono::steady_clock::now() + std::chrono::seconds(mSeconds);
+        // At least one Wait, so a signal already here counts (0 seconds).
+        bool signalled = false;
+        do {
+            signalled =
+                stop.Wait(std::min(end, std::chrono::steady_clock::now() +
+                                            std::chrono::seconds(10)));
+            if (const auto quiet = feed.Check(types::Now())) {
+                spdlog::error(
+                    "stream: no quotes for any symbol for {} s of open "
+                    "market; the stream may be down",
+                    std::chrono::duration_cast<std::chrono::seconds>(*quiet)
+                        .count());
+            }
+        } while (!signalled && std::chrono::steady_clock::now() < end);
         (*sub)->Stop();
         const bool stored = !quote_writer || quote_writer->Close();
         if (alerts) {

@@ -1,5 +1,7 @@
 #include <spdlog/spdlog.h>
 
+#include <mutex>
+
 #include "alerts.hpp"
 #include "command.hpp"
 #include "common.hpp"
@@ -20,11 +22,42 @@ class RunCommand : public Command {
         BlockStopSignals();
         IgnoreSigpipe();
         AlertSession alerts(config, mName);
+        // From here, so a second signal still forces an exit while the
+        // alerts post what is left (Close, below). The first stops the
+        // runner once there is one.
+        Running running;
+        StopSignalWatcher watcher([&running] {
+            std::lock_guard lock(running.mutex);
+            if (running.runner) {
+                running.runner->Stop();
+            }
+        });
+        const int code = RunStrategy(config, alerts, watcher, running);
+        alerts.Close();
+        return code;
+    }
+
+   private:
+    // The runner a stop signal stops, while there is one: the mutex keeps it
+    // from going while the watcher stops it.
+    struct Running {
+        std::mutex mutex;
+        strategy::Runner* runner = nullptr;
+    };
+
+    // Everything but the alerts' last posts; the runner is gone on return.
+    int RunStrategy(const config::Configuration& config, AlertSession& alerts,
+                    const StopSignalWatcher& watcher, Running& running) {
+        CheckDatabaseDisk(config);
         auto runner = CreateRunner(mName, config);
         if (!runner) {
             spdlog::error("run: {}", runner.error().ToString());
             alerts.Stopped("could not start");
             return 1;
+        }
+        if (watcher.Stopping()) {
+            alerts.Stopped("stopped early, on a signal");
+            return 0;
         }
         spdlog::info("running {} mode={}", mName,
                      config::ToString(config.GetMode()));
@@ -32,8 +65,21 @@ class RunCommand : public Command {
         if (!(*runner)->RiskGate()) {
             spdlog::warn("no [risk] limits: the strategy trades unchecked");
         }
-        StopSignalWatcher watcher([&runner] { (*runner)->Stop(); });
-        if (auto ran = (*runner)->Run(); !ran) {
+        {
+            std::lock_guard lock(running.mutex);
+            running.runner = runner->get();
+        }
+        // A signal just before the runner was published above: Stop() before
+        // Run() ends the run as soon as it has begun.
+        if (watcher.Stopping()) {
+            (*runner)->Stop();
+        }
+        auto ran = (*runner)->Run();
+        {
+            std::lock_guard lock(running.mutex);
+            running.runner = nullptr;  // before the runner goes
+        }
+        if (!ran) {
             spdlog::error("run: {}", ran.error().ToString());
             alerts.Stopped("stopped on an error");
             return 1;
@@ -44,7 +90,6 @@ class RunCommand : public Command {
         return 0;
     }
 
-   private:
     std::string mName;
 };
 

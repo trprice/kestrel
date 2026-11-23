@@ -416,6 +416,10 @@ types::Result<BacktestResult> RunBacktest(
         runner_options.risk->default_quote_asset =
             options.paper.default_quote_asset;
     }
+    // Backtests have no live streams to go stale or fall behind.
+    runner_options.stale_quote_warning = std::chrono::milliseconds::zero();
+    runner_options.quote_stream_down = std::chrono::milliseconds::zero();
+    runner_options.late_bar_error = std::chrono::milliseconds::zero();
     runner_options.max_queued_bars = 0;  // each bar is drained as it is emitted
     strategy::Runner runner(data, venue, std::move(strategy), runner_options,
                             clock);

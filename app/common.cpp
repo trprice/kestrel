@@ -5,9 +5,12 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <sstream>
+#include <system_error>
 
 #include "kestrel/types/timeframe.hpp"
+#include "kestrel/util/notice.hpp"
 
 namespace kestrel::app {
 
@@ -70,6 +73,24 @@ types::Result<std::shared_ptr<db::Database>> OpenDatabase(
         return std::unexpected(migrated.error());
     }
     return shared;
+}
+
+void CheckDatabaseDisk(const config::Configuration& config) {
+    const auto& options = config.GetDatabase();
+    if (!options || options->disk_path.empty()) {
+        return;
+    }
+    std::error_code error;
+    const auto space = std::filesystem::space(options->disk_path, error);
+    if (error) {
+        spdlog::warn("database disk: cannot read {}: {}", options->disk_path,
+                     error.message());
+        return;
+    }
+    if (const auto message = db::LowDiskMessage(
+            options->disk_path, space.available, space.capacity)) {
+        util::Notice(*message);
+    }
 }
 
 sigset_t StopSignals() {

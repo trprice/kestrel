@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,7 +26,17 @@ struct ConnectionOptions {
     // A statement running longer is cancelled by the server and fails; zero
     // means no limit. Long enough for a backtest's large quote loads.
     std::chrono::milliseconds statement_timeout{300'000};
+    // A path on the database's disk, to warn at startup when that disk is
+    // nearly full (LowDiskMessage); empty for no check. Not a connection
+    // setting.
+    std::string disk_path;
 };
+
+// The warning for a database disk with `available` of `capacity` bytes
+// free at `path`, when that is under 10% or 5 GB; nullopt otherwise.
+std::optional<std::string> LowDiskMessage(const std::string& path,
+                                          std::uintmax_t available,
+                                          std::uintmax_t capacity);
 
 // One PostgreSQL connection, serialised by a mutex so the stream thread and
 // the main thread can share it. Reconnects once if the connection has dropped.

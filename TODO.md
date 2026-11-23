@@ -17,10 +17,9 @@ against the code by Claude), renumbered on Nov 22 once the first three and
 half of the sixth were done (see Done). Each step's details are in its item
 under Projects; the live checks are under In progress.
 
-1. Alerts (Operations): the heartbeat that catches a dead process, and
-   error lines for a stream down too long or an authorization that
-   expired (the Discord alerts for error lines are done). Before any live
-   run is left unattended.
+1. Alerts (Operations): the heartbeat that catches a dead process (the
+   Discord alerts for error lines, notices and outages are done). Before
+   any live run is left unattended.
 2. The real-account checks for Kraken and Schwab, then `live_trading` on by
    default (In progress), when live trading there is planned.
 3. Binance.US pushed executions: its user-data stream (Venues), on a
@@ -166,8 +165,6 @@ Sections in priority order: safety first, then what is in use.
         recorded crypto quotes is enough.
       - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever (small).
         `venue_latency`: keep 1 year, then review (about 1 MB a day live).
-- [ ] Warn at startup (and in the alerts) when the database's disk is nearly
-      full.
 - [ ] Use `account_fills` for the cost basis of what the account holds at the
       start of a run, so selling a starting holding realizes a real profit or
       loss instead of the whole sale price (the 8 hour run's phantom
@@ -202,18 +199,6 @@ Sections in priority order: safety first, then what is in use.
       from the alerter's thread only while the runner's loop is turning
       (a timestamp it stamps each pass), so a hung strategy thread stops the
       pings too.
-- [ ] Alerts: error lines for what only warns today. A stream down longer
-      than a threshold (say 5 minutes), and an authorization that expired
-      mid-run (it leaves the process up but unable to trade, with only
-      repeated warnings in its log), log one error each, so the Discord
-      alerts send them. Schwab's login does this now (one error under 3
-      days left, one on expiry); Kraken and Binance.US keys do not expire.
-      Also the risk gate's halts and loss limits, which only warn or log
-      nothing (a `max_daily_loss` refusal in `Admit()`). A deliberate
-      action (a loss-limit close) is not an error: post it as a notice
-      through the alerter instead. For daily bars, a missing bar is
-      noticed a few minutes after the expected close, not a bar's length
-      later.
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
 - [ ] Run several strategies in one process, sharing data subscriptions
@@ -405,8 +390,6 @@ From the Nov 2026 project review:
 - [ ] `Secrets()` reads the secrets file three times per load (the
       database, `[alerts]`, the provider), and warns about its permissions
       each time: read it once in `Common()` and pass it down.
-- [ ] `run`: the `StopWatcher` is gone while `~AlertSession` posts what is
-      left (up to 10 s), so a second Ctrl-C then does not force an exit.
 - [ ] `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
       through.
 - [ ] `RunBacktest`: build the timeline in a function of its own.
@@ -830,14 +813,25 @@ the header of the code concerned.
   `factory.cpp`).
 - Stream liveness: every WebSocket pings every 20 s, and IXWebSocket closes
   and reconnects one whose pong has not come back by the next ping; Schwab's
-  streamer also reconnects after 60 s without a message. `run` logs a quote feed
-  quiet for 2 minutes of open market time, and with `[risk]
-  max_quote_age_ms` the gate refuses new positions in it until quotes
-  return. A bar strategy's feed is not checked.
+  streamer also reconnects after 60 s without a message. `run` logs a symbol's
+  quote feed quiet for 2 minutes of open market time (and with `[risk]
+  max_quote_age_ms` the gate refuses new positions in it until quotes return),
+  `run` and `stream` log an error when no symbol has had a quote for 5 minutes
+  of regular open market time (on a single-symbol run a 5-minute trading halt
+  looks the same), and `run` logs an error when a daily (or longer) bar is 30
+  minutes late. Intraday bar streams are not checked: on a closing market, a
+  bar with no trade in its last minute closes only with the next trade.
 
 ## Done
 
 ### Overall
+- [x] Alerts for outages and the risk gate: no quote for any symbol for 5
+      minutes of open market (`run`, `stream`) and a daily bar 30 minutes
+      late (`run`) log one error each; the risk gate's halts, closes,
+      pauses and loss-limit refusals (once a day) are posted as notices
+      (`util::Notice`), as is a database disk under 10% or 5 GB free at
+      startup (`[database] disk_path`); a second Ctrl-C forces an exit
+      while `run` and `stream` post their last alerts (Nov 23 2026)
 - [x] Alerts for the Schwab quote recorder: `stream` and `bars` with
       `--store` post their error lines and start/finish notices; `stream`
       stops cleanly on Ctrl-C or SIGTERM, storing what it has; a Schwab

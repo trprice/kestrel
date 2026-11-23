@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include "kestrel/util/notice.hpp"
+
 namespace kestrel::testing {
 
 // Captures error-level lines logged to spdlog's default logger while it lives
@@ -44,6 +46,32 @@ class ErrorLines {
         void flush_() override {}
     };
     std::shared_ptr<Sink> mSink;
+};
+
+// Collects util::Notice's notices while it lives (the alerts post them).
+class Notices {
+   public:
+    Notices() {
+        util::SetNoticeHandler([this](std::string_view text) {
+            std::lock_guard lock(mMutex);
+            mTexts.emplace_back(text);
+        });
+    }
+    ~Notices() { util::SetNoticeHandler({}); }
+    Notices(const Notices&) = delete;
+    Notices& operator=(const Notices&) = delete;
+
+    std::size_t Count(std::string_view text) const {
+        std::lock_guard lock(mMutex);
+        return static_cast<std::size_t>(
+            std::ranges::count_if(mTexts, [&](const std::string& line) {
+                return line.find(text) != std::string::npos;
+            }));
+    }
+
+   private:
+    mutable std::mutex mMutex;
+    std::vector<std::string> mTexts;
 };
 
 }  // namespace kestrel::testing
