@@ -43,6 +43,7 @@ warns if other users can read it):
 | Schwab | `KESTREL_SCHWAB_APP_KEY`, `KESTREL_SCHWAB_APP_SECRET` | `[schwab] app_key`, `app_secret` |
 | Databento | `KESTREL_DATABENTO_API_KEY` | `[databento] api_key` |
 | Database | `KESTREL_DATABASE_PASSWORD` | `[database] password` |
+| Alerts | `KESTREL_ALERTS_DISCORD_WEBHOOK_URL` | `[alerts] discord_webhook_url` |
 
 Environment variables win over the file, and a key and its secret must both be
 given. `KESTREL_SECRETS_FILE` or `[general] secrets_file` points at a different
@@ -223,6 +224,49 @@ Whether `run` stores what it does in the `[database]`; see
 | Key | Meaning |
 |---|---|
 | `slow_request_ms` | log a warning for any HTTP call at least this slow (default 2000) |
+
+## `[alerts]`
+
+`run` posts its error lines, and a notice when it starts and stops, to a
+Discord webhook. The webhook URL holds its token, so it is a credential:
+`[alerts] discord_webhook_url` in the secrets file, or
+`KESTREL_ALERTS_DISCORD_WEBHOOK_URL` (it must be
+`https://discord.com/api/webhooks/<id>/<token>`; a URL in the main config is
+refused, as is any other key in the secrets file's `[alerts]`). With no
+webhook, alerts are off, with a warning if `[alerts]` is in the config. Make one in Discord under the
+channel's Edit Channel → Integrations → Webhooks, and check it with
+`kestrel_app alert` before a run.
+
+| Key | Meaning |
+|---|---|
+| `enabled` | default `true`; `false` mutes a configured webhook |
+| `lifecycle` | also post when `run` starts and stops (default `true`); a start with no stop before it means the process died |
+| `name` | what the messages call this process: 1-100 bytes on one line (default the config file's name, e.g. `trend-paper`) |
+
+Each message is headed with the name, the strategy, the mode and the
+provider. Lines are sent at most once in 5 minutes: repeats (lines that
+differ only in their digits) are counted and summarised when the 5 minutes
+are up. A burst goes out as one message, at most one post every 2 seconds.
+Logging never waits for Discord: up to 64 lines wait to be posted, and the
+rest are counted and reported as dropped. When Discord refuses the webhook
+(401, 403 or 404), alerts stop for the rest of the run, with a warning in the
+log; a message it rejects (another 4xx, such as a 400) is dropped, with a
+warning, and the next is sent; a 429 is retried after the wait Discord asks for, other failures after 5
+seconds, doubling to a minute. Stopping posts what is left, a post every
+half second, for up to 10 seconds (less when a retry would come after that),
+and logs how many lines it could not send.
+
+Before a message leaves the machine, every credential in the configuration,
+the Schwab account number and the webhook (and its token on its own) are
+masked, as is any run of 32 or more letters and digits (a
+Schwab account hash, a token) and the amount after "balance of", "balance
+is", "balance is still" and "equity" (in any case, with or without a `$`). The amounts are matched by wording, so
+a new log line that prints a balance another way is not masked. Prices,
+quantities, P&L and order IDs are kept. A line is cut at 4 KB, after the
+masking.
+
+Alerts cannot report a process that has died (a kill, an out-of-memory
+kill, a VM restart); a heartbeat for that is on the TODO.
 
 ## `[database]`
 

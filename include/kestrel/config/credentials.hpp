@@ -27,4 +27,10 @@ struct DatabentoCredentials {
     std::string api_key;
 };
 
+// A Discord webhook URL holds its token in the path
+// (https://discord.com/api/webhooks/<id>/<token>): whoever has it can post.
+struct AlertCredentials {
+    std::string discord_webhook_url;
+};
+
 }  // namespace kestrel::config

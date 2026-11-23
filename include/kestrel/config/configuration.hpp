@@ -33,6 +33,9 @@ struct LoadOptions {
     // Directory that relative paths in the config (secrets_file, token_file)
     // resolve against. Defaults to the config file's directory.
     std::filesystem::path base_dir;
+    // The config file's name without its extension ("trend-paper"): what
+    // alerts call the process unless [alerts] name says otherwise.
+    std::string config_name;
 };
 
 // The [strategy] table: parameters for whichever strategy --run or --backtest
@@ -58,6 +61,19 @@ struct HttpOptions {
     std::chrono::milliseconds slow_request{2000};
 };
 
+// The [alerts] table, and the webhook from the secrets: `run` posts its
+// error lines, and a notice when it starts and stops, to Discord (see
+// net::Alerter). Off when no webhook is configured.
+struct AlertSettings {
+    bool enabled = true;    // false: configured but muted
+    bool lifecycle = true;  // also post when `run` starts and stops
+    // What the messages call this process; default the config file's name.
+    std::string name;
+    // Env KESTREL_ALERTS_DISCORD_WEBHOOK_URL, or [alerts]
+    // discord_webhook_url in the secrets file.
+    std::optional<AlertCredentials> credentials;
+};
+
 // Settings shared by every provider.
 struct CommonSettings {
     Mode mode = Mode::kPaper;
@@ -70,6 +86,7 @@ struct CommonSettings {
     StrategyParams strategy;  // empty: no [strategy]
     RecordingOptions recording;
     HttpOptions http;
+    AlertSettings alerts;
 };
 
 // Base class for per-provider configuration, loaded from a TOML file:
@@ -127,6 +144,11 @@ struct CommonSettings {
 //   [http]                       # optional
 //   slow_request_ms = 2000       # warn about calls at least this slow
 //
+//   [alerts]                     # optional; the webhook is a secret:
+//   enabled = true               # [alerts] discord_webhook_url in the
+//   lifecycle = true             # secrets file. Post at start and stop too
+//   name = "btc-paper"           # default: the config file's name
+//
 //   [strategy]                   # optional; parameters, meaning depends on
 //   symbol = "BTC/USD"           # the strategy named on the command line
 //   ...
@@ -161,6 +183,7 @@ class Configuration {
     const StrategyParams& GetStrategyParams() const { return mCommon.strategy; }
     const RecordingOptions& GetRecording() const { return mCommon.recording; }
     const HttpOptions& GetHttp() const { return mCommon.http; }
+    const AlertSettings& GetAlerts() const { return mCommon.alerts; }
 
    protected:
     explicit Configuration(CommonSettings common)

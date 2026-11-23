@@ -62,6 +62,7 @@ add_library(kestrel
   src/types/timeframe.cpp
   src/types/market.cpp
   src/types/market_hours.cpp
+  src/net/alerts.cpp
   src/util/hmac.cpp
   src/util/json.cpp
   src/util/rate_limiter.cpp
@@ -159,6 +160,7 @@ if(KESTREL_BUILD_APP)
     app/commands/trades.cpp
     app/commands/authorize.cpp
     app/commands/databento.cpp
+    app/commands/alerts.cpp
   )
   target_include_directories(kestrel_app PRIVATE app)
   target_link_libraries(kestrel_app PRIVATE kestrel::kestrel CLI11::CLI11)
@@ -233,6 +235,7 @@ if(KESTREL_BUILD_TESTS)
     tests/patterns_test.cpp
     tests/breakout_test.cpp
     tests/util_test.cpp
+    tests/alerts_test.cpp
     tests/kraken_data_source_test.cpp
     tests/binanceus_data_source_test.cpp
     tests/binanceus_bar_stream_test.cpp

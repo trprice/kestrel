@@ -311,6 +311,175 @@ TEST(Config, RefusesCredentialsInTheMainFile) {
             .has_value());
 }
 
+TEST(Config, AlertsAreOffWithoutAWebhook) {
+    auto cfg = config::KrakenConfiguration::Parse(kKrakenToml, NoEnv());
+    ASSERT_OK(cfg);
+    EXPECT_FALSE(cfg->GetAlerts().credentials.has_value());
+    EXPECT_TRUE(cfg->GetAlerts().enabled);
+    EXPECT_TRUE(cfg->GetAlerts().lifecycle);
+}
+
+TEST(Config, AlertsTakeTheWebhookFromTheSecrets) {
+    const std::string url = "https://discord.com/api/webhooks/123/tok-en_1";
+    const std::string toml = std::string(kKrakenToml) +
+                             "\n[alerts]\nenabled = false\nlifecycle = false\n"
+                             "name = \"btc-paper\"\n";
+    auto cfg = config::KrakenConfiguration::Parse(
+        toml, NoEnv({{"KESTREL_ALERTS_DISCORD_WEBHOOK_URL", url}}));
+    ASSERT_OK(cfg);
+    ASSERT_TRUE(cfg->GetAlerts().credentials.has_value());
+    EXPECT_EQ(cfg->GetAlerts().credentials->discord_webhook_url, url);
+    EXPECT_FALSE(cfg->GetAlerts().enabled);
+    EXPECT_FALSE(cfg->GetAlerts().lifecycle);
+    EXPECT_EQ(cfg->GetAlerts().name, "btc-paper");
+
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-alerts-config-test";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream(dir / "secrets.toml")
+            << "[alerts]\ndiscord_webhook_url = '" << url << "'\n";
+    }
+    auto o = NoEnv();
+    o.base_dir = dir;
+    auto from_file = config::KrakenConfiguration::Parse(kKrakenToml, o);
+    std::filesystem::remove_all(dir);
+    ASSERT_OK(from_file);
+    ASSERT_TRUE(from_file->GetAlerts().credentials.has_value());
+    EXPECT_EQ(from_file->GetAlerts().credentials->discord_webhook_url, url);
+}
+
+TEST(Config, AlertsTakeTheEnvironmentOverTheSecretsFile) {
+    const std::string file_url = "https://discord.com/api/webhooks/1/from-file";
+    const std::string env_url = "https://discord.com/api/webhooks/2/from-env";
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-alerts-env-test";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream(dir / "secrets.toml")
+            << "[alerts]\ndiscord_webhook_url = '" << file_url << "'\n";
+    }
+    std::filesystem::permissions(dir / "secrets.toml",
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+    auto o = NoEnv({{"KESTREL_ALERTS_DISCORD_WEBHOOK_URL", env_url}});
+    o.base_dir = dir;
+    auto cfg = config::KrakenConfiguration::Parse(kKrakenToml, o);
+    std::filesystem::remove_all(dir);
+    ASSERT_OK(cfg);
+    ASSERT_TRUE(cfg->GetAlerts().credentials.has_value());
+    EXPECT_EQ(cfg->GetAlerts().credentials->discord_webhook_url, env_url);
+}
+
+TEST(Config, AlertsRefuseAMisspeltKeyInTheSecretsFile) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-alerts-typo-test";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream(dir / "secrets.toml")
+            << "[alerts]\nwebhook_url = "
+               "'https://discord.com/api/webhooks/1/tok'\n";
+    }
+    std::filesystem::permissions(dir / "secrets.toml",
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write);
+    auto o = NoEnv();
+    o.base_dir = dir;
+    auto cfg = config::KrakenConfiguration::Parse(kKrakenToml, o);
+    std::filesystem::remove_all(dir);
+    ASSERT_FALSE(cfg.has_value());
+    EXPECT_NE(cfg.error().message.find("unknown key 'webhook_url'"),
+              std::string::npos);
+    EXPECT_EQ(cfg.error().message.find("tok"), std::string::npos);
+}
+
+TEST(Config, AlertsRefuseTheWrongTypes) {
+    EXPECT_FALSE(config::KrakenConfiguration::Parse(
+                     std::string(kKrakenToml) + "\nalerts = 5\n", NoEnv())
+                     .has_value());
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-alerts-type-test";
+    for (const char* secrets :
+         {"alerts = 'x'\n", "[alerts]\ndiscord_webhook_url = 5\n"}) {
+        std::filesystem::create_directories(dir);
+        {
+            std::ofstream(dir / "secrets.toml") << secrets;
+        }
+        std::filesystem::permissions(dir / "secrets.toml",
+                                     std::filesystem::perms::owner_read |
+                                         std::filesystem::perms::owner_write);
+        auto o = NoEnv();
+        o.base_dir = dir;
+        auto cfg = config::KrakenConfiguration::Parse(kKrakenToml, o);
+        std::filesystem::remove_all(dir);
+        EXPECT_FALSE(cfg.has_value()) << secrets;
+    }
+}
+
+TEST(Config, AlertsNameIsOneShortLine) {
+    for (const std::string& name :
+         {std::string("a\\nb"), std::string(101, 'x')}) {
+        auto cfg = config::KrakenConfiguration::Parse(
+            std::string(kKrakenToml) + "\n[alerts]\nname = \"" + name + "\"\n",
+            NoEnv());
+        EXPECT_FALSE(cfg.has_value()) << name;
+    }
+    auto ok = config::KrakenConfiguration::Parse(
+        std::string(kKrakenToml) + "\n[alerts]\nname = \"" +
+            std::string(100, 'x') + "\"\n",
+        NoEnv());
+    ASSERT_OK(ok);
+}
+
+TEST(Config, AlertsRefuseABadWebhookWithoutEchoingIt) {
+    auto cfg = config::KrakenConfiguration::Parse(
+        kKrakenToml, NoEnv({{"KESTREL_ALERTS_DISCORD_WEBHOOK_URL",
+                             "https://example.com/hooks/secret-token"}}));
+    ASSERT_FALSE(cfg.has_value());
+    EXPECT_NE(cfg.error().message.find("not a Discord webhook"),
+              std::string::npos);
+    EXPECT_EQ(cfg.error().message.find("secret-token"), std::string::npos);
+}
+
+TEST(Config, AlertsRefuseAWebhookInTheMainFile) {
+    for (const char* key :
+         {"discord_webhook_url", "webhook_url", "heartbeat_url", "token"}) {
+        auto cfg = config::KrakenConfiguration::Parse(
+            std::string(kKrakenToml) + "\n[alerts]\n" + key + " = 'x'\n",
+            NoEnv());
+        ASSERT_FALSE(cfg.has_value()) << key;
+        EXPECT_NE(cfg.error().message.find("never the main config"),
+                  std::string::npos)
+            << key;
+    }
+}
+
+TEST(Config, AlertsRefuseUnknownAndMistypedKeys) {
+    for (const char* body : {"enabld = true", "enabled = 1",
+                             "lifecycle = 'yes'", "name = ''", "name = 3"}) {
+        EXPECT_FALSE(
+            config::KrakenConfiguration::Parse(
+                std::string(kKrakenToml) + "\n[alerts]\n" + body + "\n",
+                NoEnv())
+                .has_value())
+            << body;
+    }
+}
+
+TEST(Config, AlertsAreNamedAfterTheConfigFile) {
+    const auto dir =
+        std::filesystem::temp_directory_path() / "kestrel-alerts-name-test";
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "btc-turtle-paper.toml";
+    {
+        std::ofstream(path) << kKrakenToml;
+    }
+    auto cfg = config::LoadConfiguration(path);
+    std::filesystem::remove_all(dir);
+    ASSERT_OK(cfg);
+    EXPECT_EQ((*cfg)->GetAlerts().name, "btc-turtle-paper");
+}
+
 TEST(Config, SchwabSettings) {
     auto cfg = config::SchwabConfiguration::Parse(
         "[general]\nprovider='schwab'\nsymbols=['aapl','MSFT']\n[schwab]"

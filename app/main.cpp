@@ -43,6 +43,7 @@ int Main(int argc, char** argv) {
     app::AddTradesCommand(app, command);
     app::AddAuthorizeCommand(app, command);
     app::AddDatabentoCommand(app, command);
+    app::AddAlertCommand(app, command);
 
     CLI11_PARSE(app, argc, argv);
 

@@ -17,10 +17,10 @@ against the code by Claude), renumbered on Nov 22 once the first three and
 half of the sixth were done (see Done). Each step's details are in its item
 under Projects; the live checks are under In progress.
 
-1. Alerts (Operations): error-level log lines pushed to a phone, a
-   heartbeat that catches a dead process, and error lines for a stream down
-   too long or an authorization that expired. Before any live run is left
-   unattended.
+1. Alerts (Operations): the heartbeat that catches a dead process, and
+   error lines for a stream down too long or an authorization that
+   expired (the Discord alerts for error lines are done). Before any live
+   run is left unattended.
 2. The real-account checks for Kraken and Schwab, then `live_trading` on by
    default (In progress), when live trading there is planned.
 3. Binance.US pushed executions: its user-data stream (Venues), on a
@@ -192,22 +192,27 @@ Sections in priority order: safety first, then what is in use.
       Kestrel's own orders with their final state, not the venue's whole order
       history: a market maker cancels most of what it places (about 125k
       orders a day at the paper run's pace), which would outgrow `quotes`.
-- [ ] Alerts: error-level log lines pushed to a phone. An spdlog sink at
-      error level queues each line, and a background thread POSTs it to a
-      URL from the secrets file (an [ntfy](https://ntfy.sh) topic, whose
-      name is the password; a Discord or Slack webhook or Pushover would do
-      as well). It must never block the strategy's thread (a bounded queue
-      that drops), sends the same line at most once every few minutes, and
-      masks account hashes and balances before they leave the machine. The
-      kill switch, refusals and halts already log errors.
 - [ ] Alerts: a heartbeat. Ping a dead-man's-switch URL (healthchecks.io, or
       ntfy with a cron check) every few minutes, so a crash, an OOM kill or
-      a VM restart, which log nothing, is noticed when the pings stop.
+      a VM restart, which log nothing, is noticed when the pings stop. One
+      check per process: processes sharing a secrets file would otherwise
+      ping one check, and a dead one would go unnoticed while the rest
+      ping. Healthchecks.io's ping key in the secrets file plus a check name
+      (slug) per config does it (`https://hc-ping.com/<key>/<slug>`). Ping
+      from the alerter's thread only while the runner's loop is turning
+      (a timestamp it stamps each pass), so a hung strategy thread stops the
+      pings too.
 - [ ] Alerts: error lines for what only warns today. A stream down longer
       than a threshold (say 5 minutes), and an authorization that expired
       mid-run (it leaves the process up but unable to trade, with only
-      repeated warnings in its log), log one error each, so the sink above
-      sends them.
+      repeated warnings in its log; Schwab's `AccessToken()` logs nothing
+      once the refresh token has expired), log one error each, so the
+      Discord alerts send them. Also the risk gate's halts and loss limits,
+      which only warn or log nothing (a `max_daily_loss` refusal in
+      `Admit()`). A deliberate action (a loss-limit close) is not an error:
+      post it as a notice through the alerter instead. For daily bars, a
+      missing bar is noticed a few minutes after the expected close, not
+      a bar's length later.
 - [ ] Health checks: stream reconnect counts and a clock-skew warning
       (stale feeds are already logged; see Done)
 - [ ] Run several strategies in one process, sharing data subscriptions
@@ -396,7 +401,11 @@ From the Nov 2026 project review:
       cannot throw.
 - [ ] Kraken's quote stream: a silence watchdog like Schwab's.
 - [ ] `MakeTimedHttpClient` builds a connection pool per call.
-- [ ] `Secrets()` reads the secrets file twice per load.
+- [ ] `Secrets()` reads the secrets file three times per load (the
+      database, `[alerts]`, the provider), and warns about its permissions
+      each time: read it once in `Common()` and pass it down.
+- [ ] `run`: the `StopWatcher` is gone while `~AlertSession` posts what is
+      left (up to 10 s), so a second Ctrl-C then does not force an exit.
 - [ ] `Base64Decode` accepts some malformed input `EVP_DecodeBlock` lets
       through.
 - [ ] `RunBacktest`: build the timeline in a function of its own.
@@ -828,6 +837,13 @@ the header of the code concerned.
 ## Done
 
 ### Overall
+- [x] Alerts to Discord: `run` posts its error lines, and a notice when it
+      starts and stops, to a webhook from the secrets file (`[alerts]`;
+      `net::Alerter`). An spdlog sink queues each line without blocking
+      (64 at most, the rest counted); one thread masks credentials,
+      account hashes and balances, sends a line at most once in 5 minutes
+      (repeats summarised), batches a burst into one message, and backs off
+      on 429s and failures. `kestrel_app alert` posts a test (Nov 22 2026)
 - [x] Stream callbacks are called through one guard, `data::CallGuarded`
       (`data/guarded_callback.hpp`), which logs and swallows anything they
       throw, not only a `std::exception`: Kraken's and Binance.US's quote

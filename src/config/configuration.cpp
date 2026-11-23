@@ -3,11 +3,14 @@
 #include <spdlog/spdlog.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <toml++/toml.hpp>
+
+#include "kestrel/net/alerts.hpp"
 
 namespace kestrel::config {
 
@@ -272,6 +275,12 @@ class ConfigParser {
                 }
             }
         }
+
+        auto alerts = Alerts(root, options);
+        if (!alerts) {
+            return std::unexpected(alerts.error());
+        }
+        c.alerts = std::move(*alerts);
 
         if (const auto* paper = root["paper"].as_table()) {
             if (auto ok = RejectUnknownKeys(
@@ -624,6 +633,111 @@ class ConfigParser {
         return d;
     }
 
+    // The [alerts] table, with the webhook from the environment or the
+    // secrets file. The URL is checked against Discord's form, never echoed.
+    static Result<AlertSettings> Alerts(const toml::table& root,
+                                        const LoadOptions& o) {
+        AlertSettings a;
+        a.name = o.config_name;
+        if (root.contains("alerts") && !root["alerts"].is_table()) {
+            return MakeError(ErrorCategory::kInvalidArgument,
+                             "[alerts] must be a table");
+        }
+        const auto* section = root["alerts"].as_table();
+        if (auto ok = RejectSecrets(section, "alerts"); !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (section) {
+            for (const char* key :
+                 {"discord_webhook_url", "webhook_url", "heartbeat_url"}) {
+                if (section->contains(key)) {
+                    return MakeError(
+                        ErrorCategory::kInvalidArgument,
+                        std::string("[alerts] contains '") + key +
+                            "': a webhook URL is a credential and must come "
+                            "from the environment or the secrets file, never "
+                            "the main config");
+                }
+            }
+        }
+        if (auto ok = RejectUnknownKeys(section, "alerts",
+                                        {"enabled", "lifecycle", "name"});
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (section) {
+            for (const auto& [key, target] :
+                 {std::pair{"enabled", &a.enabled},
+                  std::pair{"lifecycle", &a.lifecycle}}) {
+                if (const auto* node = section->get(key)) {
+                    if (!node->is_boolean()) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         std::string("[alerts] ") + key +
+                                             " must be true or false");
+                    }
+                    *target = node->value_or(*target);
+                }
+            }
+            if (const auto* node = section->get("name")) {
+                const auto name = node->value<std::string>();
+                if (!node->is_string() || !name || name->empty() ||
+                    name->size() > 100 ||
+                    std::ranges::any_of(*name, [](unsigned char c) {
+                        return c < 0x20 || c == 0x7f;
+                    })) {
+                    return MakeError(ErrorCategory::kInvalidArgument,
+                                     "[alerts] name must be a string of 1-100 "
+                                     "bytes, one line");
+                }
+                a.name = *name;
+            }
+        }
+        auto secrets = Secrets(root, o);
+        if (!secrets) {
+            return std::unexpected(secrets.error());
+        }
+        if (*secrets) {
+            // A misspelt key would leave alerts silently off.
+            const auto node = (**secrets)["alerts"];
+            if (node && !node.is_table()) {
+                return MakeError(ErrorCategory::kInvalidArgument,
+                                 "the secrets file's [alerts] must be a table");
+            }
+            if (const auto* table = node.as_table()) {
+                for (const auto& [key, value] : *table) {
+                    if (key.str() != "discord_webhook_url") {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "the secrets file's [alerts] has an "
+                                         "unknown key '" +
+                                             std::string(key.str()) + "'");
+                    }
+                    if (!value.is_string()) {
+                        return MakeError(ErrorCategory::kInvalidArgument,
+                                         "the secrets file's [alerts] "
+                                         "discord_webhook_url must be a "
+                                         "string");
+                    }
+                }
+            }
+        }
+        if (auto url = Secret(o, *secrets, "alerts", "discord_webhook_url",
+                              "KESTREL_ALERTS_DISCORD_WEBHOOK_URL")) {
+            if (!net::IsDiscordWebhookUrl(*url)) {
+                return MakeError(
+                    ErrorCategory::kInvalidArgument,
+                    "the alerts discord_webhook_url is not a Discord webhook "
+                    "URL (https://discord.com/api/webhooks/<id>/<token>)");
+            }
+            a.credentials = AlertCredentials{std::move(*url)};
+        } else if (section && a.enabled) {
+            spdlog::warn(
+                "[alerts] is set but no discord_webhook_url was found (the "
+                "secrets file's [alerts], or "
+                "KESTREL_ALERTS_DISCORD_WEBHOOK_URL): alerts are off");
+        }
+        return a;
+    }
+
     // A misspelled key would otherwise be silently ignored and its default
     // used, which for a config that can trade real money is the wrong way to
     // fail. Every section is checked; [risk] and [recording] check their own.
@@ -648,8 +762,9 @@ class ConfigParser {
     // The tables a config may have (every provider's, whichever this is).
     static Result<void> RejectUnknownTables(const toml::table& root) {
         static constexpr std::string_view kTables[] = {
-            "general", "database", "risk",      "strategy", "recording", "http",
-            "paper",   "kraken",   "binanceus", "schwab",   "databento"};
+            "general",   "database",  "risk",   "strategy",
+            "recording", "http",      "alerts", "paper",
+            "kraken",    "binanceus", "schwab", "databento"};
         for (const auto& [key, node] : root) {
             if (std::find(std::begin(kTables), std::end(kTables), key.str()) ==
                 std::end(kTables)) {
@@ -825,6 +940,7 @@ class ConfigParser {
         LoadOptions o;
         o.base_dir = path.has_parent_path() ? path.parent_path()
                                             : std::filesystem::path(".");
+        o.config_name = path.stem().string();
         return o;
     }
 };

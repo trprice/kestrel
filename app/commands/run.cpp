@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <thread>
 
+#include "alerts.hpp"
 #include "command.hpp"
 #include "common.hpp"
 #include "kestrel/factory.hpp"
@@ -71,22 +72,27 @@ class RunCommand : public Command {
 
     int Run(const config::Configuration& config) override {
         BlockStopSignals();
+        AlertSession alerts(config, mName);
         auto runner = CreateRunner(mName, config);
         if (!runner) {
             spdlog::error("run: {}", runner.error().ToString());
+            alerts.Stopped("could not start");
             return 1;
         }
         spdlog::info("running {} mode={}", mName,
                      config::ToString(config.GetMode()));
+        alerts.Started("running " + mName);
         if (!(*runner)->RiskGate()) {
             spdlog::warn("no [risk] limits: the strategy trades unchecked");
         }
         StopWatcher watcher(**runner);
         if (auto ran = (*runner)->Run(); !ran) {
             spdlog::error("run: {}", ran.error().ToString());
+            alerts.Stopped("stopped on an error");
             return 1;
         }
         spdlog::info("stopped");
+        alerts.Stopped("stopped");
         net::LogLatency(net::HttpLatency().Summarize(false));
         return 0;
     }

@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
+#include <cstdint>
+#include <system_error>
 
 #include "kestrel/net/http_client.hpp"
 
@@ -26,12 +29,16 @@ types::Error ErrorFromHttpStatus(const HttpResponse& response) {
                 return static_cast<char>(std::tolower(c));
             });
             if (lower == "retry-after") {
-                long secs = 0;
-                std::from_chars(v.data(), v.data() + v.size(), secs);
-                if (secs > 0) {
-                    constexpr long kMaxRetryAfterSeconds = 86'400;
-                    err.retry_after = std::chrono::seconds(
-                        std::min(secs, kMaxRetryAfterSeconds));
+                // Seconds, which Discord gives with a fraction ("1.45"):
+                // rounded up to the millisecond, so a retry is never early.
+                double secs = 0;
+                const auto [end, ec] =
+                    std::from_chars(v.data(), v.data() + v.size(), secs);
+                if (ec == std::errc() && std::isfinite(secs) && secs > 0) {
+                    constexpr double kMaxRetryAfterSeconds = 86'400;
+                    err.retry_after = std::chrono::milliseconds(
+                        static_cast<std::int64_t>(std::ceil(
+                            std::min(secs, kMaxRetryAfterSeconds) * 1000)));
                 }
             }
         }
