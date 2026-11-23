@@ -9,7 +9,6 @@
 #include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
-#include <regex>
 #include <utility>
 
 namespace kestrel::net {
@@ -67,13 +66,122 @@ std::string WindowText(std::chrono::milliseconds window) {
     return std::to_string(seconds) + " s";
 }
 
+bool IsDigit(char c) { return c >= '0' && c <= '9'; }
+
+bool IsWordChar(char c) {
+    return IsDigit(c) || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+           c == '_';
+}
+
+// Whether `text` at `at` starts with `word`, ignoring ASCII case.
+bool StartsWithNoCase(std::string_view text, std::size_t at,
+                      std::string_view word) {
+    if (text.size() - at < word.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < word.size(); ++i) {
+        const auto lower = [](char c) {
+            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        };
+        if (lower(text[at + i]) != word[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The length of the amount at `at` ([-][$][-]digit[digits and commas]
+// [.digits]), or 0 if there is none.
+std::size_t AmountLength(std::string_view text, std::size_t at) {
+    std::size_t i = at;
+    for (const char sign : {'-', '$', '-'}) {
+        if (i < text.size() && text[i] == sign) {
+            ++i;
+        }
+    }
+    if (i >= text.size() || !IsDigit(text[i])) {
+        return 0;
+    }
+    while (i < text.size() && (IsDigit(text[i]) || text[i] == ',')) {
+        ++i;
+    }
+    if (i + 1 < text.size() && text[i] == '.' && IsDigit(text[i + 1])) {
+        ++i;
+        while (i < text.size() && IsDigit(text[i])) {
+            ++i;
+        }
+    }
+    return i - at;
+}
+
+// "balance of 12.5" -> "balance of <amount>", and likewise "balance is
+// still", "balance is" and "equity", in any case; the wording is kept as
+// written. By hand, not std::regex, which recurses per character matched.
+std::string MaskAmounts(std::string_view text) {
+    static constexpr std::string_view kWords[] = {
+        "balance is still ", "balance of ", "balance is ", "equity "};
+    std::string out;
+    out.reserve(text.size());
+    std::size_t i = 0;
+    while (i < text.size()) {
+        bool masked = false;
+        if (i == 0 || !IsWordChar(text[i - 1])) {
+            for (const auto word : kWords) {
+                if (!StartsWithNoCase(text, i, word)) {
+                    continue;
+                }
+                if (const auto n = AmountLength(text, i + word.size())) {
+                    out.append(text.substr(i, word.size()));
+                    out += "<amount>";
+                    i += word.size() + n;
+                    masked = true;
+                    break;
+                }
+            }
+        }
+        if (!masked) {
+            out += text[i];
+            ++i;
+        }
+    }
+    return out;
+}
+
 }  // namespace
 
 bool IsDiscordWebhookUrl(std::string_view url) {
-    static const std::regex kWebhook(
-        R"(^https://(discord\.com|canary\.discord\.com|ptb\.discord\.com))"
-        R"(/api(/v[0-9]+)?/webhooks/[0-9]+/[A-Za-z0-9_-]+$)");
-    return std::regex_match(url.begin(), url.end(), kWebhook);
+    // https://(canary.|ptb.)discord.com/api[/vN]/webhooks/<digits>/<token>,
+    // matched by hand: this file uses no std::regex (see RedactAlert).
+    const auto take = [&url](std::string_view prefix) {
+        if (!url.starts_with(prefix)) {
+            return false;
+        }
+        url.remove_prefix(prefix.size());
+        return true;
+    };
+    const auto take_while = [&url](auto pred) {
+        std::size_t n = 0;
+        while (n < url.size() && pred(url[n])) {
+            ++n;
+        }
+        url.remove_prefix(n);
+        return n;
+    };
+    if (!take("https://")) {
+        return false;
+    }
+    (void)(take("canary.") || take("ptb."));
+    if (!take("discord.com/api/")) {
+        return false;
+    }
+    if (take("v") && (take_while(IsDigit) == 0 || !take("/"))) {
+        return false;
+    }
+    if (!take("webhooks/") || take_while(IsDigit) == 0 || !take("/")) {
+        return false;
+    }
+    const auto token = [](char c) { return IsWordChar(c) || c == '-'; };
+    return take_while(token) > 0 && url.empty();
 }
 
 std::string RedactAlert(std::string_view text,
@@ -90,7 +198,8 @@ std::string RedactAlert(std::string_view text,
     }
     // Runs of 32 or more letters and digits, scanned by hand: std::regex
     // recurses per character it matches, and a long line could overflow
-    // the worker's stack.
+    // the worker's stack. (This file uses no std::regex at all; GCC 15
+    // also warns, falsely, inside it under -O2 with the sanitizers.)
     std::string masked;
     masked.reserve(out.size());
     for (std::size_t i = 0; i < out.size();) {
@@ -118,11 +227,7 @@ std::string RedactAlert(std::string_view text,
     // above, so it cannot leave part of a secret or token showing.
     constexpr std::size_t kMaxLineBytes = 4096;
     out = std::string(TruncateUtf8(masked, kMaxLineBytes));
-    static const std::regex kAmount(
-        R"(\b(balance of|balance is still|balance is|equity) )"
-        R"(-?\$?-?[0-9][0-9,]*(\.[0-9]+)?)",
-        std::regex::ECMAScript | std::regex::icase);
-    return std::regex_replace(out, kAmount, "$1 <amount>");
+    return MaskAmounts(out);
 }
 
 std::string AlertDedupKey(std::string_view text) {

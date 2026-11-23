@@ -38,6 +38,29 @@ TEST(Alerts, RecognisesDiscordWebhookUrls) {
     EXPECT_FALSE(net::IsDiscordWebhookUrl(
         "https://discord.com/api/webhooks/1/abc?wait=true"));
     EXPECT_FALSE(net::IsDiscordWebhookUrl(""));
+    EXPECT_FALSE(net::IsDiscordWebhookUrl(
+        "https://evil.discord.com/api/webhooks/1/abc"));
+    EXPECT_FALSE(net::IsDiscordWebhookUrl(
+        "https://canary.ptb.discord.com/api/webhooks/1/abc"));
+    EXPECT_FALSE(
+        net::IsDiscordWebhookUrl("https://discord.com/api/v/webhooks/1/abc"));
+    EXPECT_FALSE(
+        net::IsDiscordWebhookUrl("https://discord.com/api/webhooks/1/"));
+    EXPECT_FALSE(
+        net::IsDiscordWebhookUrl("https://discord.com/api/webhooks//abc"));
+    EXPECT_FALSE(net::IsDiscordWebhookUrl(
+        "https://discord.com/api/webhooks/1/abc/extra"));
+}
+
+TEST(Alerts, AmountsNeedTheWholeWordAndANumber) {
+    EXPECT_EQ(net::RedactAlert("noequity 12", {}), "noequity 12");
+    EXPECT_EQ(net::RedactAlert("the balance is low at 12", {}),
+              "the balance is low at 12");
+    EXPECT_EQ(net::RedactAlert("balance of 5. done", {}),
+              "balance of <amount>. done");
+    EXPECT_EQ(net::RedactAlert("equity 1 and equity 2", {}),
+              "equity <amount> and equity <amount>");
+    EXPECT_EQ(net::RedactAlert("ends in equity ", {}), "ends in equity ");
 }
 
 TEST(Alerts, RedactsSecretsHashesAndBalances) {
