@@ -249,8 +249,8 @@ Sections in priority order: safety first, then what is in use.
         `RunRecorder` before PostgreSQL stops.
 
 ### Backtesting and research
-- [ ] Run the pre-registered Kraken 2015–2021 test (docs/strategy-tests.md,
-      "Pre-registered"): import the archive's daily USD pairs, reproduce the
+- [ ] Run the planned Kraken 2015–2021 test (docs/strategy-tests.md,
+      "Upcoming tests"): import the archive's daily USD pairs, reproduce the
       10-day breakout on Binance.US first, then run each strategy once at
       10 and 35 bps a side with the random-entry script. Settings are fixed
       there; do not tune on the results.

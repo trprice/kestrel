@@ -3,6 +3,8 @@
 The backtests and paper runs done so far (Oct to Nov 2026), and what each
 found. These are research notes, not tuned results: most tests tried
 several settings and report the best, so treat each edge as an upper bound.
+[Upcoming tests](#upcoming-tests) come first: what is planned next,
+with its settings and what counts as passing fixed before it is run.
 
 Unless a test says otherwise:
 - **Crypto** is Binance.US, at its 2 bps taker and 0 maker fee, with 5 bps
@@ -16,6 +18,107 @@ Unless a test says otherwise:
   Daily strategies fill at the open, when spreads are 2–3 times
   mid-day's; see [Stock spreads at the open](#stock-spreads-at-the-open).
 - **"Hold"** is buying the same amount at the start and keeping it.
+
+## Upcoming tests
+
+### Crypto on Kraken, 2015–2021 (planned Nov 24 2026)
+
+Every crypto result below was found on Binance.US's 2022–2026 bars, most
+after trying several settings on them. Kraken's archive goes back to
+2013, years none of these multi-coin tests has seen. The test is written
+down here in full before its data is imported, so it can be run once and
+not tuned on: no setting here changes after the results are seen. A bug
+found while running is fixed, rerun and noted, as with XRP's gap in
+[Trend ensemble in Kestrel](#trend-ensemble-in-kestrel).
+
+**Already seen:** `trend_ensemble` on BTC alone over 2015–2025 and the
+20/10 and 55/20 Turtles on BTC over 2016–2026 (see
+[Trend ensemble in Kestrel](#trend-ensemble-in-kestrel) and
+[Turtle breakout screen](#turtle-breakout-screen)). The
+multi-coin runs, the 10-day breakout and `momentum_rotation` have not been
+run before 2022.
+
+**Data:**
+- Kraken's downloadable OHLCVT archive, daily bars of USD pairs, imported
+  as they are. Not the REST API, which serves only the newest 720 bars.
+- Eleven pairs, the same count as the paper runs, chosen as the large
+  Kraken USD pairs of 2015–2018, faded ones included, not today's winners:
+  BTC (XBT), ETH, LTC, XRP, XMR, ETC, ZEC, DASH, REP, XLM and EOS. A pair
+  the archive does not have is dropped and noted, not replaced. Each
+  joins when its bars start; until then its share sits in cash.
+- The archive is a downloaded file: imported with the untrusted-file
+  handling (its own directory, `python -I`).
+
+**Periods:** A, Jan 1 2015 – Dec 31 2017 (few coins, a bull market), and
+B, Jan 1 2018 – Dec 31 2021 (the 2018 fall and the 2020–21 rise). Each
+uses the bars before it as warm-up, as a live run would; a symbol with
+less history runs with what it has, as on a new listing. 2013–2014 is
+warm-up only.
+
+**Account and costs:** 100,000 USD, so Kraken's minimum orders and lots
+do not bind (a delisted pair without symbol info gets 1e-8 lots and no
+minimum, and that is noted). Market orders filled at the next price after
+each daily close. Two cost levels, each run in full:
+- **10 bps a side:** 5 bps fee and 5 bps slippage, a modern low-fee venue.
+- **35 bps a side:** about Kraken's retail taker fee (40 bps at this
+  account's tier, 35 at the next; see running.md), spread included, for
+  the wider spreads of those years.
+
+**Strategies:**
+
+| Run | Settings |
+|---|---|
+| `trend_ensemble`, default | `lookbacks = [5, 10, 20, 30, 60, 90, 150, 250, 360]`, `vol_bars = 90`, `target_vol = 0.25`, `days_per_year = 365`, `max_weight = 1`, `rebalance_threshold = 0.2`, `invest_fraction = 0.95` |
+| `trend_ensemble`, `[20, 55]` | the same, `lookbacks = [20, 55]` |
+| `breakout`, 10-day high, hold 1 day | one run a pair: `timeframe = "1d"`, `setup = "range"`, `range_bars = 10`, `confirm = "none"`, `entry = "stop"`, `arm_bars = 1`, `max_hold_bars = 1`, `target_multiple = 0`, `trend_sma = 0`, `stop_buffer_bps = 10`, a fixed 1,000 USD a trade |
+| `momentum_rotation` | `lookback_bars = 28`, `rebalance_bars = 7`, `top_n = 3`, `positive_only = true`, `invest_fraction = 0.95` |
+
+The 10-day breakout's settings were not written down when it was found.
+Before the Kraken runs, these are run on the 2022–2026 Binance.US bars of
+the seven pairs; they should give about +0.80% a trade over 697 trades.
+If they do not, the difference is found and noted first, and the settings
+that reproduce it are the ones run.
+
+**Benchmarks:**
+- `trend_ensemble` and `momentum_rotation`: BTC and cash in the mix that
+  matches the strategy's realized volatility in that period (not a fixed
+  20%), and the coins listed at the time, held equally, rebalanced
+  monthly and scaled to the same volatility. A fixed mix would count the
+  cash of the coins not yet listed as caution.
+- The 10-day breakout: holding the same pair over the same bars (its
+  average daily return times the days held, "less drift" as in Daily stock
+  setups), and random entries.
+
+**Random entries:** a script outside Kestrel, 1,000 runs per pair and
+period. Each run enters on random days, at the day's open, as many times
+each calendar year as the strategy did, without overlap, and exits at the
+next day's close, at the same costs. Before it is trusted, the script runs
+the real rule too and must match Kestrel's backtest trade by trade (count
+within 2%, average within 0.05% a trade), as the Turtle simulation was
+checked. The same check runs on Connors RSI(2) with the 200-day filter on
+the 35 Schwab symbols (2016–2026, already seen; a check of the entry, not
+a holdout): random entries on days closing above the 200-day average,
+with the same exit at a close above the 5-day average.
+
+**What counts as passing** (each at 10 bps a side, unless it says 35):
+- `trend_ensemble` (each setting): a higher Sharpe than its
+  volatility-matched BTC and cash in both periods, and still ahead at
+  35 bps. `[20, 55]` replaces the default only if it is ahead in both
+  periods and its Sharpe difference has p < 0.05 (paired 20-day block
+  bootstrap); otherwise the default stays.
+- The 10-day breakout: a positive average a trade over drift in both
+  periods, on at least two thirds of the pairs, above the 95th percentile
+  of the random entries pooled over the pairs; and still positive over
+  drift at 35 bps.
+- `momentum_rotation`: ahead of its volatility-matched BTC and cash in
+  both periods, and still ahead without the coin that made it the most
+  (the ZEC lesson).
+
+A strategy that passes goes on to paper trading (the breakout) or stays in
+it (`trend_ensemble`). One that fails is written up here and not re-tuned
+on these years. With four settings, two periods and two cost levels, a
+single pass is weak evidence; a pass in both periods and at both costs is
+what would change a plan.
 
 ## Summary
 
@@ -853,102 +956,6 @@ first look:
   (09:35–10:00 spreads are a quarter to four fifths of the first
   minute's, about half on the stocks). Pre-market
   quotes (09:28–09:30) are wider again on most of them (XLV 47 bps).
-
-## Pre-registered: crypto on Kraken, 2015–2021 (Nov 24 2026)
-
-Every crypto result above was found on Binance.US's 2022–2026 bars, most
-after trying several settings on them. Kraken's archive goes back to
-2013, years none of these multi-coin tests has seen. This section sets the
-test down before the data is imported, so it can be run once and not
-tuned on: no setting below changes after the results are seen. A bug found
-while running is fixed, rerun and noted, as with XRP's gap above.
-
-**Already seen:** `trend_ensemble` on BTC alone over 2015–2025 and the
-20/10 and 55/20 Turtles on BTC over 2016–2026 (see above). The
-multi-coin runs, the 10-day breakout and `momentum_rotation` have not been
-run before 2022.
-
-**Data:**
-- Kraken's downloadable OHLCVT archive, daily bars of USD pairs, imported
-  as they are. Not the REST API, which serves only the newest 720 bars.
-- Eleven pairs, the same count as the paper runs, chosen as the large
-  Kraken USD pairs of 2015–2018, faded ones included, not today's winners:
-  BTC (XBT), ETH, LTC, XRP, XMR, ETC, ZEC, DASH, REP, XLM and EOS. A pair
-  the archive does not have is dropped and noted, not replaced. Each
-  joins when its bars start; until then its share sits in cash.
-- The archive is a downloaded file: imported with the untrusted-file
-  handling (its own directory, `python -I`).
-
-**Periods:** A, Jan 1 2015 – Dec 31 2017 (few coins, a bull market), and
-B, Jan 1 2018 – Dec 31 2021 (the 2018 fall and the 2020–21 rise). Each
-uses the bars before it as warm-up, as a live run would; a symbol with
-less history runs with what it has, as on a new listing. 2013–2014 is
-warm-up only.
-
-**Account and costs:** 100,000 USD, so Kraken's minimum orders and lots
-do not bind (a delisted pair without symbol info gets 1e-8 lots and no
-minimum, and that is noted). Market orders filled at the next price after
-each daily close. Two cost levels, each run in full:
-- **10 bps a side:** 5 bps fee and 5 bps slippage, a modern low-fee venue.
-- **35 bps a side:** about Kraken's retail taker fee (40 bps at this
-  account's tier, 35 at the next; see running.md), spread included, for
-  the wider spreads of those years.
-
-**Strategies:**
-
-| Run | Settings |
-|---|---|
-| `trend_ensemble`, default | `lookbacks = [5, 10, 20, 30, 60, 90, 150, 250, 360]`, `vol_bars = 90`, `target_vol = 0.25`, `days_per_year = 365`, `max_weight = 1`, `rebalance_threshold = 0.2`, `invest_fraction = 0.95` |
-| `trend_ensemble`, `[20, 55]` | the same, `lookbacks = [20, 55]` |
-| `breakout`, 10-day high, hold 1 day | one run a pair: `timeframe = "1d"`, `setup = "range"`, `range_bars = 10`, `confirm = "none"`, `entry = "stop"`, `arm_bars = 1`, `max_hold_bars = 1`, `target_multiple = 0`, `trend_sma = 0`, `stop_buffer_bps = 10`, a fixed 1,000 USD a trade |
-| `momentum_rotation` | `lookback_bars = 28`, `rebalance_bars = 7`, `top_n = 3`, `positive_only = true`, `invest_fraction = 0.95` |
-
-The 10-day breakout's settings were not written down when it was found.
-Before the Kraken runs, these are run on the 2022–2026 Binance.US bars of
-the seven pairs; they should give about +0.80% a trade over 697 trades.
-If they do not, the difference is found and noted first, and the settings
-that reproduce it are the ones run.
-
-**Benchmarks:**
-- `trend_ensemble` and `momentum_rotation`: BTC and cash in the mix that
-  matches the strategy's realized volatility in that period (not a fixed
-  20%), and the coins listed at the time, held equally, rebalanced
-  monthly and scaled to the same volatility. A fixed mix would count the
-  cash of the coins not yet listed as caution.
-- The 10-day breakout: holding the same pair over the same bars (its
-  average daily return times the days held, "less drift" as in Daily stock
-  setups), and random entries.
-
-**Random entries:** a script outside Kestrel, 1,000 runs per pair and
-period. Each run enters on random days, at the day's open, as many times
-each calendar year as the strategy did, without overlap, and exits at the
-next day's close, at the same costs. Before it is trusted, the script runs
-the real rule too and must match Kestrel's backtest trade by trade (count
-within 2%, average within 0.05% a trade), as the Turtle simulation was
-checked. The same check runs on Connors RSI(2) with the 200-day filter on
-the 35 Schwab symbols (2016–2026, already seen; a check of the entry, not
-a holdout): random entries on days closing above the 200-day average,
-with the same exit at a close above the 5-day average.
-
-**What counts as passing** (each at 10 bps a side, unless it says 35):
-- `trend_ensemble` (each setting): a higher Sharpe than its
-  volatility-matched BTC and cash in both periods, and still ahead at
-  35 bps. `[20, 55]` replaces the default only if it is ahead in both
-  periods and its Sharpe difference has p < 0.05 (paired 20-day block
-  bootstrap); otherwise the default stays.
-- The 10-day breakout: a positive average a trade over drift in both
-  periods, on at least two thirds of the pairs, above the 95th percentile
-  of the random entries pooled over the pairs; and still positive over
-  drift at 35 bps.
-- `momentum_rotation`: ahead of its volatility-matched BTC and cash in
-  both periods, and still ahead without the coin that made it the most
-  (the ZEC lesson).
-
-A strategy that passes goes on to paper trading (the breakout) or stays in
-it (`trend_ensemble`). One that fails is written up here and not re-tuned
-on these years. With four settings, two periods and two cost levels, a
-single pass is weak evidence; a pass in both periods and at both costs is
-what would change a plan.
 
 ## Paper runs
 
