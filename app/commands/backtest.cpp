@@ -18,7 +18,7 @@ class BacktestCommand : public Command {
    public:
     BacktestCommand(std::string strategy_name, types::Timestamp from,
                     types::Timestamp to, bool quotes_from_trades,
-                    bool fill_at_close,
+                    bool bars_from_database, bool fill_at_close,
                     std::optional<types::Timeframe> fill_timeframe,
                     std::string equity_csv,
                     std::chrono::milliseconds equity_interval)
@@ -26,6 +26,7 @@ class BacktestCommand : public Command {
           mFrom(from),
           mTo(to),
           mQuotesFromTrades(quotes_from_trades),
+          mBarsFromDatabase(bars_from_database),
           mFillAtClose(fill_at_close),
           mFillTimeframe(fill_timeframe),
           mEquityCsv(std::move(equity_csv)),
@@ -51,11 +52,6 @@ class BacktestCommand : public Command {
             spdlog::error("strategy: {}", strategy.error().ToString());
             return 1;
         }
-        auto source = CreateDataSource(config);
-        if (!source) {
-            spdlog::error("startup: {}", source.error().ToString());
-            return 1;
-        }
         // The database is optional: without a [database] section, or if it
         // cannot be reached, everything comes from the venue.
         std::unique_ptr<db::BarStore> bar_store;
@@ -63,6 +59,7 @@ class BacktestCommand : public Command {
         std::unique_ptr<db::MarketTradeStore> trade_store;
         backtest::StoredData stored;
         stored.quotes_from_trades = mQuotesFromTrades;
+        stored.bars_only = mBarsFromDatabase;
         auto database = OpenDatabase(config);
         if (database) {
             bar_store = std::make_unique<db::BarStore>(*database);
@@ -71,10 +68,21 @@ class BacktestCommand : public Command {
             stored.bars = bar_store.get();
             stored.quotes = quote_store.get();
             stored.trades = trade_store.get();
+        } else if (mBarsFromDatabase) {
+            spdlog::error("--bars-from-database: no database: {}",
+                          database.error().ToString());
+            return 1;
         } else if (database.error().category !=
                    types::ErrorCategory::kNotFound) {
             spdlog::warn("database unavailable, using the venue: {}",
                          database.error().ToString());
+        }
+        // After the database, so a missing one is reported before a provider
+        // that wants credentials fails on them.
+        auto source = CreateDataSource(config);
+        if (!source) {
+            spdlog::error("startup: {}", source.error().ToString());
+            return 1;
         }
         // The fill timeframe's bars are loaded with the strategy's own.
         strategy::Requirements needs = (*strategy)->Needs();
@@ -257,6 +265,7 @@ class BacktestCommand : public Command {
     types::Timestamp mFrom;
     types::Timestamp mTo;
     bool mQuotesFromTrades;
+    bool mBarsFromDatabase;
     bool mFillAtClose;
     std::optional<types::Timeframe> mFillTimeframe;
     std::string mEquityCsv;
@@ -268,6 +277,7 @@ struct Args {
     std::string from;
     std::string to;
     bool quotes_from_trades = false;
+    bool bars_from_database = false;
     bool fill_at_close = false;
     std::string fill_timeframe;
     std::string equity_csv;
@@ -297,6 +307,12 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                   "Replay quotes rebuilt from stored trades (`trades --store`) "
                   "instead of recorded quotes; approximate, see "
                   "docs/database.md");
+    sub->add_flag("--bars-from-database", args->bars_from_database,
+                  "Replay bars (and --fill-timeframe bars) only from the "
+                  "database, never from the provider, for history it no "
+                  "longer serves (Kraken keeps its newest 720 bars); a pair "
+                  "it no longer lists, with stored bars, gets 1e-8 lots and "
+                  "no minimum");
     sub->add_flag("--fill-at-close", args->fill_at_close,
                   "Fill an order placed on a bar's close at that close, not "
                   "at the next price replayed (the next bar's open); "
@@ -321,7 +337,7 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
         slot = std::make_unique<BacktestCommand>(
             args->strategy, *types::ParseTimestamp(args->from),
             *types::ParseTimestamp(args->to), args->quotes_from_trades,
-            args->fill_at_close,
+            args->bars_from_database, args->fill_at_close,
             args->fill_timeframe.empty()
                 ? std::nullopt
                 : std::optional(*types::ParseTimeframe(args->fill_timeframe)),

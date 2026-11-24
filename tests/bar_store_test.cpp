@@ -140,6 +140,21 @@ TEST_F(BarStoreTest, TimeframesAndSymbolsAreSeparate) {
     EXPECT_TRUE(other_symbol->empty());
 }
 
+TEST_F(BarStoreTest, AnyIsPerVenueSymbolAndTimeframe) {
+    ASSERT_OK(mStore->Save(kVenue, "BTC/USD", types::Timeframe::kM1,
+                           std::vector{MakeBar(0, "105")}));
+    auto stored = mStore->Any(kVenue, "BTC/USD", types::Timeframe::kM1);
+    ASSERT_OK(stored);
+    EXPECT_TRUE(*stored);
+    for (auto other :
+         {mStore->Any(kVenue, "BTC/USD", types::Timeframe::kM5),
+          mStore->Any(kVenue, "ETH/USD", types::Timeframe::kM1),
+          mStore->Any("elsewhere", "BTC/USD", types::Timeframe::kM1)}) {
+        ASSERT_OK(other);
+        EXPECT_FALSE(*other);
+    }
+}
+
 TEST_F(BarStoreTest, StreamSinkStoresBars) {
     auto sink = mStore->MakeStreamSink(kVenue);
     sink("ETH/USD", types::Timeframe::kM1, MakeBar(0, "105"));

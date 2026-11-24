@@ -152,17 +152,50 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
         firsts.push_back(WarmupStart(from, *length, needs.warmup_bars,
                                      replay->Hours().get()));
     }
+    if (stored.bars_only && !stored.bars) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "bars only from the database need a database");
+    }
     for (const types::Symbol& symbol : needs.symbols) {
         auto info = source.GetSymbolInfo(symbol);
-        if (!info) {
+        // A pair the venue says it does not know, in its own answer (a
+        // delisted one, not a 404 or an odd response), is replayed from the
+        // database with FallbackSymbolInfo, but only if the database has bars
+        // for it, at any time (a window before its listing has none): else
+        // it is a mistyped symbol, and the venue's error.
+        const bool unknown =
+            !info && stored.bars_only &&
+            info.error().category == ErrorCategory::kNotFound &&
+            info.error().provider_code.has_value();
+        if (!info && !unknown) {
             return std::unexpected(info.error());
         }
-        replay->SetSymbolInfo(*info);
+        bool stored_any = false;  // under bars_only, in the window
         for (std::size_t i = 0; i < needs.bar_timeframes.size(); ++i) {
             const types::Timeframe timeframe = needs.bar_timeframes[i];
             const auto length = types::FixedDuration(timeframe);
             const auto first = firsts[i];
             const std::string name(types::ToString(timeframe));
+            if (stored.bars_only) {
+                auto saved = stored.bars->Load(std::string(source.Name()),
+                                               symbol, timeframe, first, to);
+                if (!saved) {
+                    return std::unexpected(saved.error());
+                }
+                if (saved->empty()) {
+                    spdlog::warn("{} {}: no bars in the database for the range",
+                                 symbol, name);
+                } else {
+                    stored_any = true;
+                    spdlog::info(
+                        "{} {}: {} bars loaded from the database, {} to {}",
+                        symbol, name, saved->size(),
+                        types::FormatIso8601(saved->front().open_time),
+                        types::FormatIso8601(saved->back().open_time));
+                }
+                replay->AddBars(symbol, timeframe, std::move(*saved));
+                continue;
+            }
             if (stored.bars) {
                 auto saved = stored.bars->Load(std::string(source.Name()),
                                                symbol, timeframe, first, to);
@@ -201,6 +234,27 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
             }
             replay->AddBars(symbol, timeframe, std::move(*bars));
         }
+        if (unknown) {
+            bool stored_ever = stored_any;
+            for (std::size_t i = 0;
+                 !stored_ever && i < needs.bar_timeframes.size(); ++i) {
+                auto any = stored.bars->Any(std::string(source.Name()), symbol,
+                                            needs.bar_timeframes[i]);
+                if (!any) {
+                    return std::unexpected(any.error());
+                }
+                stored_ever = *any;
+            }
+            if (!stored_ever) {
+                return std::unexpected(info.error());
+            }
+            spdlog::warn(
+                "{}: {} does not know it ({}); replayed from the database "
+                "with 1e-8 lots and ticks, no minimum",
+                symbol, source.Name(), info.error().ToString());
+            info = FallbackSymbolInfo(symbol);
+        }
+        replay->SetSymbolInfo(*info);
         if (needs.quotes && stored.quotes_from_trades) {
             if (!stored.trades) {
                 return MakeError(ErrorCategory::kNotFound,
@@ -247,6 +301,11 @@ types::Result<std::shared_ptr<ReplayDataSource>> LoadReplayData(
         }
     }
     return replay;
+}
+
+types::SymbolInfo FallbackSymbolInfo(const types::Symbol& symbol) {
+    const Decimal tiny(1, 8);  // 1e-8
+    return {symbol, tiny, tiny, Decimal(), Decimal()};
 }
 
 std::vector<types::Quote> QuotesFromTrades(

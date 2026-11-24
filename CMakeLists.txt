@@ -198,6 +198,7 @@ if(KESTREL_BUILD_APP)
       "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
       "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
       "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
+      "backtest_bars_from_database_needs_one|${_good}|1|--bars-from-database: no database|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--bars-from-database"
       "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,ma_crossover"
       "databento_wrong_provider|${_good}|2|provider = \"databento\"|databento,--schema,ohlcv-1m,--file,/tmp/x.csv"
       "databento_bad_schema|${_databento}|105|unknown Databento schema|databento,--schema,mbo,--file,/tmp/x.csv"

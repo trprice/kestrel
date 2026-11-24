@@ -48,17 +48,31 @@ run before 2022.
   joins when its bars start; until then its share sits in cash.
 - The archive is a downloaded file: imported with the untrusted-file
   handling (its own directory, `python -I`).
+- **What it holds** (imported Nov 24 2026): all eleven, daily, to Sep 30
+  2026 (EOS to Jun 2025, REP to Jun 2026). Bars start Oct 2013 for BTC and
+  LTC, Aug 2015 ETH, Jul 2016 ETC, Oct 2016 REP and ZEC, Jan 2017 XMR and
+  XLM, Apr 2017 DASH, May 2017 XRP and Jul 2017 EOS. Every bar checked out
+  (low under open and close, high over them). EOS, REP and XLM have no
+  bars from Aug 22 2017 to Feb 16 2018, the top of the 2017 bubble and its
+  fall; LTC has gaps of up to 15 days in early 2015; the rest miss a day
+  or six at most.
 
 **Periods:** A, Jan 1 2015 – Dec 31 2017 (few coins, a bull market), and
 B, Jan 1 2018 – Dec 31 2021 (the 2018 fall and the 2020–21 rise). Each
 uses the bars before it as warm-up, as a live run would; a symbol with
 less history runs with what it has, as on a new listing. 2013–2014 is
-warm-up only.
+warm-up only. Period A is mostly BTC and LTC until mid-2016 (ETH from
+Aug 2015), and has all eleven pairs only from mid-2017, so its results
+are reported per pair too and say so, not as eleven coins' result.
 
 **Account and costs:** 100,000 USD, so Kraken's minimum orders and lots
-do not bind (a delisted pair without symbol info gets 1e-8 lots and no
-minimum, and that is noted). Market orders filled at the next price after
-each daily close. Two cost levels, each run in full:
+do not bind; the breakout runs with a 10,000,000 USD account, so its
+fixed quantity is never refused as prices rise hundreds of times (ETH,
+XRP). Bars come only from the database (`backtest --bars-from-database`),
+as Kraken's API has no bars this old. A delisted pair without symbol
+info (REP and EOS) gets 1e-8 lots and no minimum, with a warning. Market
+orders filled at the next price after each daily close. Two cost levels,
+each run in full:
 - **10 bps a side:** 5 bps fee and 5 bps slippage, a modern low-fee venue.
 - **35 bps a side:** about Kraken's retail taker fee (40 bps at this
   account's tier, 35 at the next; see running.md), spread included, for
@@ -70,14 +84,16 @@ each daily close. Two cost levels, each run in full:
 |---|---|
 | `trend_ensemble`, default | `lookbacks = [5, 10, 20, 30, 60, 90, 150, 250, 360]`, `vol_bars = 90`, `target_vol = 0.25`, `days_per_year = 365`, `max_weight = 1`, `rebalance_threshold = 0.2`, `invest_fraction = 0.95` |
 | `trend_ensemble`, `[20, 55]` | the same, `lookbacks = [20, 55]` |
-| `breakout`, 10-day high, hold 1 day | one run a pair: `timeframe = "1d"`, `setup = "range"`, `range_bars = 10`, `confirm = "none"`, `entry = "stop"`, `arm_bars = 1`, `max_hold_bars = 1`, `target_multiple = 0`, `trend_sma = 0`, `stop_buffer_bps = 10`, a fixed 1,000 USD a trade |
+| `breakout`, 10-day high, hold 1 day | one run a pair: `timeframe = "1d"`, `setup = "range"`, `range_bars = 10`, `confirm = "none"`, `entry = "stop"`, `arm_bars = 1`, `max_hold_bars = 1`, `target_multiple = 0`, `trend_sma = 0`, `stop_buffer_bps = 10`, and a fixed `quantity`, worth about 1,000 USD at the pair's first price in the period |
 | `momentum_rotation` | `lookback_bars = 28`, `rebalance_bars = 7`, `top_n = 3`, `positive_only = true`, `invest_fraction = 0.95` |
 
 The 10-day breakout's settings were not written down when it was found.
 Before the Kraken runs, these are run on the 2022–2026 Binance.US bars of
-the seven pairs; they should give about +0.80% a trade over 697 trades.
-If they do not, the difference is found and noted first, and the settings
-that reproduce it are the ones run.
+the seven pairs with a build from before the hold fix (below); they should
+give about +0.80% a trade over 697 trades. If they do not, the difference
+is found and noted first, and the settings that reproduce it are the ones
+run. They are then run again with the fix, and that result, not +0.80%,
+is the one the Kraken runs are set against.
 
 **Benchmarks:**
 - `trend_ensemble` and `momentum_rotation`: BTC and cash in the mix that
@@ -89,13 +105,46 @@ that reproduce it are the ones run.
   average daily return times the days held, "less drift" as in Daily stock
   setups), and random entries.
 
+**Gaps:** a breakout trade open when a gap starts is held across it, as
+its exit waits for the next bar (the ADA trade held for 19 months in
+[Crypto, 2022 – Oct 2026](#crypto-2022--oct-2026)). A trade held across a
+gap of more than 7 days, in the backtest or the random-entry script, is
+listed separately and left out of the averages. The portfolio strategies
+need no rule: `trend_ensemble` leaves a symbol with no bar as it is and
+starts its models again after a gap of more than 7 days, and
+`momentum_rotation` does not rank a symbol without bars for the period
+and its lookback. Neither can trade a coin during its gap, so one held
+when the gap starts stays held, at its last price, until bars return;
+that is reported if it happens. Both rebalance once a day late when a
+symbol's bars stop (they wait for every symbol's bar, then go on without
+it), and on the first day of a run: a delay, not a missed rebalance.
+
+**The 2017 gap and the end of period A:** EOS, REP and XLM have no bars
+from Aug 22 2017 into period B, so a coin of the three held on Aug 21 is
+still valued at that day's price on Dec 31 2017, and its late-2017 rise
+is not seen, nor its volatility. The benchmarks keep such a coin the same
+way: held at its last price, not rebalanced, until its bars return. Each
+portfolio run and benchmark reports its share of equity in the three on
+Aug 21 2017. If any had more than 5% there, period A is also run on the
+other eight pairs, and that run is the one judged; both are reported.
+With eight pairs `momentum_rotation` starts when four can be ranked, from
+late Aug 2016 (ETC's bars start Jul 27).
+
 **Random entries:** a script outside Kestrel, 1,000 runs per pair and
 period. Each run enters on random days, at the day's open, as many times
-each calendar year as the strategy did, without overlap, and exits at the
-next day's close, at the same costs. Before it is trusted, the script runs
-the real rule too and must match Kestrel's backtest trade by trade (count
-within 2%, average within 0.05% a trade), as the Turtle simulation was
-checked. The same check runs on Connors RSI(2) with the 200-day filter on
+each calendar year as the strategy did, without overlap, and exits as the
+breakout does, at the next price after the next day's close, at the same
+costs. A random entry is held from the open, the breakout's from its stop
+during the day, so each is measured over drift for its own time held,
+entry to exit. The random entries' two whole days with no stop spread
+wider, which raises their 95th percentile: a harder bar, not an easier
+one. Before it is trusted, the script runs the real rule too and must
+match Kestrel's backtest trade by trade (count within 2%, average within
+0.05% a trade), as the Turtle simulation was checked. That is the rule as
+Kestrel runs it: a day's bar walked open, the extreme nearer the open, the
+other extreme, close (see running.md); a trade filled on day t, at its
+stop or at an open above it, sold at the next price after day t+1's
+close. The same check runs on Connors RSI(2) with the 200-day filter on
 the 35 Schwab symbols (2016–2026, already seen; a check of the entry, not
 a holdout): random entries on days closing above the 200-day average,
 with the same exit at a close above the 5-day average.
@@ -113,6 +162,27 @@ with the same exit at a close above the 5-day average.
 - `momentum_rotation`: ahead of its volatility-matched BTC and cash in
   both periods, and still ahead without the coin that made it the most
   (the ZEC lesson).
+
+**Changes before any run (Nov 24 2026):** written when the data was
+imported, before any of these tests was run.
+- The breakout's size was "a fixed 1,000 USD a trade", which `breakout`
+  cannot do: it buys a fixed `quantity`, or sizes by risk. Now a fixed
+  quantity worth about that at the period's first price, in a larger
+  account. Results are per trade, so the size does not change them.
+- The rule for trades held across a gap, above.
+- Period A reported per pair, above.
+- `momentum_rotation` skips a rebalance when under half of its symbols
+  can be ranked, so in period A it holds cash until 6 of the 11 can be
+  (REP and ZEC join in Oct 2016, ranked 28 days later). Its period A is
+  in effect Nov 2016 – Dec 2017, and is reported as that.
+- A bug in the breakout's hold, from Gemini's review: the backtest counted
+  the entry's own day as held when it filled the stop at the day's open
+  time (a gap through it, or the stop crossed before the day's low), and
+  sold those trades a day early. Paper and live fills, inside the day,
+  never were. Fixed, so the 2022–2026 result is run again, above.
+- The random entries exit as the breakout does, and both are measured
+  over their own drift, above.
+- The rule for the 2017 gap at the end of period A, above.
 
 A strategy that passes goes on to paper trading (the breakout) or stays in
 it (`trend_ensemble`). One that fails is written up here and not re-tuned
@@ -290,7 +360,9 @@ return per trade, net of costs.
   - The double bottom rose to +0.20%, but still lost in 2022 and 2024.
 - **Daily 10-day-high breakout, sold after one day:** +0.80% a trade (697
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
-  (−0.29%).
+  (−0.29%). Found before the hold fix of Nov 24 2026 (see
+  [Upcoming tests](#upcoming-tests)): a trade whose stop filled at the
+  day's open time was sold a day early. To be run again.
   - Against holding, per pair: the strategy's trades compounded (each
     trade's return on the whole stake, though the backtest bought a fixed
     quantity), against buying at the first bar and holding to the last.

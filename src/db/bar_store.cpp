@@ -113,6 +113,19 @@ Result<std::vector<types::Bar>> BarStore::Load(const std::string& venue,
     return bars;
 }
 
+Result<bool> BarStore::Any(const std::string& venue,
+                           const types::Symbol& symbol,
+                           types::Timeframe timeframe) {
+    auto rows = mDatabase->Query(
+        "SELECT 1 FROM bars WHERE venue = $1 AND symbol = $2 AND "
+        "timeframe = $3 LIMIT 1",
+        {venue, symbol, std::string(types::ToString(timeframe))});
+    if (!rows) {
+        return std::unexpected(rows.error());
+    }
+    return !rows->empty();
+}
+
 data::BarCallback BarStore::MakeStreamSink(std::string venue) {
     return [this, venue = std::move(venue)](const types::Symbol& symbol,
                                             types::Timeframe timeframe,

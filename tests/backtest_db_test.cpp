@@ -260,6 +260,216 @@ TEST_F(BacktestDbTest, LoadsFromTheVenueEvenWhenSavingItsBarsFails) {
     EXPECT_TRUE(saved->empty());  // the rejected insert wrote nothing
 }
 
+// With bars_only, what the database holds is replayed as it is: here a
+// series that starts after the warm-up (a later listing), with no request to
+// the venue and nothing saved.
+TEST_F(BacktestDbTest, BarsOnlyReplaysALateStartWithoutAskingTheVenue) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(4, 7, "5")));
+    CountingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, Sma()->Needs(), Hour(6),
+                                           Hour(8), stored);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(source.bar_requests, 0);
+    const auto& bars = (*loaded)->Series(kSymbol, Timeframe::kH1);
+    ASSERT_EQ(bars.size(), 4u);
+    EXPECT_EQ(bars.front().open_time, Hour(4));
+    EXPECT_EQ(bars.front().close, D("5"));
+
+    backtest::BacktestOptions options;
+    options.start = Hour(6);
+    options.end = Hour(8);
+    ASSERT_OK(backtest::RunBacktest(*loaded, Sma(), options));
+}
+
+// A venue that answers, in its own words, that it does not know REP/USD (as
+// Kraken does for a delisted pair), and knows ETH/USD.
+class DelistingSource : public CountingSource {
+   public:
+    DelistingSource() {
+        SetSymbolInfo({"ETH/USD", D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    }
+    types::Result<types::SymbolInfo> GetSymbolInfo(
+        const types::Symbol& symbol) override {
+        if (symbol == "REP/USD") {
+            return types::MakeError(ErrorCategory::kNotFound,
+                                    "unknown asset pair", 200,
+                                    "EQuery:Unknown asset pair");
+        }
+        return CountingSource::GetSymbolInfo(symbol);
+    }
+};
+
+strategy::Requirements TwoSymbols(const types::Symbol& second) {
+    strategy::Requirements needs;
+    needs.symbols = {kSymbol, second};
+    needs.bar_timeframes = {Timeframe::kH1};
+    needs.warmup_bars = 3;  // from hour 2, for a window starting at hour 6
+    return needs;
+}
+
+// A pair the venue no longer lists, with stored bars: replayed with
+// fallback symbol info.
+TEST_F(BacktestDbTest, BarsOnlyReplaysAPairTheVenueNoLongerLists) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 7, "5")));
+    ASSERT_OK(mBars->Save(kVenue, "REP/USD", Timeframe::kH1, Bars(2, 5, "3")));
+    DelistingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, TwoSymbols("REP/USD"),
+                                           Hour(6), Hour(8), stored);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(source.bar_requests, 0);
+    EXPECT_EQ((*loaded)->Series("REP/USD", Timeframe::kH1).size(), 4u);
+    auto info = (*loaded)->GetSymbolInfo("REP/USD");
+    ASSERT_OK(info);
+    EXPECT_EQ(info->lot_size, D("0.00000001"));
+    EXPECT_EQ(info->tick_size, D("0.00000001"));
+    EXPECT_EQ(info->min_order_size.Sign(), 0);
+    EXPECT_EQ(info->min_notional.Sign(), 0);
+    // Without bars_only an unknown pair is the venue's error.
+    stored.bars_only = false;
+    auto refused = backtest::LoadReplayData(source, TwoSymbols("REP/USD"),
+                                            Hour(6), Hour(8), stored);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().category, ErrorCategory::kNotFound);
+}
+
+// A window before a delisted pair's listing has none of its bars: it still
+// gets the fallback, as a pair still listed would run without bars, since
+// the database has bars for it later.
+TEST_F(BacktestDbTest, BarsOnlyReplaysADelistedPairBeforeItsListing) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 7, "5")));
+    ASSERT_OK(
+        mBars->Save(kVenue, "REP/USD", Timeframe::kH1, Bars(20, 21, "3")));
+    DelistingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, TwoSymbols("REP/USD"),
+                                           Hour(6), Hour(8), stored);
+    ASSERT_OK(loaded);
+    EXPECT_TRUE((*loaded)->Series("REP/USD", Timeframe::kH1).empty());
+    auto info = (*loaded)->GetSymbolInfo("REP/USD");
+    ASSERT_OK(info);
+    EXPECT_EQ(info->lot_size, D("0.00000001"));
+}
+
+// With no stored bars an unknown pair is a mistyped symbol, not a delisted
+// one: the venue's error, not an empty run.
+TEST_F(BacktestDbTest, BarsOnlyRefusesAnUnknownPairWithNoBars) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 7, "5")));
+    DelistingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, TwoSymbols("REP/USD"),
+                                           Hour(6), Hour(8), stored);
+    ASSERT_FALSE(loaded);
+    EXPECT_EQ(loaded.error().category, ErrorCategory::kNotFound);
+}
+
+// kNotFound without the venue's own code (a 404 from a wrong URL, an empty
+// answer) is not taken for a delisting, even with bars stored.
+TEST_F(BacktestDbTest, BarsOnlyRefusesANotFoundTheVenueDidNotSay) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 7, "5")));
+    ASSERT_OK(mBars->Save(kVenue, "REP/USD", Timeframe::kH1, Bars(1, 7, "3")));
+    CountingSource source;  // kNotFound for REP/USD, with no provider code
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, TwoSymbols("REP/USD"),
+                                           Hour(6), Hour(8), stored);
+    ASSERT_FALSE(loaded);
+    EXPECT_EQ(loaded.error().category, ErrorCategory::kNotFound);
+}
+
+// A series that ends early (a delisting) or has a gap is replayed as it is:
+// not topped up from the venue, and nothing is saved.
+TEST_F(BacktestDbTest, BarsOnlyReplaysAnEarlyEndAndAGapAsTheyAre) {
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 3, "5")));
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(5, 6, "5")));
+    CountingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, Sma()->Needs(), Hour(6),
+                                           Hour(8), stored);
+    ASSERT_OK(loaded);
+    EXPECT_EQ(source.bar_requests, 0);
+    const auto& bars = (*loaded)->Series(kSymbol, Timeframe::kH1);
+    ASSERT_EQ(bars.size(), 5u);
+    EXPECT_EQ(bars.back().open_time, Hour(6));
+    auto saved = mBars->Load(kVenue, kSymbol, Timeframe::kH1, Hour(0), Hour(8));
+    ASSERT_OK(saved);
+    EXPECT_EQ(saved->size(), 5u);  // still only what was stored
+}
+
+// Bars for one symbol and none for another the venue knows (not listed yet
+// in the window): the run goes ahead on the one with bars.
+TEST_F(BacktestDbTest, BarsOnlyRunsWithASymbolThatHasNoBars) {
+    // Records the symbols it was given bars of, in a set that outlives it
+    // (RunBacktest destroys the strategy).
+    class TwoSymbolStrategy : public strategy::Strategy {
+       public:
+        explicit TwoSymbolStrategy(std::set<types::Symbol>* seen)
+            : mSeen(seen) {}
+        std::string_view Name() const override { return "two-symbols"; }
+        strategy::Requirements Needs() const override {
+            return TwoSymbols("ETH/USD");
+        }
+        void OnBar(strategy::Context&, const types::Symbol& symbol,
+                   types::Timeframe, const types::Bar&) override {
+            mSeen->insert(symbol);
+        }
+
+       private:
+        std::set<types::Symbol>* mSeen;
+    };
+    ASSERT_OK(mBars->Save(kVenue, kSymbol, Timeframe::kH1, Bars(1, 7, "5")));
+    DelistingSource source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, TwoSymbols("ETH/USD"),
+                                           Hour(6), Hour(8), stored);
+    ASSERT_OK(loaded);
+    EXPECT_TRUE((*loaded)->Series("ETH/USD", Timeframe::kH1).empty());
+    std::set<types::Symbol> seen;
+    backtest::BacktestOptions options;
+    options.start = Hour(6);
+    options.end = Hour(8);
+    auto result = backtest::RunBacktest(
+        *loaded, std::make_unique<TwoSymbolStrategy>(&seen), options);
+    ASSERT_OK(result);
+    EXPECT_EQ(seen, std::set<types::Symbol>{kSymbol});
+}
+
+// Only "not known" falls back: a venue that cannot be asked is an error.
+TEST_F(BacktestDbTest, BarsOnlyStillFailsWhenTheVenueCannotBeAsked) {
+    class Unreachable : public CountingSource {
+       public:
+        types::Result<types::SymbolInfo> GetSymbolInfo(
+            const types::Symbol&) override {
+            return types::MakeError(ErrorCategory::kNetwork, "down");
+        }
+    } source;
+    auto stored = Stored();
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, Sma()->Needs(), Hour(6),
+                                           Hour(8), stored);
+    ASSERT_FALSE(loaded);
+    EXPECT_EQ(loaded.error().category, ErrorCategory::kNetwork);
+}
+
+// A failed lookup is an error under bars_only, not a fetch from the venue.
+TEST_F(BacktestDbTest, BarsOnlyReportsADatabaseThatCannotBeRead) {
+    db::BarStore unreadable(ConnectWithoutTables());
+    CountingSource source;
+    backtest::StoredData stored{&unreadable, nullptr};
+    stored.bars_only = true;
+    auto loaded = backtest::LoadReplayData(source, Sma()->Needs(), Hour(6),
+                                           Hour(8), stored);
+    ASSERT_FALSE(loaded);
+    EXPECT_EQ(source.bar_requests, 0);
+}
+
 TEST_F(BacktestDbTest, IgnoresStoredBarsOfOtherVenues) {
     ASSERT_OK(mBars->Save("kestrel-test-other", kSymbol, Timeframe::kH1,
                           Bars(1, 7, "5")));

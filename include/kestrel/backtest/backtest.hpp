@@ -73,7 +73,25 @@ struct StoredData {
     // Build the quotes from `trades` (QuotesFromTrades) instead of reading
     // `quotes`, for ranges where no quotes were recorded.
     bool quotes_from_trades = false;
+    // Bars only from `bars`, never from the source, for history the venue no
+    // longer serves (Kraken keeps only its newest 720 bars): what the
+    // database holds in the window is replayed as it is, a first bar after
+    // the warm-up's start (a later listing), a last one before the end (a
+    // delisting) or none at all. A symbol the source answers it does not know
+    // (kNotFound with the venue's own error code: a delisted pair) gets
+    // FallbackSymbolInfo if the database has bars for it at any time (a
+    // window before its listing has none, as on a pair still listed); with
+    // none, it is the source's error (a mistyped symbol). Only a source that
+    // names its error gets this: Kraken and Binance.US do, Schwab does not,
+    // so a stock it no longer knows stays an error (1e-8 lots would be wrong
+    // for shares).
+    bool bars_only = false;
 };
+
+// For a symbol with no venue metadata under StoredData::bars_only: lots and
+// ticks of 1e-8 and no minimum size or value, so nothing is refused or
+// rounded away for it.
+types::SymbolInfo FallbackSymbolInfo(const types::Symbol& symbol);
 
 // Approximate quotes rebuilt from public trades, one per trade, for replaying
 // a range where no quotes were recorded. A seller taking liquidity shows that
@@ -105,7 +123,9 @@ std::vector<types::Quote> QuotesFromTrades(
 // come from `stored.quotes`, as venues offer no history of them; kNotFound if
 // it is null or holds none for a symbol in the range. With
 // `stored.quotes_from_trades` they are built from `stored.trades` instead,
-// kNotFound likewise.
+// kNotFound likewise. With `stored.bars_only`, bars come only from
+// `stored.bars` (kInvalidArgument if it is null, its error if a lookup
+// fails) and are never saved; see StoredData::bars_only.
 //
 // kInvalidArgument if `to` is not after `from`; kUnsupported for a calendar
 // timeframe (1M); otherwise the source's own error.

@@ -31,6 +31,11 @@ class BarStore {
                                                 types::Timestamp start,
                                                 types::Timestamp end);
 
+    // Whether any bar is stored for the symbol and timeframe, at any time.
+    types::Result<bool> Any(const std::string& venue,
+                            const types::Symbol& symbol,
+                            types::Timeframe timeframe);
+
     // Callback for DataSource::StreamBars that stores each bar as it closes.
     // Failures are logged; the callback itself never throws.
     data::BarCallback MakeStreamSink(std::string venue);

@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds; Ctrl-C or SIGTERM stops it early, with the quotes stored; with `--store` and a Discord webhook, posts its error lines and a notice when it starts and stops |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--bars-from-database] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--bars-from-database` never fetches bars from the provider; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue; with a Discord webhook configured, posts its error lines and a notice when it starts and stops (see [configuration.md](configuration.md#alerts)) |
 | `alert [message]` | posts a test message to the Discord webhook, to check it before a run |
@@ -103,6 +103,20 @@ refresh token had expired or been refused); there is no need to restart them.
   `YYYY-MM-DD` or ISO 8601 UTC with the `Z` (`2026-10-19T17:00:00Z`).
   `backtest` records no run, fills or P&L. With a `[database]`, it does save
   the bars it had to fetch from the provider, so the next backtest finds them.
+- **`--bars-from-database`** replays only the bars the database holds, for
+  history the provider no longer serves: Kraken's API keeps only the newest
+  720 bars of each pair, so older years come from its downloadable archive.
+  A database that starts after the warm-up (a pair listed later), ends
+  early (a delisting) or has gaps is replayed as it is, not topped up from
+  the provider; a pair with no bars in the range is replayed without any
+  (logged). Only bars are affected: `--fill-timeframe` bars come from the
+  database too, while quotes and `--quotes-from-trades` work as without it.
+  Symbol info still comes from the provider. A pair the provider answers it
+  no longer lists (Kraken's REP/USD and EOS/USD) gets lots and ticks of
+  1e-8 and no minimum, with a warning, if the database has bars for it at
+  any time, in the range or not; with none it is the provider's error, as
+  a mistyped symbol would be. This is for crypto: a stock Schwab no longer
+  knows stays an error. It needs a `[database]`.
 - **Fills.** Without recorded quotes, each bar is walked as open, the
   extreme nearer the open, the other extreme, close, and a resting stop or
   limit trades at its own price on the way. An order a strategy places on a

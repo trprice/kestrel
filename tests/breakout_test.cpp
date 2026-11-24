@@ -300,6 +300,26 @@ TEST(Breakout, ExitsAfterMaxHoldBars) {
     EXPECT_EQ(trades[1].price, D("14"));  // after hour 6: hour 7's open
 }
 
+// The backtest fills a stop crossed on the way to the high, or gapped
+// through at the open, at the bar's open time: that bar is still the one the
+// entry filled inside, so it is not counted, as with a stop crossed later.
+TEST(Breakout, MaxHoldBarsSkipsAnEntryBarFilledAtItsOpen) {
+    auto params = Params();
+    params.target_multiple = D("0");
+    params.max_hold_bars = 1;
+    for (const std::array<const char*, 4> entry_bar :
+         {std::array<const char*, 4>{"12.9", "13.6", "12", "13.2"},     // high
+          std::array<const char*, 4>{"13.5", "14", "13.4", "13.8"}}) {  // gap
+        const auto trades = Backtest(Nr4Then({entry_bar,
+                                              {"13.8", "14", "13.5", "13.9"},
+                                              {"14", "14", "14", "14"}}),
+                                     params);
+        ASSERT_EQ(trades.size(), 2u) << entry_bar[0];
+        EXPECT_EQ(trades[1].side, Side::kSell);
+        EXPECT_EQ(trades[1].price, D("14")) << entry_bar[0];  // hour 7's open
+    }
+}
+
 TEST(Breakout, RangeSetupBreaksTheLastBarsHigh) {
     auto params = Params();
     params.setup = BreakoutParams::Setup::kRange;
@@ -617,7 +637,9 @@ TEST(Breakout, LogsAnExitAndATargetFilledAfterItsStopExpired) {
     context.venue.cancel_result = trading::CancelOutcome::kCancelled;
     Feed(strategy, context);  // armed: order-1
     strategy.OnFill(context, FillOf("order-1", Side::kBuy, "1", "13.01"));
-    Feed(strategy, context, {"13", "13.5", "12.5", "13.2"});
+    Feed(strategy, context, {"13", "13.5", "12.5", "13.2"});  // the entry bar
+    ASSERT_EQ(context.venue.orders.size(), 2u);               // entry, stop
+    Feed(strategy, context, kQuietBar);  // a whole bar: held long enough
     ASSERT_EQ(context.venue.orders.size(), 3u);  // entry, stop, exit
     EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);
     strategy.OnFill(context, FillOf("order-3", Side::kSell, "1", "13.2"));
@@ -709,6 +731,8 @@ TEST(Breakout, AFeeInTheCoinIsTakenOffTheStopAndTheExit) {
     EXPECT_EQ(context.venue.orders[1].quantity, D("0.9989"));  // 0.99895
 
     context.venue.cancel_result = trading::CancelOutcome::kCancelled;
+    Feed(strategy, context, kQuietBar);  // the entry bar
+    ASSERT_EQ(context.venue.orders.size(), 2u);
     Feed(strategy, context, kQuietBar);  // held long enough
     ASSERT_EQ(context.venue.orders.size(), 3u);
     EXPECT_EQ(context.venue.orders[2].type, types::OrderType::kMarket);

@@ -410,8 +410,10 @@ bool Breakout::PendingBar() {
 }
 
 void Breakout::LongBar(Context& context, const types::Bar& bar) {
-    // Whole bars only: not the one the entry filled inside.
-    if (bar.open_time >= mEntryTime) {
+    // Whole bars only: not the one the entry filled inside, even when a
+    // backtest fills it at that bar's open time (a gap through the stop, or
+    // the stop crossed on the way to the high): a live fill comes after it.
+    if (bar.open_time > mEntryTime) {
         ++mBarsHeld;
     }
     const auto reconcile = ReconcileUnansweredClosers(context);

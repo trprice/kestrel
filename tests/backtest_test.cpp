@@ -1119,6 +1119,20 @@ TEST(LoadReplayDataTest, OnlyLoadsBarsBeforeTheEnd) {
               Hour(5));
 }
 
+TEST(LoadReplayDataTest, BarsOnlyNeedsADatabase) {
+    ReplayDataSource source;
+    backtest::StoredData stored;
+    stored.bars_only = true;
+    strategy::Requirements needs;
+    needs.symbols = {"BTC/USD"};
+    needs.bar_timeframes = {types::Timeframe::kH1};
+    auto loaded =
+        backtest::LoadReplayData(source, needs, types::FromEpochSeconds(0),
+                                 types::FromEpochSeconds(3600), stored);
+    ASSERT_FALSE(loaded);
+    EXPECT_EQ(loaded.error().category, types::ErrorCategory::kInvalidArgument);
+}
+
 TEST(LoadReplayDataTest, ReportsWhatCannotBeLoaded) {
     auto data = Data(kCloses);
     auto backwards =
