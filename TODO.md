@@ -252,10 +252,10 @@ Sections in priority order: safety first, then what is in use.
 - [ ] Run the planned Kraken 2015–2021 test (docs/strategy-tests.md,
       "Upcoming tests"): the archive's daily bars of the 11 pairs are in
       the database (Nov 24 2026) and run with `backtest
-      --bars-from-database`. Reproduce the 10-day breakout on Binance.US
-      first, then run each strategy once at 10 and 35 bps a side with the
-      random-entry script. Settings are fixed there; do not tune on the
-      results.
+      --bars-from-database`. The 10-day breakout is reproduced on
+      Binance.US (+0.80%, and +0.82% a trade with the hold fix). Next, run
+      each strategy once at 10 and 35 bps a side with the random-entry
+      script. Settings are fixed there; do not tune on the results.
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
       30 min) has stored quotes for its window (see Known limitations under
       Backtesting for the result); runs 7 to 11 have only public trades, which

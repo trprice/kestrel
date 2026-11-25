@@ -95,6 +95,15 @@ is found and noted first, and the settings that reproduce it are the ones
 run. They are then run again with the fix, and that result, not +0.80%,
 is the one the Kraken runs are set against.
 
+Done Nov 24 2026, with 1-hour fill bars (`--fill-timeframe 1h`), 2 bps
+taker fee, 5 bps slippage, 2022-01-01 to 2026-11-01:
+- Before the fix (the 5d1d906 build): 697 trades, +0.80% a trade, 51%
+  won, every pair and year as below. These settings reproduce it.
+- With the fix (8f3e7be): 697 trades, **+0.82% a trade**, 51% won,
+  +0.79% without ZEC. 15 trades changed, all entered at 00:00 on an open
+  through the stop, now held a day longer. With 1-hour fill bars only such
+  opens fill at the day's open time, so the bug touched few trades.
+
 **Benchmarks:**
 - `trend_ensemble` and `momentum_rotation`: BTC and cash in the mix that
   matches the strategy's realized volatility in that period (not a fixed
@@ -362,7 +371,9 @@ return per trade, net of costs.
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
   (−0.29%). Found before the hold fix of Nov 24 2026 (see
   [Upcoming tests](#upcoming-tests)): a trade whose stop filled at the
-  day's open time was sold a day early. To be run again.
+  day's open time was sold a day early. Run again with the fix: +0.82% a
+  trade, the same 697 trades, 15 of them held a day longer; the table
+  below is from before it.
   - Against holding, per pair: the strategy's trades compounded (each
     trade's return on the whole stake, though the backtest bought a fixed
     quantity), against buying at the first bar and holding to the last.
