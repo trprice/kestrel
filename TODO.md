@@ -253,9 +253,19 @@ Sections in priority order: safety first, then what is in use.
       "Pre-registered and upcoming tests"). The Kraken runs were done Nov 25 2026:
       `trend_ensemble` passes, `[20, 55]` doesn't replace the default,
       the 10-day breakout passes and `momentum_rotation` fails; Connors
-      RSI(2)'s entry beat random entries on the 35 Schwab symbols. Still
-      to do: a paper run of the 10-day breakout (the plan's next step for
-      a pass).
+      RSI(2)'s entry beat random entries on the 35 Schwab symbols. The
+      bad-print scan and the breakout-as-one-account test followed the same
+      day: no verdict changed, and as one account the breakout fails at
+      35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
+      of the 10-day breakout on Binance.US (the plan's next step for a
+      pass).
+- [ ] Bad prints (docs/strategy-tests.md, "Bad prints in the stored
+      bars"): remove or mark the bad bars the Nov 25 2026 scan found
+      (BTC/USDT Jun 21 2023, ZEC/USDT, ADA/USD Sep 18 2026, Kraken LTC 2015
+      and Jan 13 2018, Schwab Jun 5 2023 and others), and add an outlier
+      check at import or in `backtest`. Rerun the Binance.US breakout once
+      they are gone: a bad high blocks entries for ten days, which dropping
+      the trade does not undo.
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
       30 min) has stored quotes for its window (see Known limitations under
       Backtesting for the result); runs 7 to 11 have only public trades, which

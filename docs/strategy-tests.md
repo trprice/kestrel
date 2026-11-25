@@ -369,7 +369,240 @@ day and price.
   looked into. On ETFs, the entry's gain over random entries does little
   more than make up for what the exit loses to drift.
 
-Next: the breakout goes to paper trading.
+Next: the two checks below, both run Nov 25 2026. The bad prints change
+no verdict. As one account the breakout fails at 35 bps in 2018–2021 but
+leads BTC and cash at low costs, so its paper run is on Binance.US only.
+
+### Bad prints in the stored bars (planned Nov 25 2026)
+
+Kraken's archive had two bad opens that the bar check missed (see Found
+while running, above). Every other result here rests on bars that had
+only the same check, or none. This scan looks for the same kind of error
+in every stored bar before more rests on them. It is a data check, not a
+strategy test, so it has no pass mark: it decides which results are
+rerun.
+
+**Scope:** every series in the database, one venue, symbol and timeframe
+each: Binance.US 1m to 1d, Kraken 1d and Schwab 1m to 1d, about 4.7
+million bars.
+
+**Checks**, each bar against the previous bar's close (p) and the next
+bar's open (n) in the same series:
+- **Shape:** every price above zero, the low at or under the open and
+  close, the high at or over them, volume not negative.
+- **Outliers at a factor f.** A price is "beyond f" from a reference x
+  when it is over f·x or under x/f.
+  - An open beyond f from both p and its own close (Kraken's rule, at
+    f = 2).
+  - A close beyond f from both p and n: a close that springs back.
+  - A high over f times the greatest of the open, close and p.
+  - A low under the least of them, divided by f.
+- **Two levels:**
+  - **Bad**, at f = 2 for every timeframe, as for Kraken.
+  - **Suspect**, at f = 1.25 for 1d, 1.15 for 4h, 1.10 for 1h and 30m,
+    1.08 for 15m and 1.05 for 5m and 1m.
+- **A second source for each flag:** the other venue's bar for the same
+  day, for coins both Kraken and Binance.US have (daily, 2019–2026). A
+  flagged price more than 2% outside the other venue's range that day is
+  "venue-only", one inside it is "seen on both". Stocks and coins on one
+  venue have no second source in the database, and are listed as such.
+- **Timeframes against each other:** each Binance.US daily bar against
+  its day's 1h bars, and each 1h bar against its 1m bars where both are
+  stored (Oct 2025 – Oct 2026). An open, high, low or close more than
+  0.1% apart is listed. This finds import and storage errors, not bad
+  trades, since both come from the same venue.
+- **Gaps:** missing bars inside a series. Crypto trades every day, so any
+  missing bar is a gap. A stock's daily gap is a weekday SPY has but the
+  stock does not, inside the stock's range. Counted per series, and those
+  over 7 days (daily) or 24 hours (intraday) are listed.
+
+**What follows:** the flags are checked against the results the next
+steps rest on:
+- The 10-day breakout on Binance.US, 2022–2026: its daily bars and its
+  1h fill bars.
+- `trend_ensemble` on the 11 Binance.US USDT pairs, 2022–2026, and the
+  three paper runs, which read Binance.US daily bars.
+- Connors RSI(2) on the 35 Schwab symbols.
+
+A breakout or Connors trade touches a bar when it enters, exits or is
+stopped on it. A `trend_ensemble` rebalance touches the bar whose close
+it read. Any result with a trade on a bad, venue-only or unconfirmed
+suspect bar is run again without that trade, and both figures are
+reported. A bad bar is also dropped from any later run, by the same
+rule as Kraken's.
+
+**Results (run Nov 25 2026).** None of the results changes its verdict.
+264 series and 4,744,006 bars were scanned.
+- **Shape: 9 Schwab daily bars fail.** On Jun 5 2023, seven open above
+  their high (BA, DBC, IWM, NKE, USO, XLE and XLF). XLE's low on Nov 15
+  2018 is above its open, and F's close on Apr 17 2017 is under its
+  low. Every crypto bar passes.
+- **73 bad and 1,019 suspect flags.** One print shows on each timeframe
+  that holds it, so there are fewer events than flags. Of the bad ones,
+  32 are venue-only, 1 is seen on both venues and 40 have no second
+  source. Of the suspects, 283 are venue-only, 120 seen on both and 616
+  without a second source. Most are wicks on Binance.US's thin books, ZEC/USDT
+  above all. The bad prints in or near the results used here:
+  - **Binance.US:**
+    - BTC/USDT, Jun 21 2023: a high of 138,070, where Kraken's high was
+      30,795.
+    - ZEC/USDT: Jan 13 2022 (a high of 500 and a low of 50, about 145
+      on Kraken), a low of 16.2 on May 28 2023, and a high of 2,355 on
+      Nov 7 2025 (750 on Kraken).
+    - ADA/USD, Sep 18 2026: a high of 0.466 in one minute, against
+      about 0.22.
+    - LINK/USDT: lows of 1.35 on Jun 16 2022 and 0.07 on Feb 4 2023.
+    - NEAR/USDT, Jan 13 2023: a high of 24.
+    - Wicks on seven more USDT pairs in 2019–2021.
+  - **Kraken:**
+    - The two known opens on Jan 13 2018 (XMR and ZEC), and ETC's high
+      of 147 that day.
+    - Six LTC bars from Apr 14 to May 7 2015. They include the Apr 29
+      close of 4.5, with LTC at about 1.4, which Found while running
+      above left in.
+    - ETH in Aug 2015, May 7 2017 and Feb 22 2021 (a low of 700).
+    - BTC in Nov 2013 (warm-up only).
+    - ZEC's first days in Oct 2016, whose launch prices were real.
+  - **Schwab:** DKI, Oct 7 2026: a high of 182, about twice its
+    close.
+- **Timeframes agree.** A bar with no trades carries the last close.
+  Leaving those bars out, all 22,567 Binance.US daily bars match their
+  hours, and all 34,911 hours match their minutes, within 0.1%. With
+  them in, 419 days and 11,910 hours differed, nearly all in the open.
+- **Gaps:** only ones already known, or the venue's own:
+  - ADA/USD and ETH/USD on Binance.US, Jul 14 2023 – Feb 19 2025.
+  - XRP/USDT, Jan 2021 – Jul 2023, while Binance.US had delisted XRP.
+  - Kraken's 2017 gap in EOS, REP and XLM, REP from Dec 2025 to Apr 2026,
+    and LTC's gaps of up to 15 days in 2013–2015.
+  - Two Binance.US outages, of 9 and 7 hours, missing from its 1h
+    series.
+  - Nine SPYM days in 2015.
+- **The breakout on Binance.US, 2022–2026:**
+  - 17 of its 697 trades touch a flagged bar.
+  - **4 touch a bad bar:**
+    - BTC Jun 19 2023, sold at the open of the bad day.
+    - ZEC May 28 2023 and Nov 7 2025, both bought on the real move.
+    - ADA Sep 18 2026, bought only because of the bad print (−2.1%).
+  - Without those 4 it makes **+0.817% a trade** (693 trades), against
+    +0.820%.
+  - Without all 17 it makes +0.973% (680), +0.854% without ZEC. Most of
+    the 17 are ZEC stops hit by wicks that only Binance.US printed. A
+    live stop there would have been hit too, so this is not the better
+    figure.
+  - A bad high also sits in the 10-day window for ten days. That raised
+    the trigger (BTC to 138,070, ZEC to 2,355, ADA to 0.466) and blocked
+    entries on those pairs. Dropping trades does not undo that. It was
+    not rerun.
+- **The breakout on Kraken:**
+  - 5 trades touch a bad bar: LTC on Apr 24 and Apr 29 2015, and ETC,
+    XMR and ZEC on Jan 13 2018.
+  - Without them, over drift: A +2.19% (455 trades) and B +0.68%
+    (1,274), against +1.99% and +0.67%. At 35 bps, +1.69% and +0.18%.
+  - Pairs positive: 9 of 11 in both periods, and 9 of 11 in A at 35 bps,
+    up from 8.
+  - It still passes.
+- **Connors RSI(2):** no fill is on a flagged bar. One entry, TSLA on
+  Mar 5 2021, comes the day after a suspect high (291, with a close of
+  207). Its signal reads the close, which is right.
+- **`trend_ensemble` and the paper runs:** there is no flagged daily
+  close on the 11 USDT pairs in 2022–2026. The flagged opens are ZEC
+  hours other than 00:00, when it fills. No bar since Nov 1 2026 is
+  flagged.
+- **Not done:** the bad bars are not yet removed from the database.
+  Kestrel has no check for them at import or in a backtest.
+
+### The 10-day breakout as one account (planned Nov 25 2026)
+
+The breakout's results so far are per trade: an average over drift,
+pooled over pairs. They do not show what one account trading every pair
+would earn, how much it would swing, or its worst day when many pairs
+break out together (up to 11 on one day in 2018–2021). This test measures
+that before the paper run is sized. It is not a holdout: the trades are
+the ones already reported, measured as one account.
+
+**Trades:** Kestrel's backtest trades, already run:
+- Kraken, periods A (2015–2017) and B (2018–2021), the eleven pairs, at
+  10 and 35 bps a side.
+- Binance.US, the seven pairs, Jan 1 2022 – Nov 1 2026, with the hold
+  fix (8f3e7be), a 2 bps taker fee, 5 bps of slippage and 1h fill bars.
+
+**The account:** one balance split into N equal slots, N being the
+pairs in the run (11 or 7). Each entry spends 1/N of the account's value
+at the previous day's close, so with every pair in at once the account
+is fully invested, never more. Each trade's prices and fees are as
+Kestrel filled them. The account is valued at each day's close, every
+calendar day: a position at its pair's close, and from the entry price
+on its entry day. A pair with no bar keeps its last close. A trade held
+across a gap (LTC, Mar 2015) is kept, since an account cannot leave out
+a trade it held. As a second view, each pair is also run on its own 1/N
+balance, compounding by itself, as separate Kestrel processes would. That
+view is reported, not judged.
+
+**Measured:** the Sharpe of the daily returns (×√365, no risk-free rate),
+the total return, the volatility, the worst drawdown, the worst day (and
+the positions held that day), the worst 7 days, the share of days
+invested and the most positions at once. For Kraken, also the
+correlation of its daily returns with `trend_ensemble`'s default run on
+the same eleven pairs.
+
+**Benchmark:** BTC and cash mixed to the account's volatility, rebalanced
+daily (BTC/USD on Kraken, BTC/USDT on Binance.US), as for
+`trend_ensemble`. The Sharpe difference gets a p (paired 20-day block
+bootstrap), reported, not required.
+
+**What counts as passing:** a higher Sharpe than BTC and cash at its
+volatility in Kraken A, Kraken B and Binance.US 2022–2026, at the base
+costs (10 bps on Kraken, the paper costs on Binance.US), and in Kraken A
+and B at 35 bps. The worst day and the worst 7 days have no pass mark;
+they set the paper run's size.
+
+**Results (run Nov 25 2026): fails, on one of the five conditions.** It
+is ahead of BTC and cash at the base costs in all three periods. At
+35 bps it is level in Kraken A and well behind in Kraken B. The trades
+on bad bars are left out, as the scan above says (2 in A, 3 in B, 4 on
+Binance.US).
+
+| | Kraken A | Kraken B | Kraken A, 35 bps | Kraken B, 35 bps | Binance.US 2022–2026 |
+|---|---|---|---|---|---|
+| One account: Sharpe, total | **2.41**, +303% | **1.00**, +153% | 2.08, +227% | **0.46**, +42% | **1.13**, +112% |
+| BTC and cash, same vol | 2.05, +224% | 0.78, +99% | 2.05, +221% | 0.78, +98% | 0.46, +32% |
+| Sharpe difference, p | +0.36, 0.26 | +0.22, 0.31 | +0.03, 0.45 | −0.32, 0.69 | +0.67, 0.08 |
+| Volatility | 20.1% | 26.5% | 19.9% | 26.3% | 14.7% |
+| Worst drawdown | −11.8% | −22.6% | −12.9% | −31.4% | −17.1% |
+| Worst day (positions open that day) | −5.4% (May 25 2017, 5) | −10.1% (Feb 24 2019, 8) | −5.4% | −10.2% | −6.0% (Mar 3 2025, 2) |
+| Worst 7 days | −5.6% | −9.7% | −5.9% | −9.9% | −6.3% |
+| Closes with a position | 45% | 55% | 45% | 55% | 41% |
+| Most positions at one close | 10 of 11 | 11 of 11 | | | 7 of 7 |
+
+- **It fails at Kraken's retail fee in 2018–2021.** At 35 bps a side the
+  account made +42% while BTC and cash made +98% at the same risk. At
+  10 bps it leads in every period. The breakout needs a low-fee venue:
+  Binance.US's 2 bps taker fee plus slippage is within that, and Kraken's
+  40 bps retail fee is not. That limits where it can run. It does not
+  stop the paper run on Binance.US.
+- **No difference is significant.** The best p is 0.08, on Binance.US.
+  Per trade the edge was clear (above random entries' 95th percentile),
+  but an account holding cash 45–59% of the time turns it into a Sharpe
+  only modestly above BTC's.
+- **Worst days come when many pairs break out together.** On Feb 24 2019
+  eight positions were open and the account fell 10.1%. With each entry
+  at 1/N of the account, a day like that costs about 10%, and a week
+  about the same. On Binance.US with seven slots, the worst was −6.0% and
+  −6.3%.
+- **It moves with `trend_ensemble`:** the daily correlation is +0.59 in
+  A and +0.68 in B. Both buy the same rising coins, so running both is
+  less diversified than two strategies would suggest.
+- **Bad bars in:** the Kraken A Sharpe falls from 2.41 to 2.23 (2.08 to
+  1.90 at 35 bps, behind BTC and cash), mostly from the LTC trade of
+  Apr 29 2015. B and Binance.US hardly move.
+- **Separate balances**, each pair compounding its own 1/N as separate
+  Kestrel processes would:
+  - Sharpe 2.39, 1.08 and 1.00 at the base costs, against 2.41, 1.00
+    and 1.13 in one account.
+  - Worst days up to −12.0%, since a pair that has grown has a larger
+    stake.
+  - The paper run will be separate processes, so this is how it will
+    behave.
 
 ## Summary
 
@@ -379,7 +612,7 @@ Next: the breakout goes to paper trading.
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.11% a trade, +0.10% without ZEC, and 2025 lost without ZEC: thin; falls of 50–90% of a trade's size are normal; paper-trading now |
 | `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade (+0.82% with the hold fix), 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
-| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
+| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. As one account it fails at 35 bps in 2018–2021 (Sharpe 0.46 against 0.78), and leads at 10 bps and on Binance.US (1.13 against 0.46) `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
 | `breakout` inverse head-and-shoulders | 33 stocks daily; crypto 1h | +1.35% a trade on daily stocks, positive in both periods, but rare (62 trades in ten years); too rare on crypto 1h |
