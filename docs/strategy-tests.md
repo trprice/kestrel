@@ -3,8 +3,9 @@
 The backtests and paper runs done so far (Oct to Nov 2026), and what each
 found. These are research notes, not tuned results: most tests tried
 several settings and report the best, so treat each edge as an upper bound.
-[Upcoming tests](#upcoming-tests) come first: what is planned next,
-with its settings and what counts as passing fixed before it is run.
+[Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)
+come first: tests written down in full, with their settings and what
+counts as passing, before they were run, and their results.
 
 Unless a test says otherwise:
 - **Crypto** is Binance.US, at its 2 bps taker and 0 maker fee, with 5 bps
@@ -19,9 +20,9 @@ Unless a test says otherwise:
   mid-day's; see [Stock spreads at the open](#stock-spreads-at-the-open).
 - **"Hold"** is buying the same amount at the start and keeping it.
 
-## Upcoming tests
+## Pre-registered and upcoming tests
 
-### Crypto on Kraken, 2015–2021 (planned Nov 24 2026)
+### Crypto on Kraken, 2015–2021 (planned Nov 24 2026, run Nov 25)
 
 Every crypto result below was found on Binance.US's 2022–2026 bars, most
 after trying several settings on them. Kraken's archive goes back to
@@ -52,7 +53,8 @@ run before 2022.
   2026 (EOS to Jun 2025, REP to Jun 2026). Bars start Oct 2013 for BTC and
   LTC, Aug 2015 ETH, Jul 2016 ETC, Oct 2016 REP and ZEC, Jan 2017 XMR and
   XLM, Apr 2017 DASH, May 2017 XRP and Jul 2017 EOS. Every bar checked out
-  (low under open and close, high over them). EOS, REP and XLM have no
+  (low under open and close, high over them), which missed two bad
+  prints; see Found while running. EOS, REP and XLM have no
   bars from Aug 22 2017 to Feb 16 2018, the top of the 2017 bubble and its
   fall; LTC has gaps of up to 15 days in early 2015; the rest miss a day
   or six at most.
@@ -199,14 +201,185 @@ on these years. With four settings, two periods and two cost levels, a
 single pass is weak evidence; a pass in both periods and at both costs is
 what would change a plan.
 
+**Found while running (Nov 25 2026):**
+- **Bad prints.** The check above only tested that each bar's high and
+  low enclose its open and close, which a bad print can pass. Kraken was
+  down Jan 10–12 2018 (no Jan 12 bar). Its Jan 13 bars open at 0.01 for
+  XMR (about 400 the day before) and 10 for ZEC (about 700). One random
+  entry bought XMR at 0.01, and that single trade set period B's 95th
+  percentile at +1,555% a trade. Such opens are treated as a data error:
+  a random entry on or exiting at an open more than 50% from both the
+  previous close and its own close is dropped. Only those two days are
+  dropped, and both figures are reported below. Period A is the same
+  either way. This rule was made after the results were seen.
+  What else the bad prints touched:
+  - The breakout's own XMR and ZEC trades that day filled on the way up,
+    not at the bad open.
+  - `trend_ensemble`'s period B run sold 0.23 ZEC at 9.99, about 130 USD
+    on its 100,000. That is left in.
+  - An LTC spike on Apr 29 2015 (high 8.5, close 4.5) gave a breakout
+    trade bought at 4.12 and sold at 1.42 (−65.7%). That is left in, and
+    it counts against the strategy.
+- **The 5% rule always triggered.** No strategy held any XLM, REP or EOS
+  on Aug 21 2017, but the equal-weight benchmark held 22.4% of its equity
+  in them. A benchmark of the coins listed, held equally, always holds
+  about 3/11 in them, so the rule could not have failed to trigger, and
+  period A is judged on the eight pairs ("A8" below). The eleven-pair
+  runs are reported too.
+- **35 bps a side** was run as a 30 bps fee plus 5 bps of slippage, the
+  same split as 10 = 5 + 5. The benchmarks carry no costs.
+- **The gap rule** set aside one breakout trade: LTC from Mar 25 2015,
+  held 16 days across a gap, −28.9%.
+- **The replication script** matched Kestrel's breakout trade by trade
+  (entry and exit time and price) on all 22 pair-periods at both costs.
+
+**Results (run Nov 25 2026).** `trend_ensemble` (default) passes,
+`[20, 55]` does not replace it, `momentum_rotation` fails, and the 10-day
+breakout passes, with the bad opens left out of its random entries. Connors
+RSI(2)'s entry beats random entries overall, though not in either half
+once they keep its same-day clusters, and it beats holding by little.
+
+Portfolio runs. Each cell gives the Sharpe, annualized from daily returns
+(×√365, no risk-free rate), then the total return. Volatility and the
+worst drawdown are at 10 bps. BTC and cash is mixed to the strategy's
+volatility, so its Sharpe is BTC's own, and its return is at that mix.
+`momentum_rotation`'s A8 is measured from its first trade on Sep 3 2016,
+and its benchmarks over the same days, as the plan says; until then it
+held cash.
+
+| Run | A8 | B | A8 at 35 bps | B at 35 bps | Vol A8 / B | Max DD A8 / B |
+|---|---|---|---|---|---|---|
+| `trend_ensemble`, default | **3.02**, +73.3% | **1.07**, +40.6% | 2.94, +70.9% | 0.97, +36.1% | 6.1% / 8.3% | −4.2% / −7.4% |
+| BTC and cash, same vol | 2.04, +44.9% | 0.79, +28.4% | | | | |
+| `trend_ensemble`, `[20, 55]` | 3.02, +86.0% | 1.15, +55.3% | 2.96, +83.7% | 1.09, +51.5% | 6.9% / 10.0% | −4.6% / −7.3% |
+| BTC and cash, same vol | 2.04, +51.8% | 0.79, +34.4% | | | | |
+| `momentum_rotation` | **3.10**, +2,398% | **0.38**, −17.1% | 3.04, +2,221% | 0.30, −36.8% | 92% / 87% | −50.0% / −87.8% |
+| BTC and cash, same vol | 3.32, +3,136% | 0.79, +234% | | | | |
+| Coins listed, held equally | 2.00 (3.58 from Sep 3 2016) | 0.56 | | | | |
+
+- **`trend_ensemble`, default: passes.** It is ahead of BTC and cash in
+  both periods at both costs, and ahead of the coins held equally too.
+  On the eleven pairs, A is 2.67 (+54.8%), still ahead of 2.04. It stays
+  in paper trading (run 49).
+  - **Its gains are spread over the coins, not one** (the plan's per-pair
+    report for period A). Shares of the profit, fees included:
+    - A8, +73,264 USD: BTC 27%, ETH 23%, LTC 12%, ETC 10%, XMR 9%, ZEC
+      7%, XRP 7%, DASH 6%.
+    - B, +40,642 USD: ETH 22%, BTC 20%, ETC 14%, XRP 9%, XMR 8%, LTC 8%,
+      XLM 6%, DASH 5%, ZEC 5%, EOS 2%, REP 2%. Every coin is positive.
+- **`[20, 55]`: passes on its own, but does not replace the default.** Its
+  Sharpe over the default's is +0.00 in A8 (p = 0.48) and +0.09 in B
+  (p = 0.26); at 35 bps, +0.02 (p = 0.43) and +0.12 (p = 0.18). On the
+  eleven pairs, A is +0.36 (p = 0.10). Run 51 goes on as the forward test.
+- **`momentum_rotation`: fails.** It is behind BTC and cash in both
+  periods: 3.10 against 3.32 in A8, and far behind in B, where it lost
+  87.8% at its worst and ended down. Without its top coin it is further
+  behind: A8 without XRP 3.00, B without ETC 0.36.
+  - The first version of this table measured its A8 from Jan 2015,
+    20 months of cash included: 2.05 against 2.04, at 61% volatility.
+    Gemini's review caught it.
+  - On the eleven pairs, from its first trade on Dec 2 2016, it is ahead:
+    3.64 against 3.45. That run is not the one judged.
+  - BTC and cash at its volatility needs more than all BTC: 1.11 times
+    in A8 and in B (1.39 on the eleven pairs), rebalanced daily.
+
+The 10-day breakout. Each figure is the average over drift a trade, and
+the trades are pooled over the eleven pairs, which is the bar to pass.
+
+| | A | B | A at 35 bps | B at 35 bps |
+|---|---|---|---|---|
+| Breakout | **+1.99%** (457 trades) | **+0.67%** (1,277) | +1.48% | +0.16% |
+| Pairs positive | 9 of 11 | 9 of 11 | 8 of 11 | 8 of 11 |
+| Random entries, median | −0.09% | −0.11% | −0.60% | −0.61% |
+| Random entries, 95th percentile | +0.80% | +0.25% | +0.29% | −0.26% |
+| Share of random runs at or above it | 0.001 | 0.000 | 0.001 | 0.000 |
+| 95th percentile with the bad opens in | +0.80% | +1,555% | +0.29% | +1,551% |
+
+- **Passes**, with the bad opens left out. It is positive over drift in
+  both periods, on 9 of 11 pairs (two thirds is 8), above the random
+  entries' 95th percentile, and still positive at 35 bps, if only just
+  in B. With the bad opens in, period B fails the random-entry check on
+  that one XMR fill.
+- **Per pair over drift, A:** BTC +1.40%, ETH +3.73%, LTC +0.43%, XRP
+  +4.19%, XMR +3.70%, ETC +2.85%, ZEC +3.62%, DASH −0.71%, REP +1.78%,
+  XLM +1.21%, EOS −12.40% (3 trades).
+- **Per pair over drift, B:** BTC +0.32%, ETH +1.08%, LTC +0.99%, XRP
+  +2.57%, XMR −0.54%, ETC +1.90%, ZEC +0.93%, DASH +0.93%, REP −2.71%,
+  XLM +0.81%, EOS +1.23%.
+- **Entries on the same days.** The breakout's entries cluster: 457
+  trades on 300 days in A, and 1,277 on 564 days in B. The random entries
+  above are drawn per pair, so they cluster less. As a check made after
+  the results (Gemini's review), random entries were redrawn to keep the
+  same clusters. Each day on which k pairs entered becomes a random day
+  in the same year on which k random pairs enter, with the bad opens left
+  out. The breakout is still above their 95th percentile:
+
+  | | A | B | A at 35 bps | B at 35 bps |
+  |---|---|---|---|---|
+  | Clustered random entries, 95th percentile | +0.95% | +0.52% | +0.44% | +0.02% |
+  | Share at or above the breakout | 0.001 | 0.018 | 0.001 | 0.018 |
+  | t over drift, plain | 2.94 | 2.38 | 2.19 | 0.58 |
+  | t over drift, clustered by entry day | 2.39 | 1.54 | 1.78 | 0.38 |
+
+  Period B's edge is thinner than the plain figures suggest, and at
+  35 bps it is not different from zero.
+- **Against 2022–2026's +0.82%:** period A, three bull-market years with
+  few coins, did more than twice as well. Period B, which includes the
+  2018 fall, did slightly worse. At 35 bps, B's +0.16% leaves little for
+  a retail fee.
+
+Connors RSI(2) with the 200-day filter, on the 35 Schwab symbols over
+Jan 2016 to Nov 5 2026. This checks the entry on data already seen; it is
+not a holdout. It is Kestrel's backtest (100 shares, no commission, 5 bps
+slippage, bars from the database) and 1,000 random-entry runs. A random
+entry buys at the open after a random day that closed above its 200-day
+average. It exits by the strategy's rule: at the next open after a close
+at or above the 5-day average, or an RSI(2) of 90 or more. Each symbol
+gets as many random entries a year as the strategy made, without overlap.
+The script matched Kestrel's trades exactly: all 2,396, entry and exit
+day and price.
+
+| | Over drift a trade | Random entries, median | Random, 95th percentile | Share of random at or above |
+|---|---|---|---|---|
+| All 34 symbols with trades | **+0.136%** (2,396 trades, t = 1.8) | −0.038% | +0.046% | 0.000 |
+| 2016–2021 | +0.169% (1,344) | −0.001% | +0.092% | 0.002 |
+| 2022–2026 | +0.094% (1,052) | −0.085% | +0.066% | 0.024 |
+| 14 ETFs | +0.014% (1,099) | −0.072% | −0.001% | 0.020 |
+| 20 stocks | +0.239% (1,297) | −0.012% | +0.137% | 0.003 |
+
+- **The entry adds something, but less than the table shows.** Bought on
+  any day in an uptrend and sold by the same exit, a trade does slightly
+  worse than drift: the exit sells the first up close, which is quick.
+  Buying after an RSI(2) of 10 or under does about 0.17% a trade better.
+  It is above the random entries' 95th percentile overall, in both
+  halves, and on ETFs and stocks alike.
+- **Its entries cluster: 2,396 trades on 1,053 days,** up to 23 symbols
+  on one sell-off. As for the breakout, random entries redrawn to keep
+  the same clusters (a check made after the results) leave it above
+  their 95th percentile overall (+0.111%, share 0.016), but not in either
+  half:
+  - 2016–2021: +0.172%, share 0.058.
+  - 2022–2026: +0.157%, share 0.172.
+- **Against holding it is weak:** +0.14% a trade over drift, positive on
+  22 of 34 symbols, and +0.01% on ETFs. Its t is 1.8, and 1.3 with errors
+  clustered by entry day. That is the same
+  as in [Daily stock setups against holding](#daily-stock-setups-against-holding)
+  (2,384 trades there, +0.14%, t = 1.9). This run read its bars from the
+  database, not from Schwab, and made 12 more trades; the cause was not
+  looked into. On ETFs, the entry's gain over random entries does little
+  more than make up for what the exit loses to drift.
+
+Next: the breakout goes to paper trading.
+
 ## Summary
 
 | Strategy | Market | Verdict |
 |---|---|---|
 | `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.11% a trade, +0.10% without ZEC, and 2025 lost without ZEC: thin; falls of 50–90% of a trade's size are normal; paper-trading now |
-| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade, 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
+| `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade (+0.82% with the hold fix), 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
+| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
 | `breakout` inverse head-and-shoulders | 33 stocks daily; crypto 1h | +1.35% a trade on daily stocks, positive in both periods, but rare (62 trades in ten years); too rare on crypto 1h |
@@ -220,7 +393,7 @@ what would change a plan.
 | `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
-| Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9) |
+| Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9); its entry beats random entries in an uptrend with the same exit (95th percentile +0.05%), but not in either half once they keep its same-day clusters |
 | Turtle breakout (20/10 and 55/20, 2 ATR stop) | 10 macro ETFs + BTC (2016–2026), and 11 USDT pairs (2022–2026) | No timing edge on ETFs (+1.90 to −1.91 bps/day against exposure-matched holding, \|t\| < 2); the published 5-asset result comes from up to 5.8× CFD leverage and BTC. Likely edge on BTC (t = 2.33, `breakout` PF 4.32). On 11 coins at the same ~7.8% volatility, Turtle led `trend_ensemble` in the holdout but not significantly (p ≥ 0.085), and `trend_ensemble` with `lookbacks = [20, 55]` covers it |
 
 ## Market maker (ZEC/USDT)
@@ -370,10 +543,12 @@ return per trade, net of costs.
 - **Daily 10-day-high breakout, sold after one day:** +0.80% a trade (697
   trades, 51% won), 7 of 7 pairs up, +0.80% without ZEC. Only 2022 lost
   (−0.29%). Found before the hold fix of Nov 24 2026 (see
-  [Upcoming tests](#upcoming-tests)): a trade whose stop filled at the
-  day's open time was sold a day early. Run again with the fix: +0.82% a
-  trade, the same 697 trades, 15 of them held a day longer; the table
-  below is from before it.
+  [Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)):
+  a trade whose stop filled at the day's open time was sold a day early.
+  Run again with the fix: +0.82% a trade, the same 697 trades, 15 of them
+  held a day longer; the table below is from before it. On Kraken's
+  2015–2021 bars it passed the pre-registered test: +1.99% and +0.67% a
+  trade over drift.
   - Against holding, per pair: the strategy's trades compounded (each
     trade's return on the whole stake, though the backtest bought a fixed
     quantity), against buying at the first bar and holding to the last.
@@ -441,6 +616,11 @@ The default is to rebalance weekly into the top 3 by 28-day return.
 
 It beats holding BTC with or without ZEC, but ZEC made about 76k of the
 default's 97k USDT profit. Short lookbacks with one holding were erratic.
+
+On Kraken's 2015–2021 bars the default failed the pre-registered test:
+behind BTC and cash in 2015–2017 (Sharpe 3.10 against 3.32 from its
+first trade), and −17% with an 88% drawdown in 2018–2021 (see
+[Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)).
 
 ## Intraday momentum
 
@@ -578,6 +758,12 @@ the period, and these setups hold for 15–28 bars, so drift alone is worth
   over drift, positive in both periods and on 23 of 34 symbols. It holds
   about 4 bars, so per day in the market it earns about one and a half
   times holding's rate. On ETFs it is only +0.02%, and t = 1.9 is weak.
+  Its entry beat random entries (see
+  [Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests),
+  Nov 25 2026): +0.14% over drift a trade, against a 95th percentile of
+  +0.05% for random entries in an uptrend with the same exit. Random
+  entries that keep its same-day clusters reach +0.11%: it beats them
+  overall, but not in 2016–2021 or 2022–2026 alone.
 
 ## Fair value gaps
 
@@ -999,6 +1185,10 @@ for crypto:
     it, so the paper's defaults stay in the paper run; a test on Kraken's
     longer history (2016 on) would show whether the shortest and longest
     channels are a drag outside this sample.
+    Done Nov 25 2026 (see
+    [Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)):
+    on 11 Kraken pairs over 2015–2021, `[20, 55]` was ahead of the default by
+    0.00 and 0.09 in Sharpe (p = 0.48 and 0.26). The default stays.
 
 ## Stock spreads at the open
 
