@@ -759,7 +759,7 @@ block resamples, that the strategy's Sharpe is not above the benchmark's.
 - A Schwab backtest reads the Schwab token file even with
   `--bars-from-database`, so the runs were made one at a time.
 
-### ETFs, 2003–2014 (planned Nov 27 2026)
+### ETFs, 2003–2014 (planned and run Nov 27 2026)
 
 The ETF run above found no edge over SPY and cash at the same risk in
 2019–2026, years with one long rise and two short falls. Trend following's
@@ -827,6 +827,72 @@ in these years only, the case for trend following in a long fall. A fail
 in both, together with 2019–2026, closes `trend_ensemble` on ETFs. With
 two settings, two periods and two cost levels, one pass is weak evidence.
 
+**Results (run Nov 27 2026).** The default fails: ahead of SPY and cash
+in 2003–2008, which holds the 2007–2009 fall, and behind it in 2009–2014.
+`[20, 55]` does not replace it. With the 2019–2026 run, `trend_ensemble`
+is closed on ETFs.
+
+Each cell gives the Sharpe (×√252), then the total return; p as in the
+single-stock test.
+
+| The 13, 5 bps a side | A: Jan 2003 – Dec 2008 | B: Jan 2009 – Dec 2014 |
+|---|---|---|
+| Default | **0.42**, +13.2% | **0.45**, +14.9% |
+| SPY and cash, same vol | 0.10, +2.2% (p = 0.18) | 0.82, +29.9% (p = 0.93) |
+| The 13 held equally, same vol | 0.36, +11.3% (p = 0.48) | 0.78, +28.3% (p = 0.91) |
+| `[20, 55]` | 0.56, +18.9% | 0.38, +13.2% |
+| Default at 15 bps | 0.24, +6.9% | 0.27, +8.3% |
+| Hold SPY | −0.9%, 51.8% fall | +121.1%, 27.1% fall |
+| Hold the 13 equally, full weight | +34.8%, 46.5% fall | +95.4%, 23.6% fall |
+
+- **The default fails on period B.** It is ahead of SPY and cash in A at
+  both costs (+0.32 and +0.14 in Sharpe, not significant), and behind in B
+  at both (−0.37 and −0.55).
+- **2003–2008 is the case for trend following, and it shows:** in SPY's
+  fall from Oct 9 2007 to Nov 20 2008 (−51.8% over 283 days) it lost 8.7%
+  against 15.9% for SPY and cash at its volatility, and its worst fall
+  over the period was 10.0% against 15.9%. It was also ahead because SPY
+  went nowhere in those six years while emerging markets, gold and energy
+  rose: EEM, GLD, XLE and EFA made 99% of its profit. Against the 13
+  held equally, which owned those too, it was only level (0.42 against
+  0.36, p = 0.48).
+- **2009–2014 is the ETF result of 2019–2026 again:** a 42-day fall to
+  Mar 2009, in which it lost 1.5% against 8.9%, then a long rise, in which
+  being half in cash cost more than the fall saved.
+- **`[20, 55]` does not replace it:** ahead in A (0.56 against 0.42) and
+  behind in B (0.38 against 0.45), at a fifth of the fills.
+- **Turnover:** about 6.5 million USD traded in each six-year period, so
+  15 bps a side took about 6 points off each.
+
+**Found while running (Nov 27 2026):**
+- **The import** stored 7,000 bars each for SPY, DIA, XLE, XLF, XLK, XLU
+  and XLV from Jan 1999, and from their listings QQQ (Mar 11 1999), IWM
+  (May 26 2000), EFA (Aug 29 2001), TLT (Aug 1 2002), EEM (Apr 16 2003)
+  and GLD (Nov 18 2004), as the plan expected. Each count was found by
+  stepping back until Schwab refused.
+- **The stored 2015–2026 rows:** none went missing, 128 newer bars were
+  added (to Nov 25 2026), and one series changed: EEM's 392 daily bars
+  from May 25 2018 to Dec 13 2019, each moved by the same −0.266326.
+  Schwab now applies that amount to every EEM bar before Dec 16 2019; the
+  old rows were fetched at different times, so only those before May 25
+  2018 had it, which left a 0.57% step on that day. The new series is kept
+  as the consistent one. The 2019–2026 ETF run, rerun on it, gives the
+  same result (+27.6%, Sharpe 0.68).
+- **Data checks on 1999–2015:** 19 bars a few cents outside their own
+  range (mostly Jan 2007 and mid-2008), and 2 bad lows on EFA (Sep 29
+  2008 and Aug 3 2009), left in. One fill fell on a flagged day: EFA sold
+  on Sep 29 2008 at that day's open (59.72), so the bad low did not price
+  it. Eight of the ETFs (two bars on XLK) also have a bar dated Saturday Jan 6
+  2007, left in.
+- **XLE has no bars from May 1 to May 12 2008** (8 trading days) or Jan 2–3
+  2008. A gap of more than 7 bars and a week restarts a symbol's models,
+  so XLE's models started again on May 13 2008, during its rise to the
+  July 2008 top. XLE made 31% of period A's profit, so the gap may have
+  cost or saved some of it; it is left as it is, not filled.
+- **The warm-ups** were short before Jan 2003: SPY, DIA and the sector
+  funds had about 985 of 1,081 bars, QQQ 958, IWM 651, EFA 334 and TLT
+  106; EEM and GLD started with none when they listed.
+
 ## Summary
 
 | Strategy | Market | Verdict |
@@ -848,6 +914,7 @@ two settings, two periods and two cost levels, one pass is weak evidence.
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
 | `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
 | `trend_ensemble` on 18 single stocks (pre-registered) | Schwab daily, Aug 2019 – Nov 2026 | Fails: ahead of the same stocks held equally at its volatility in 2019–2022 (Sharpe 1.09 against 0.59, p = 0.10), behind in 2023–2026 (0.87 against 1.27). `[20, 55]` no better |
+| `trend_ensemble` on 13 ETFs, 2003–2014 (pre-registered) | Schwab daily, Jan 2003 – Dec 2014 | Fails: ahead of SPY and cash in 2003–2008 (Sharpe 0.42 against 0.10, p = 0.18; −8.7% against −15.9% in the 2007–2008 fall), behind in 2009–2014 (0.45 against 0.82). `[20, 55]` no better; with 2019–2026, closed on ETFs |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9); its entry beats random entries in an uptrend with the same exit (95th percentile +0.05%), but not in either half once they keep its same-day clusters |
