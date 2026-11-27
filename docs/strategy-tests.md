@@ -604,7 +604,7 @@ Binance.US).
   - The paper run will be separate processes, so this is how it will
     behave.
 
-### Trend ensemble on single stocks (planned Nov 27 2026)
+### Trend ensemble on single stocks (planned and run Nov 27 2026)
 
 `trend_ensemble` has been run on 13 ETFs (no edge over SPY and cash at the
 same risk; see [On 13 ETFs](#on-13-etfs-schwab-daily-bars-20192026)) but
@@ -704,6 +704,61 @@ money). A fail is written up here and not re-tuned on these years, and
 and two cost levels, one pass is weak evidence: a pass in both periods and
 at both costs is what would change a plan.
 
+**Results (run Nov 27 2026).** The default fails: ahead of the same stocks
+held equally in 2019–2022, behind them in 2023–2026. `[20, 55]` does not
+replace it. `trend_ensemble` stays a crypto strategy.
+
+Each cell gives the Sharpe (×√252), then the total return. The benchmarks
+are mixed with cash to the strategy's volatility in that period, so their
+Sharpe is the benchmark's own. p is the chance, over 10,000 paired 20-day
+block resamples, that the strategy's Sharpe is not above the benchmark's.
+
+| The 18, 5 bps a side | A: Aug 12 2019 – Dec 2022 | B: Jan 2023 – Nov 5 2026 |
+|---|---|---|
+| Default | **1.09**, +21.8% | **0.87**, +16.6% |
+| Same stocks held equally, same vol | 0.59, +11.0% (p = 0.10) | 1.27, +25.3% (p = 0.95) |
+| SPY and cash, same vol | 0.47, +8.6% (p = 0.08) | 1.21, +24.0% (p = 0.88) |
+| `[20, 55]` | 1.09, +21.6% | 0.80, +15.8% |
+| Default at 15 bps | 0.97, +19.0% | 0.74, +13.8% |
+| Default without its best stock (TSLA in A, NVDA in B), against the same stocks held equally | 0.83 against 0.44 (p = 0.15) | 0.70 against 1.13 (p = 0.96) |
+| Hold SPY | +32.8%, 34.1% fall | +92.5%, 19.0% fall |
+| Hold the 18 equally, full weight | +51.6%, Sharpe 0.59, 38.6% fall | +129.4%, Sharpe 1.27, 21.0% fall |
+
+- **The default fails on period B.** It is ahead of the equal-weight
+  stocks in A at both costs (+0.50 and +0.38 in Sharpe, p = 0.10 and
+  0.17, so not significant), and behind them in B at both costs (−0.40
+  and −0.53). It is the ETF result again: in a steady rise, being half
+  out of the market costs more than the trend timing saves.
+- **`[20, 55]` does not replace it:** level in A (1.09 and 1.09) and
+  behind in B (0.80 against 0.87), at a quarter of the fills (957 and
+  1,175 against 4,273 and 4,733).
+- **It runs quietly:** 4.7–5.5% volatility, 29% invested on average, and
+  a worst fall of 7.0% in A and 4.5% in B, against 8.8% and 5.8% for the
+  equal-weight stocks at the same volatility. It traded about 2.6 and 3.0
+  million USD on its 100,000, mostly small resizes.
+- **Its profit came from the same names as holding's:**
+  - A: TSLA 30%, NVDA 16%, AAPL 14%, AMD 14%, F 13%, GOOGL 8%, MSFT 7%;
+    VZ, INTC, MMM and T lost 2–5% each.
+  - B: NVDA 27%, AMD 24%, META 21%, GOOGL 20%, INTC 15%, AAPL 11%; PFE,
+    NKE, KHC, VZ, BA and F lost 5–10% each.
+- **The 21 (reported, not judged)** tell the same story. A: 1.01 against
+  0.52 for the 21 held equally. B: 0.97 against 1.16 (p = 0.78). PLTR was
+  19% of B's profit, and DKI about 0%.
+- **Against SPY and cash** too it is ahead in A and behind in B.
+- **Bad bars:** one fill, NKE bought on Jun 5 2023 at 107.84 (5 shares;
+  the bar opens 0.3% above its own high), worth about 1.6 USD. No fill on
+  DKI's Oct 7 2026.
+
+**Found while running (Nov 27 2026):**
+- **Period A starts Aug 12 2019,** the first bar after the 1,081-bar
+  warm-up from Apr 27 2015, as the plan defines it; "Sep 2019" was copied
+  from the ETF run. Every run, setting and benchmark starts that day.
+- **The benchmarks and Sharpe** are worked out by a script outside Kestrel
+  from the backtests' daily equity and the stored closes, as planned. The
+  benchmarks carry no costs.
+- A Schwab backtest reads the Schwab token file even with
+  `--bars-from-database`, so the runs were made one at a time.
+
 ## Summary
 
 | Strategy | Market | Verdict |
@@ -724,6 +779,7 @@ at both costs is what would change a plan.
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
 | `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
+| `trend_ensemble` on 18 single stocks (pre-registered) | Schwab daily, Aug 2019 – Nov 2026 | Fails: ahead of the same stocks held equally at its volatility in 2019–2022 (Sharpe 1.09 against 0.59, p = 0.10), behind in 2023–2026 (0.87 against 1.27). `[20, 55]` no better |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9); its entry beats random entries in an uptrend with the same exit (95th percentile +0.05%), but not in either half once they keep its same-day clusters |
