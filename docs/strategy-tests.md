@@ -893,6 +893,65 @@ single-stock test.
   funds had about 985 of 1,081 bars, QQQ 958, IWM 651, EFA 334 and TLT
   106; EEM and GLD started with none when they listed.
 
+### Trend ensemble: Kraken's bars, and its sensitivity (planned Nov 27 2026)
+
+`trend_ensemble` is the one strategy here that has passed, so before it is
+written about, two checks: that the Binance.US result is not an artefact
+of Binance.US's bars, and that it does not rest on its exact settings or
+timing. Both are written down before they are run, and nothing here
+changes after the results are seen. Neither is a new pass or fail for the
+strategy: each says whether the result stands up, and is reported as such.
+
+**1. The same run on Kraken's bars.** The Binance.US run (11 USDT pairs,
+2022–2026) uses one venue's thin books, with the bad prints of [Bad prints
+in the stored bars](#bad-prints-in-the-stored-bars-planned-nov-25-2026).
+Kraken's archive has the same coins against USD, so the same rules can be
+run on bars from another venue.
+- **Data:** Kraken's OHLCVT archive (the file the Kraken test used, kept
+  in `kraken_data/`), daily bars of ADA, BNB, BTC, DOGE (Kraken's XDG),
+  ETH, LINK, LTC, NEAR, SOL, XRP and ZEC against USD. BTC, ETH, LTC, XRP
+  and ZEC are already stored; ADA, BNB, DOGE, LINK, NEAR and SOL are
+  imported from the archive as they are, with the untrusted-file handling,
+  and the stored pairs are left as they are. In the archive (checked Nov
+  27 2026): ADA from Sep 2018, LINK Sep 2019, DOGE Dec 2019, SOL Jun 2021,
+  NEAR Jun 16 2022 and BNB Apr 22 2025, all to Sep 30 2026. NEAR and BNB
+  join when their bars start.
+- **Periods:** 2022–2024, and Jan 2025 – Sep 30 2026 (the archive's end).
+  The Binance.US run is rerun to the same end date, so the two cover the
+  same days. Kraken's longer history gives its models a full 1,081-bar
+  warm-up where Binance.US has about 850; that difference is left in and
+  noted.
+- **Run:** `trend_ensemble` default, 1,000 USD, the Binance.US run's costs
+  (2 bps taker fee and 5 bps slippage a side), so only the bars differ.
+- **It stands up** if, on Kraken's bars, the Sharpe is above BTC and cash
+  at its volatility (Kraken's BTC/USD) in both periods, as it is on
+  Binance.US. Also reported: the daily correlation of the two runs, each
+  run's return and worst fall, and each coin's share of the profit on
+  both.
+
+**2. Sensitivity to timing and settings.** The default is run with one
+thing changed at a time, every other setting as before:
+- **Timing,** on Binance.US 2022–2026 only (the one data set with stored
+  1-hour bars for the fills): the rebalance's orders filled 1, 4 and 12
+  hours after the daily close, with `order_latency_ms` set to that delay
+  and `--fill-timeframe 1h`. The 12-hour delay stands in for trading at
+  midday instead of at the close.
+- **Settings,** on the Kraken test's A8 (2015–2017, 8 pairs) and B
+  (2018–2021, 11 pairs) at 10 bps, and on Binance.US 2022–2026:
+  `target_vol` at 0.125 and 0.5 (default 0.25), `rebalance_threshold` at
+  0.1 and 0.4 (0.2), and `vol_bars` at 45 and 180 (90).
+- **It stands up** if every variant keeps the default's verdict: a Sharpe
+  above BTC and cash at its own volatility, in each period the default was
+  judged on (A8 and B; 2022–2024 and 2025–2026). Each variant's Sharpe,
+  return, volatility, worst fall and number of fills is reported, whether
+  it keeps the verdict or not; none is picked as better than the default.
+
+**What follows:** if both stand up, a post can say the result held on a
+second venue's bars and across these timings and settings. If either does
+not, the post says where it broke, and the default is not changed to a
+variant that did better: with nine variants and three data sets, one
+doing better is expected by chance.
+
 ## Summary
 
 | Strategy | Market | Verdict |

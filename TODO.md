@@ -254,6 +254,10 @@ Sections in priority order: safety first, then what is in use.
       35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
       of the 10-day breakout on Binance.US (the plan's next step for a
       pass).
+- [ ] Run the pre-registered checks of `trend_ensemble` (docs/strategy-tests.md,
+      "Trend ensemble: Kraken's bars, and its sensitivity"): the Binance.US
+      run on Kraken's bars (import ADA, BNB, DOGE, LINK, NEAR and SOL from
+      the archive), and the timing and settings variants.
 - [ ] Schwab `pricehistory` refuses a start before a symbol's listing
       (HTTP 400, "StartDate must be miliseconds from epoch"), so `bars`
       with a large count fails for a younger symbol instead of returning
