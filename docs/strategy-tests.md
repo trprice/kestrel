@@ -759,6 +759,74 @@ block resamples, that the strategy's Sharpe is not above the benchmark's.
 - A Schwab backtest reads the Schwab token file even with
   `--bars-from-database`, so the runs were made one at a time.
 
+### ETFs, 2003–2014 (planned Nov 27 2026)
+
+The ETF run above found no edge over SPY and cash at the same risk in
+2019–2026, years with one long rise and two short falls. Trend following's
+case rests on long bear markets, and none of Kestrel's stock or ETF tests
+has seen one: the stored Schwab bars start in Apr 2015. Schwab serves
+older daily bars (checked Nov 27 2026: SPY, DIA and the five sector funds
+from Jan 1999, the rest from their listing), so the same rules can be run
+on 2003–2014, which holds the 2007–2009 fall. This test is written down
+before the data is imported, and no setting changes after the results are
+seen. A bug found while running is fixed, rerun and noted.
+
+**Already seen:** none of these years, in any Kestrel test. The 13 ETFs
+and the rules are the ETF run's.
+
+**Data:**
+- Schwab daily bars of the 13 (SPY, QQQ, IWM, DIA, EEM, EFA, GLD, TLT, XLE,
+  XLF, XLK, XLU and XLV), from Jan 1999 or each one's listing, imported
+  with `bars 1d <count> --store`, split-adjusted and without dividends, as
+  stored now. Schwab refuses a request that starts before a symbol's
+  listing (HTTP 400, "StartDate must be miliseconds from epoch") instead of
+  starting at the listing, so each is fetched with a count that starts
+  after it.
+- **Listings,** to be confirmed by the import: QQQ Mar 1999, IWM May 2000,
+  EFA Aug 2001, TLT Jul 2002, EEM Apr 2003 and GLD Nov 2004. EEM and GLD
+  join when their bars start, with the history they have, as on a new
+  listing.
+- **The stored 2015–2026 bars are not to change:** `--store` upserts, so
+  the 13's stored rows are copied first and compared after the import,
+  and any change is listed. A spot check before the import found one
+  close, EEM's on Aug 12 2019, already 0.7% from what Schwab serves now.
+- Every bar is checked for shape (high and low enclosing open and close)
+  and for the bad-print outliers of [Bad prints in the stored
+  bars](#bad-prints-in-the-stored-bars-planned-nov-25-2026); flagged bars
+  are left in, and any fill on one is listed.
+
+**Periods**, each with the bars before it as warm-up (1,081 for the
+default; the sector funds have about 1,010 by Jan 2003 and run with what
+they have):
+- **A:** Jan 2 2003 – Dec 31 2008: the rise of 2003–2007 and the fall of
+  2007–2008.
+- **B:** Jan 2 2009 – Dec 31 2014: the recovery from Mar 2009, the 2011
+  fall, and the rise to the start of the stored bars.
+
+**Account, costs and strategies:** as the ETF run and the single-stock
+test: 100,000 USD in whole shares, no commission, filled at the next open,
+at 5 and 15 bps a side; `trend_ensemble` default and `[20, 55]`, both
+with `days_per_year = 252`.
+
+**Benchmarks** (a script outside Kestrel, from the same bars, without
+costs): SPY and cash mixed to the strategy's volatility in each period
+(deciding, as in the ETF run); the 13 held equally, rebalanced monthly,
+at the same volatility (also reported); and for context holding SPY and
+the 13 at full weight. Sharpe ×√252, and a p from a paired 20-day block
+bootstrap. The falls of 20% or more in SPY are reported as in
+[Falls and the rest](#falls-the-rest-and-a-slice-beside-spy-nov-27-2026).
+
+**What counts as passing** (at 5 bps, unless it says 15): the default's
+Sharpe above SPY and cash's at its volatility in both periods, and still
+above at 15 bps. `[20, 55]` replaces the default only if it is ahead in
+both periods with p < 0.05.
+
+**What follows:** the 2019–2026 run has already failed, so a pass here
+does not start a paper run on its own. It would be written up as an edge
+in these years only, the case for trend following in a long fall. A fail
+in both, together with 2019–2026, closes `trend_ensemble` on ETFs. With
+two settings, two periods and two cost levels, one pass is weak evidence.
+
 ## Summary
 
 | Strategy | Market | Verdict |
@@ -1414,6 +1482,69 @@ strategy, which was about half in cash.
 - **Turnover** was about 10 times equity a year (7.1 million USD traded in
   seven years), most of it small resizes; free at Schwab, but each fill
   pays the spread.
+
+### Falls, the rest, and a slice beside SPY (Nov 27 2026)
+
+Two follow-ups to the tests above, from their daily equity curves: not
+pre-registered, and with no pass or fail. Each was set up before it was
+computed.
+
+**In falls and in the rest.** A fall runs from a peak to the lowest close
+before a new high, for declines of 20% or more in SPY (stocks and ETFs) or
+30% or more in BTC (crypto). The rest is every other day, recoveries
+included. Each strategy is set against its benchmark mixed with cash to
+its volatility over the whole span:
+
+| Run | Benchmark | All falls: strategy / benchmark | The rest: strategy / benchmark | Whole span, Sharpe |
+|---|---|---|---|---|
+| 18 stocks, Aug 2019 – Nov 2026 | the 18 held equally | −12.8% / −16.9% (2 falls, 218 days) | +62.9% / +63.9% | 0.98 / 0.86 |
+| 13 ETFs, Aug 2019 – Nov 2026 | SPY | −9.3% / −16.2% (2 falls) | +40.7% / +57.0% | 0.68 / 0.76 |
+| Kraken A8, 2015–2017 | BTC | −9.5% / −15.7% (5 falls, 82 days) | +91.5% / +71.7% | 3.02 / 2.04 |
+| Kraken B, 2018–2021 | BTC | −8.7% / −22.7% (3 falls, 494 days) | +54.0% / +66.0% | 1.07 / 0.79 |
+| Binance.US, 2022 – Nov 2026 | BTC | −9.2% / −21.2% (2 falls, 591 days) | +49.9% / +42.1% | 0.89 / 0.35 |
+
+- **It loses less across the falls** in all five runs, by 4 to 14 points.
+  Fall by fall it lost less in 12 of 14; the two exceptions are short
+  Kraken falls in 2017 (Jan 4–11, −3.1% against −2.7%, and Sep 1–14,
+  −4.2% against −3.1%).
+- **In the rest it is mixed:** ahead in Kraken 2015–2017 and on Binance.US,
+  level on the stocks, behind on the ETFs and in Kraken 2018–2021.
+- **Where it passed or failed follows from the mix:** on crypto the falls
+  were long and deep (2018: BTC −81% over 343 days; 2022: −67% over 324
+  days), so what it saved there outweighed what it gave up. On the ETFs
+  the two falls were short (the Covid fall was 23 days) and the rest was
+  a long rise, so it fell behind.
+- The stock curve joins the two test periods (B restarted at 100,000 and
+  is chained on). The Kraken and Binance.US runs reproduce the
+  pre-registered and earlier results (Sharpe 3.02 and 1.07; +32% in
+  2022–2024 and +2.8% after).
+
+**Crypto `trend_ensemble` beside SPY.** The Binance.US run's equity curve
+(2 bps fee and 5 bps slippage) and SPY, on SPY's trading days from Jan 3
+2022 to Nov 18 2026, weights reset on the first trading day of each month.
+The crypto value on an SPY day is its last daily close at or before that
+day's date, a close three hours after SPY's.
+
+| Mix | Return | Volatility | Sharpe | Worst fall |
+|---|---|---|---|---|
+| SPY | +52.9% | 17.4% | 0.59 | −25.4% |
+| SPY 90%, trend 10% | +51.8% | 15.8% | 0.62 (p = 0.10) | −23.4% |
+| SPY 80%, trend 20% | +50.7% | 14.2% | 0.66 (p = 0.10) | −21.3% |
+| SPY 60%, trend 40% | +47.9% | 11.4% | 0.77 (p = 0.11) | −17.2% |
+| SPY 60%, cash 40% | +30.7% | 10.4% | 0.58 | −15.7% |
+| SPY 60%, trend 20%, cash 20% | +39.2% | 10.8% | 0.69 (p = 0.11) | −16.5% |
+| Trend alone | +36.1% | 7.7% | 0.86 | −7.4% |
+
+- **The daily correlation is +0.19,** so a slice of it lowers the mix's
+  volatility and worst fall while giving up little return: 20% of it cut
+  the worst fall from 25.4% to 21.3% for 2.2 points of return.
+- **In place of cash it did better:** SPY 60%, trend 20% and cash 20% made
+  +39.2% against +30.7% for SPY 60% and cash 40%, at about the same
+  volatility.
+- **None of it is significant** (p = 0.10–0.11 against SPY alone, the
+  same Sharpe as SPY and cash at any mix), over one span of under five
+  years that held one long crypto fall, and on the crypto result that
+  only just beat its benchmark in 2025–2026 (+2.8%).
 
 ### Checked against the paper: BTC on Kraken, 2015–2025
 

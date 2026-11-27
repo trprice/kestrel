@@ -254,6 +254,15 @@ Sections in priority order: safety first, then what is in use.
       35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
       of the 10-day breakout on Binance.US (the plan's next step for a
       pass).
+- [ ] Run the pre-registered ETF test on 2003–2014 (docs/strategy-tests.md,
+      "ETFs, 2003–2014"): import the 13 ETFs' Schwab daily bars from 1999
+      or their listing, checking the stored 2015–2026 rows do not change,
+      then run it as written.
+- [ ] Schwab `pricehistory` refuses a start before a symbol's listing
+      (HTTP 400, "StartDate must be miliseconds from epoch"), so `bars`
+      with a large count fails for a younger symbol instead of returning
+      its bars from the listing. Clip the start, or retry from a later
+      one.
 - [ ] Bad prints (docs/strategy-tests.md, "Bad prints in the stored
       bars"): remove or mark the bad bars the Nov 25 2026 scan found
       (BTC/USDT Jun 21 2023, ZEC/USDT, ADA/USD Sep 18 2026, Kraken LTC 2015
