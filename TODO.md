@@ -254,6 +254,11 @@ Sections in priority order: safety first, then what is in use.
       35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
       of the 10-day breakout on Binance.US (the plan's next step for a
       pass).
+- [ ] Run the pre-registered `trend_ensemble` test on single stocks
+      (docs/strategy-tests.md, "Trend ensemble on single stocks"): the 18
+      Schwab stocks with bars from 2015, Sep 2019 – Dec 2022 and 2023 – Nov
+      2026, judged against the same stocks held equally at the strategy's
+      volatility, with SPY and cash also reported.
 - [ ] Bad prints (docs/strategy-tests.md, "Bad prints in the stored
       bars"): remove or mark the bad bars the Nov 25 2026 scan found
       (BTC/USDT Jun 21 2023, ZEC/USDT, ADA/USD Sep 18 2026, Kraken LTC 2015

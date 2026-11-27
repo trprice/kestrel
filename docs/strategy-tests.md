@@ -604,6 +604,106 @@ Binance.US).
   - The paper run will be separate processes, so this is how it will
     behave.
 
+### Trend ensemble on single stocks (planned Nov 27 2026)
+
+`trend_ensemble` has been run on 13 ETFs (no edge over SPY and cash at the
+same risk; see [On 13 ETFs](#on-13-etfs-schwab-daily-bars-20192026)) but
+never on single stocks. This test is written down before it is run, and no
+setting here changes after the results are seen. A bug found while running
+is fixed, rerun and noted.
+
+**Already seen:** the same Schwab daily bars of these stocks, 2016–2026,
+in the daily setups (see
+[Daily stock setups against holding](#daily-stock-setups-against-holding)),
+and the ETF run's periods. No portfolio strategy has been run on the
+single stocks.
+
+**The list is chosen with hindsight.** These are the stocks Kestrel's
+Schwab bars were stored for, mostly large names picked in 2026 because
+they matter now: NVDA, TSLA, META and AMD rose many times over in these
+years. Holding them beats SPY by a wide margin with no timing at all, so
+a result against SPY would mostly measure the choice of stocks. The test
+is therefore judged against the same stocks held equally, which shares
+that head start: what is left is the strategy's timing and sizing. Even
+so, a pass is an upper bound, since a stock that fell out of favour (and
+would have hurt a trend follower on the way down) is less likely to be
+on the list.
+
+**Data:** Schwab daily bars in the database (`backtest
+--bars-from-database`), split-adjusted and without dividends, as stored
+(Apr 27 2015 to Nov 5 2026). Cash earns nothing. Both understate holding
+more than the strategy, which holds cash much of the time.
+- **The 18 (judged):** AAPL, AMD, AMZN, BA, DIS, F, GOOGL, INTC, KHC, META,
+  MMM, MSFT, NKE, NVDA, PFE, T, TSLA and VZ: every single stock with bars
+  from 2015 (KHC from Jul 6 2015). Among them are names that lagged or
+  fell over the period (INTC, BA, MMM, PFE, F, T, VZ, KHC, NKE, DIS).
+- **The 21 (reported, not judged):** the 18 plus PLTR (bars from Sep 30
+  2020), COIN (Apr 14 2021) and DKI (Aug 8 2025), each joining when its
+  bars start with the history it has, as on a new listing. DKI has the
+  Oct 7 2026 bad high (see Bad prints) and a single +90% trade in the
+  daily setups, so it is kept out of the judged run.
+- **Bad bars:** the shape scan's failures among these stocks (BA and NKE
+  on Jun 5 2023, F on Apr 17 2017) are left in. Any fill on one of those
+  days, or on DKI's Oct 7 2026, is listed with its effect on the result.
+
+**Periods:** the default's nine lookbacks need 1,081 bars of warm-up, so
+the first period starts when that is done, as in the ETF run:
+- **A:** Sep 2019 (the first bar after the warm-up) to Dec 30 2022.
+- **B:** Jan 3 2023 to Nov 5 2026.
+
+Both settings use the same start, so `[20, 55]` is not given more days.
+
+**Account and costs:** 100,000 USD, whole shares, no commission. Market
+orders filled at the next price after each daily close, that is the next
+open, where spreads are 2–3 times mid-day's (see
+[Stock spreads at the open](#stock-spreads-at-the-open)). Two cost levels,
+each run in full:
+- **5 bps of slippage a side**, as in the ETF run.
+- **15 bps a side**, for the open's wider spreads on the less liquid names.
+
+**Strategies:**
+
+| Run | Settings |
+|---|---|
+| `trend_ensemble`, default | `lookbacks = [5, 10, 20, 30, 60, 90, 150, 250, 360]`, `vol_bars = 90`, `target_vol = 0.25`, `days_per_year = 252`, `max_weight = 1`, `rebalance_threshold = 0.2`, `invest_fraction = 0.95` |
+| `trend_ensemble`, `[20, 55]` | the same, `lookbacks = [20, 55]` |
+
+**Benchmarks**, each over the same days, computed by a script outside
+Kestrel from the same bars, without costs:
+- **Deciding: the same stocks held equally**, rebalanced to equal weights
+  on the first trading day of each month, and mixed with cash to the
+  strategy's realized volatility in that period. For the 21, a stock joins
+  the benchmark when it joins the strategy.
+- **Also reported: SPY and cash** at the strategy's volatility, the
+  benchmark of the ETF run.
+- **For context, not judged:** holding SPY, and the stocks held equally at
+  full weight.
+
+Sharpe is annualized from daily returns (×√252, no risk-free rate). A
+difference in Sharpe gets a p from a paired 20-day block bootstrap, as in
+the Kraken test.
+
+**What counts as passing** (at 5 bps, unless it says 15), for the 18:
+- **The default passes** if its Sharpe is higher than the volatility-matched
+  equal-weight stocks' in both periods, is still higher at 15 bps, and is
+  still higher in both periods with the stock that made it the most
+  removed from both the strategy and the benchmark (the ZEC lesson).
+- **`[20, 55]` replaces the default** only if it is ahead of it in both
+  periods with p < 0.05; otherwise the default stays.
+- Beating SPY and cash alone is not a pass.
+
+**What is reported:** each run's return, volatility, Sharpe, worst fall
+and share of time invested per period; each stock's share of the profit;
+the number of fills and the money traded; and the 21-stock run beside the
+18.
+
+**What follows:** a pass makes a Schwab paper run of the default on the 18
+the next step, sized so whole shares fit (about 100,000 USD of paper
+money). A fail is written up here and not re-tuned on these years, and
+`trend_ensemble` stays a crypto strategy. With two settings, two periods
+and two cost levels, one pass is weak evidence: a pass in both periods and
+at both costs is what would change a plan.
+
 ## Summary
 
 | Strategy | Market | Verdict |
