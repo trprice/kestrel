@@ -98,7 +98,11 @@ good mid has been seen (or a position's mark resumed), still runs the
 protection rules on that last good mid (using a one-sided book's live side for
 `stop_loss` when it is the closing side). With `post_only`, a quote that would
 still cross the book on arrival is refused by the venue instead of filling as a
-taker, and the next quote tries again.
+taker, and the next quote tries again. Any other rejected or failed quote
+placement (such as a `[risk]` limit or insufficient balance), or one the venue
+refuses as soon as it arrives, pauses retries on
+that level for 10 seconds, doubling on consecutive failures up to 5 minutes,
+and resets once a placement succeeds or a fill arrives.
 
 **Spot only.** The ask is quoted only while there is base asset to sell, and
 the strategy starts from whatever the venue holds of the base asset. Past

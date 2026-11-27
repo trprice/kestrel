@@ -1329,4 +1329,48 @@ TEST_F(RiskGateTest, ClosesWaitForTheRegularSessionWithExtendedHoursToo) {
     EXPECT_EQ(venue->orders[0].quantity, D("1"));
 }
 
+TEST_F(RiskGateTest,
+       SeededPositionsEnforceDrawdownAndPositionLossAndSkipSeenFills) {
+    // Spot venue reports no GetPositions(); ResetDailyBaseline(positions, ...)
+    // seeds an underwater starting holding (2 BTC @ 100) and skips boundary
+    // fill "b0" returned again by GetFills(now).
+    limits.max_drawdown = D("35");
+    limits.max_drawdown_close = D("50");
+    limits.max_loss_per_position = D("45");
+    venue->fills = {FillOf("b0", Side::kBuy, "1", "100", now)};
+    Build();
+    const std::vector<std::string> seen = {"b0"};
+    gate->ResetDailyBaseline({HoldingOf("2", "100")}, now, seen);
+
+    // At 85 (-30 vs cost basis): below all three limits; "b0" is not
+    // double-counted.
+    gate->NoteReferencePrice(kSymbol, D("85"));
+    EXPECT_FALSE(gate->IsHalted());
+    EXPECT_TRUE(venue->orders.empty());
+    ASSERT_OK(gate->PlaceOrder(Market(Side::kSell, "0.5")));
+    venue->orders.clear();
+
+    // At 80 (-40 vs cost basis): trips max_drawdown (35), blocking entries,
+    // while still under max_loss_per_position (45) and max_drawdown_close (50).
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("80"));
+    EXPECT_FALSE(gate->IsHalted());
+    EXPECT_TRUE(venue->orders.empty());
+    ExpectRejected(Market(Side::kBuy, "0.1"));
+
+    // At 77 (-46 vs cost basis): trips max_loss_per_position (45) and closes 2.
+    now += std::chrono::seconds(1);
+    gate->NoteReferencePrice(kSymbol, D("77"));
+    EXPECT_FALSE(gate->IsHalted());
+    ASSERT_EQ(venue->orders.size(), 1u);
+    EXPECT_EQ(venue->orders[0].side, Side::kSell);
+    EXPECT_EQ(venue->orders[0].quantity, D("2"));
+
+    // At 74 (-52 vs cost basis): trips max_drawdown_close (50) and halts.
+    now += std::chrono::minutes(1);
+    gate->NoteReferencePrice(kSymbol, D("74"));
+    EXPECT_TRUE(gate->IsHalted());
+    ASSERT_EQ(venue->orders.size(), 2u);
+}
+
 }  // namespace

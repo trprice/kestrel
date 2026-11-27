@@ -1,5 +1,7 @@
 #include "kestrel/db/account_fill_store.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 
 #include "sql_rows.hpp"
@@ -90,6 +92,43 @@ Result<std::vector<types::Fill>> AccountFillStore::Load(
     return fills;
 }
 
+Result<std::vector<types::Fill>> AccountFillStore::LoadUpTo(
+    const std::string& venue, types::Timestamp up_to,
+    std::span<const std::string> assets) const {
+    // `< up_to + 1 ms` includes every row in `up_to`'s millisecond, even one
+    // stored with sub-millisecond TIMESTAMPTZ precision.
+    const auto cutoff =
+        types::FormatIso8601(up_to + std::chrono::milliseconds(1));
+    std::vector<std::optional<std::string>> params = {venue, cutoff};
+    std::string where = "venue = $1 AND fill_time < $2";
+    if (!assets.empty()) {
+        std::string list;
+        for (std::size_t i = 0; i < assets.size(); ++i) {
+            list += (i ? ", $" : "$") + std::to_string(params.size() + 1);
+            params.emplace_back(assets[i]);
+        }
+        where += " AND (upper(split_part(symbol, '/', 1)) IN (" + list +
+                 ") OR upper(split_part(symbol, '/', 2)) IN (" + list + "))";
+    }
+    auto rows = mDatabase->Query(
+        "SELECT " + sql::FillSelect() + " FROM account_fills WHERE " + where +
+            " ORDER BY fill_time, length(fill_id), fill_id",
+        params);
+    if (!rows) {
+        return std::unexpected(rows.error());
+    }
+    std::vector<types::Fill> fills;
+    fills.reserve(rows->size());
+    for (const auto& row : *rows) {
+        auto fill = sql::ParseFill(row);
+        if (!fill) {
+            return std::unexpected(fill.error());
+        }
+        fills.push_back(std::move(*fill));
+    }
+    return fills;
+}
+
 // Re-read before the newest stored fill: a venue may report a fill late
 // (Schwab's transactions can lag the executions they index), after a newer
 // one was stored.
@@ -102,16 +141,17 @@ Result<types::Timestamp> SyncStart(const AccountFillStore& store,
     if (symbols.empty()) {
         return first_since;
     }
-    types::Timestamp start = types::Now();
+    std::optional<types::Timestamp> start;
     for (const types::Symbol& symbol : symbols) {
         auto newest = store.Newest(venue, symbol);
         if (!newest) {
             return std::unexpected(newest.error());
         }
-        start =
-            std::min(start, *newest ? **newest - kSyncOverlap : first_since);
+        const types::Timestamp candidate =
+            *newest ? **newest - kSyncOverlap : first_since;
+        start = start ? std::min(*start, candidate) : candidate;
     }
-    return start;
+    return *start;
 }
 
 Result<FillSync> SyncAccountFills(trading::TradingVenue& venue,
@@ -136,6 +176,35 @@ Result<FillSync> SyncAccountFills(trading::TradingVenue& venue,
     }
     sync.stored = *stored;
     return sync;
+}
+
+Result<StartingFills> SyncAndLoadStartingFills(
+    trading::TradingVenue& venue, AccountFillStore& store,
+    const std::vector<types::Symbol>& symbols,
+    std::span<const std::string> assets,
+    const std::function<types::Timestamp()>& clock) {
+    const types::Timestamp now = clock();
+    const auto synced = SyncAccountFills(
+        venue, store, symbols, now - std::chrono::days(kFirstSyncDays));
+    if (synced) {
+        spdlog::info(
+            "account_fills: synced {} fills from {} ({} new) before working "
+            "out the starting cost basis",
+            synced->fetched, types::FormatIso8601(synced->since),
+            synced->stored);
+    } else {
+        spdlog::warn(
+            "account_fills: sync before the run failed ({}); working out the "
+            "starting cost basis from the fills stored so far, which may miss "
+            "trades since the last `account --store`",
+            synced.error().ToString());
+    }
+    const types::Timestamp since = clock();
+    auto fills = store.LoadUpTo(std::string(venue.Name()), since, assets);
+    if (!fills) {
+        return std::unexpected(fills.error());
+    }
+    return StartingFills{since, std::move(*fills)};
 }
 
 }  // namespace kestrel::db

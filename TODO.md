@@ -165,14 +165,9 @@ Sections in priority order: safety first, then what is in use.
         recorded crypto quotes is enough.
       - `bars`, `runs`, `fills`, `pnl_snapshots`: keep forever (small).
         `venue_latency`: keep 1 year, then review (about 1 MB a day live).
-- [ ] Use `account_fills` for the cost basis of what the account holds at the
-      start of a run, so selling a starting holding realizes a real profit or
-      loss instead of the whole sale price (the 8 hour run's phantom
-      position). Needs a rule for holdings older than the stored history
-      (transfers in, buys before the first sync).
-- [ ] Sync `account_fills` at the start of a live run, and now and then during
-      it, instead of only from the `account` command, and compare a run's
-      `fills` against it afterwards to catch fills the runner missed.
+- [ ] Sync `account_fills` now and then during a live run (it is synced at the
+      start of a recorded live spot run), and compare a run's `fills` against
+      it afterwards to catch fills the runner missed.
 - [ ] Tell Kestrel's fills in `account_fills` from manual or other programs'
       ones. Binance.US orders already get a `kst-<tag>-<n>` client order ID
       (the tag is random per process), but `myTrades` does not return client
@@ -532,10 +527,14 @@ the header of the code concerned.
   position.
 - What is held is the venue's position, or what the gate has seen fill since
   its loss count started if that is more. On a venue that reports no
-  positions (Binance.US spot), holdings from before the run are invisible:
-  `max_position_notional` does not count them, and a halted gate will not let
-  them be sold. If the fills cannot be read, an exit is checked against the
-  venue's position alone, and an entry is refused.
+  positions (Binance.US and Kraken spot), the gate limits only what the
+  strategy holds, by choice: holdings from before the run are invisible to it,
+  so `max_position_notional`, `max_loss_per_position` and the drawdown limits
+  do not count them, a starting holding is never closed at market by the
+  gate, and a halted gate will not let them be sold. (The recorder, not the
+  gate, gives them a cost basis from `account_fills`.) If the fills cannot be
+  read, an exit is checked against the venue's position alone, and an entry
+  is refused.
 - With a loss, drawdown or consecutive-loss limit set, an order is refused,
   exits included, while the venue's fills cannot be read.
 - Checks and the venue call run under one lock, so concurrent orders are
@@ -775,9 +774,17 @@ the header of the code concerned.
   on the strategy thread, so a slow database delays the strategy.
 - Unwritten fills are kept in memory (up to 100k) while the database is down;
   a snapshot that fails is skipped. A process that dies loses what was queued.
-- P&L is only as good as the start: if the venue's positions cannot be read at
-  startup the recorder warns and counts from zero, and a balance held at the
-  start (not a position) has no cost basis, so selling it realizes nothing.
+- P&L is only as good as the start: if the venue's positions (or, on spot,
+  `account_fills` and balances) cannot be read at startup the recorder warns
+  and counts from zero, and coins older than the stored `account_fills` are
+  valued at the startup reference price. The sync at startup fetches 7 days
+  for a symbol never synced; run `account --store --days N` first for a
+  longer history. Coins received as the quote of another pair (BTC from
+  selling ZEC/BTC) have no cost in the run's quote currency and are valued
+  like a transfer in, as are coins bought on any pair not in `[general]
+  symbols` (even ZEC/USD beside a ZEC/USDT run, so their real USD cost is
+  lost): list such pairs in `[general] symbols` to keep their cost. In paper mode a starting balance in
+  `[paper] initial_balances` has no position, so selling it realizes nothing.
 - Snapshot values in the market maker's own protection P&L and the recorder
   are computed separately and can differ (the strategy's covers only the
   position beyond its starting balance).
@@ -812,8 +819,10 @@ the header of the code concerned.
   - `GetPositions` is empty on spot, and `BalanceEx` keeps reward and staking
     suffixes (`.F`, `.S`, `.B`, `.M`) apart from the base asset.
 - The Binance.US venue runs live under `run`, polled for fills (no user-data
-  stream yet). Its `GetPositions` returns nothing, so the risk gate counts
-  only what filled since the run started (see Risk gate above).
+  stream yet). Its `GetPositions` returns nothing; a recorded live `run`
+  works out starting holdings and their cost basis for its P&L from
+  `account_fills` and `GetBalances()`, but the risk gate counts only what
+  fills during the run (see Risk gate above).
 - A Binance.US placement that times out and cannot be found afterwards is
   reported as an error, but the order may still appear later; it would then
   rest on the account untracked by the runner until the next `run` cancels
@@ -1374,6 +1383,15 @@ the header of the code concerned.
       fill model
 
 ### Operations
+- [x] Starting cost basis from `account_fills` for the P&L of live spot runs:
+      at startup the runner syncs `account_fills` from the venue, and
+      `ReconcileStartingPositions` replays it through `PnlTracker` (coins
+      spent as another pair's quote included), zeroes historical realized
+      P&L, and reconciles each base asset against `GetBalances()` (valuing
+      transfers in or pre-sync holdings at the startup reference price,
+      leaving unpriceable excess out of the basis, clamping withdrawals down
+      to the wallet balance; warnings, or info for dust). Seeds `RunRecorder`
+      only: the risk gate limits only what the strategy holds.
 - [x] Store the account's own trade history: `account_fills`, synced
       incrementally by `kestrel_app account --store` (live mode).
 - [x] Database rows that do not parse (a NULL or a bad number in a fill or

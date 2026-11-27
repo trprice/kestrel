@@ -12,6 +12,7 @@
 #include "kestrel/data/kraken_data_source.hpp"
 #include "kestrel/data/schwab_auth.hpp"
 #include "kestrel/data/schwab_data_source.hpp"
+#include "kestrel/db/account_fill_store.hpp"
 #include "kestrel/db/strategy_state_store.hpp"
 #include "kestrel/db/trade_store.hpp"
 #include "kestrel/net/timed_http_client.hpp"
@@ -1026,10 +1027,47 @@ Result<std::shared_ptr<strategy::StateStore>> OpenStateStore(
             venue + "/" + std::string(config::ToString(cfg.GetMode())) + "/"));
 }
 
+Result<strategy::RunnerOptions::StartingFillsLoader> OpenAccountFills(
+    const config::Configuration& cfg, const std::string& /*venue*/) {
+    const auto& options = cfg.GetDatabase();
+    if (!options) {
+        return MakeError(ErrorCategory::kNotFound,
+                         "reading account_fills needs a [database] section");
+    }
+    auto connected = db::Database::Connect(*options);
+    if (!connected) {
+        return std::unexpected(connected.error());
+    }
+    std::shared_ptr<db::Database> database = std::move(*connected);
+    if (auto migrated = database->Migrate(); !migrated) {
+        return std::unexpected(migrated.error());
+    }
+    std::vector<std::string> bases;
+    std::set<std::string> seen_bases;
+    for (const auto& raw : cfg.GetSymbols()) {
+        const types::Symbol sym = types::NormalizeSymbol(raw).value_or(raw);
+        if (const auto parts = types::SplitSymbol(sym)) {
+            if (seen_bases.insert(parts->base).second) {
+                bases.push_back(parts->base);
+            }
+        }
+    }
+    auto store = std::make_shared<db::AccountFillStore>(std::move(database));
+    return strategy::RunnerOptions::StartingFillsLoader(
+        [store = std::move(store), symbols = cfg.GetSymbols(),
+         bases = std::move(bases)](trading::TradingVenue& venue,
+                                   const strategy::RunnerOptions::Clock& clock)
+            -> Result<strategy::RunnerOptions::StartingFills> {
+            return db::SyncAndLoadStartingFills(venue, *store, symbols, bases,
+                                                clock);
+        });
+}
+
 Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const std::string& strategy_name, const config::Configuration& cfg,
     const ComponentsFactory& make_components, const TradeLogFactory& make_log,
-    const StateStoreFactory& make_state) {
+    const StateStoreFactory& make_state,
+    const AccountFillsFactory& make_account_fills) {
     auto limits = ResolveRiskLimits(strategy_name, cfg);
     if (!limits) {
         return WithContext(limits.error(), "risk");
@@ -1094,6 +1132,27 @@ Result<std::unique_ptr<strategy::Runner>> CreateRunner(
         } else {
             spdlog::warn("strategy state: {}; {} keeps none across restarts",
                          store.error().ToString(), strategy_name);
+        }
+    }
+    // Only the recorder uses the starting cost basis: the risk gate counts
+    // what fills during the run, never the holdings it started with.
+    if (options.trade_log && cfg.GetMode() == config::Mode::kLive &&
+        cfg.GetProvider() != config::Provider::kSchwab &&
+        components->venue->Name() != "paper") {
+        options.account_symbols = cfg.GetSymbols();
+        auto fills =
+            make_account_fills(cfg, std::string(components->venue->Name()));
+        if (fills) {
+            options.starting_fills = std::move(*fills);
+        } else if (fills.error().category == ErrorCategory::kNotFound) {
+            options.starting_fills =
+                [](trading::TradingVenue&,
+                   const strategy::RunnerOptions::Clock& clock) {
+                    return Result<strategy::RunnerOptions::StartingFills>(
+                        strategy::RunnerOptions::StartingFills{clock(), {}});
+                };
+        } else {
+            return WithContext(fills.error(), "account fills");
         }
     }
     auto runner = std::make_unique<strategy::Runner>(

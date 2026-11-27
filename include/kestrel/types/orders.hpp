@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "kestrel/types/decimal.hpp"
 #include "kestrel/types/symbol.hpp"
@@ -107,6 +108,14 @@ struct Position {
     Decimal quantity;       // base-asset units held
     Decimal average_price;  // average entry price of the open quantity
     Decimal realized_pnl;   // in the quote asset, net of fees
+};
+
+// The account's stored fills up to `since`, from which a live spot run works
+// out its starting cost basis (db::SyncAndLoadStartingFills,
+// RunnerOptions::starting_fills).
+struct StartingFills {
+    Timestamp since;  // stamped after the sync; the cutoff of `fills`
+    std::vector<Fill> fills;
 };
 
 struct Balance {

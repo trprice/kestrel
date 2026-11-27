@@ -269,13 +269,41 @@ symbols not listed in `[general] symbols` are not cancelled, but they still
 share the account's balances. The read-only `account` command is safe to use
 at any time.
 
-Also mind what was on the account before `run` started. Binance.US spot has no
-positions, so `GetPositions` returns nothing, and the risk gate counts what it
-has seen fill since the run started instead: `max_position_notional`, and the
-sells let through once a halt or a loss limit blocks entries, only know about
-what the strategy built up this run. Holdings the account already had are
-invisible to the gate (a halted gate will not let them be sold; `order
---no-risk` can): start from an empty account or sub-account.
+Also mind what was on the account before `run` started. Spot venues report no
+positions in `GetPositions`, and the two parts of a run treat the coins the
+account already holds differently, by design:
+
+- **The risk gate limits only what the strategy holds.** It counts what fills
+  during the run, never the holdings the account started with:
+  `max_position_notional`, `max_loss_per_position`, `max_drawdown` and
+  `max_drawdown_close` do not see them, so a pre-existing holding that is
+  below its cost is never closed at market by the gate, and selling it does
+  not count towards `max_daily_loss`. A halted gate will not let those coins
+  be sold either (`order --no-risk` can). This is a deliberate choice: the
+  gate must never trade coins the strategy did not buy.
+- **The P&L recorder uses their real cost basis.** At the start of a live spot
+  run with `[recording]`, Kestrel first syncs `account_fills` from the venue
+  (as `account --store` does, from 7 days back for a symbol never synced; a
+  failed sync is logged and the stored history used), replays it for the run's
+  coins, and reconciles each coin against `GetBalances()`. Coins beyond what
+  the history explains (transfers in, buys before the first sync, and coins
+  bought on a pair not in `[general] symbols`, such as ZEC bought with BTC
+  beside a ZEC/USDT run, even ZEC/USD beside ZEC/USDT) are valued at the
+  startup market price, or left out of the basis if there is none; pairs
+  listed in `[general] symbols` that share the coin share its balance, each
+  keeping its own replayed cost;
+  coins missing from the wallet are cut from the replayed holding. Each
+  mismatch is logged as a warning, or at info for dust worth under 1 of the
+  quote currency. Selling a starting holding then records its real profit or
+  loss rather than the whole sale price. If the history cannot be read, the
+  recorder starts with no holdings (a warning); with no `[database]` at all,
+  the wallet is reconciled against an empty history, so every coin starts at
+  the startup market price.
+
+Strategies that track only their own orders (`ma_crossover`, `breakout`)
+ignore pre-existing coins unless the strategy adopts them (`adopt_holdings`,
+`market_maker`): use an empty account or sub-account unless the strategy is
+meant to hold them.
 
 If `run` dies without stopping cleanly (a crash, `kill -9`, or a second
 Ctrl-C), all its strategy's orders stay open, entries too, until the next

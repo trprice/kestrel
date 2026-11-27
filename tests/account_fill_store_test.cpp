@@ -4,6 +4,8 @@
 #include "kestrel/db/account_fill_store.hpp"
 
 #include "db_fixture.hpp"
+#include "kestrel/config/configuration.hpp"
+#include "kestrel/factory.hpp"
 #include "strategy_fakes.hpp"
 
 namespace {
@@ -198,6 +200,130 @@ TEST_F(AccountFillStoreTest, ARowWithAnUnknownSideOrLiquidityIsAParseError) {
         EXPECT_EQ(loaded.error().category, types::ErrorCategory::kParse);
         EXPECT_NE(loaded.error().message.find("sideways"), std::string::npos);
     }
+}
+
+TEST_F(AccountFillStoreTest,
+       LoadUpToIncludesBoundaryOrdersByTimeAndIdAndIsolatesVenue) {
+    const std::vector<types::Fill> fills = {
+        FillOf("late", 31),
+        FillOf("ZECUSDT:10", 20),
+        FillOf("ZECUSDT:9", 20, "ZEC/USD"),
+        FillOf("first", 10, "BTC/USDT"),
+        FillOf("at-cutoff", 30),
+    };
+    ASSERT_OK(mStore->Save(kVenue, fills));
+    const std::vector<types::Fill> other = {FillOf("other", 5)};
+    ASSERT_OK(mStore->Save(kOtherVenue, other));
+
+    // Sub-millisecond TIMESTAMPTZ inside the cutoff millisecond is included.
+    const std::vector<types::Fill> boundary = {FillOf("subms", 30)};
+    ASSERT_OK(mStore->Save(kVenue, boundary));
+    const std::string subms =
+        types::FormatIso8601(At(30)).substr(0, 23) + "750Z";
+    ASSERT_OK(
+        mDatabase->Query("UPDATE account_fills SET fill_time = $1::timestamptz "
+                         "WHERE venue = $2 AND fill_id = 'subms'",
+                         {subms, kVenue}));
+
+    auto loaded = mStore->LoadUpTo(kVenue, At(30));
+    ASSERT_OK(loaded);
+    ASSERT_EQ(loaded->size(), 5u);
+    EXPECT_EQ((*loaded)[0].fill_id, "first");
+    EXPECT_EQ((*loaded)[1].fill_id, "ZECUSDT:9");
+    EXPECT_EQ((*loaded)[2].fill_id, "ZECUSDT:10");
+    EXPECT_EQ((*loaded)[3].fill_id, "at-cutoff");
+    EXPECT_EQ((*loaded)[4].fill_id, "subms");
+
+    // Base-asset filtering keeps every pair sharing ZEC while skipping BTC.
+    const std::vector<std::string> zec_only = {"ZEC"};
+    auto zec = mStore->LoadUpTo(kVenue, At(30), zec_only);
+    ASSERT_OK(zec);
+    ASSERT_EQ(zec->size(), 4u);
+    EXPECT_EQ((*zec)[0].fill_id, "ZECUSDT:9");
+    EXPECT_EQ((*zec)[1].fill_id, "ZECUSDT:10");
+}
+
+TEST_F(AccountFillStoreTest, StartingFillsSyncFirstThenLoadUpToTheStart) {
+    // Stored: "a". The venue has "b" since (an unsynced trade), "during-sync"
+    // arriving while GetFills is in flight (between t=30 before the sync and
+    // t=32 when the sync finishes), and "late" at t=40 after the sync; `since`
+    // is stamped after the sync at At(32), so a, b and during-sync are all
+    // loaded into starting fills while "late" is excluded.
+    ASSERT_OK(mStore->Save(kVenue, std::vector<types::Fill>{FillOf("a", 10)}));
+    RecordingVenue venue;
+    venue.fills = {FillOf("a", 10), FillOf("b", 20), FillOf("late", 40)};
+    types::Timestamp now = At(30);
+    venue.before_get_fills = [&] {
+        venue.fills.push_back(FillOf("during-sync", 31));
+        now = At(32);
+    };
+    const std::vector<std::string> assets = {"ZEC"};
+    auto loaded = db::SyncAndLoadStartingFills(venue, *mStore, {"ZEC/USDT"},
+                                               assets, [&] { return now; });
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->since, At(32));
+    ASSERT_EQ(loaded->fills.size(), 3u);
+    EXPECT_EQ(loaded->fills[0].fill_id, "a");
+    EXPECT_EQ(loaded->fills[1].fill_id, "b");
+    EXPECT_EQ(loaded->fills[2].fill_id, "during-sync");
+    EXPECT_EQ(mStore->Load(kVenue, At(0), At(100))->size(), 4u);
+
+    // A failed sync falls back to what is stored up to `clock()`.
+    venue.before_get_fills = nullptr;
+    venue.fills.push_back(FillOf("c", 25));
+    venue.fail_fills = true;
+    auto fallback = db::SyncAndLoadStartingFills(
+        venue, *mStore, {"ZEC/USDT"}, assets, [&] { return At(32); });
+    ASSERT_OK(fallback);
+    EXPECT_EQ(fallback->since, At(32));
+    EXPECT_EQ(fallback->fills.size(), 3u);
+}
+
+TEST_F(AccountFillStoreTest, LoadUpToMatchesTheAssetAsBaseOrQuote) {
+    const std::vector<types::Fill> fills = {
+        FillOf("zec-btc", 10, "ZEC/BTC"),
+        FillOf("btc-usdt", 20, "BTC/USDT"),
+        FillOf("eth-usdt", 30, "ETH/USDT"),
+    };
+    ASSERT_OK(mStore->Save(kVenue, fills));
+    const std::vector<std::string> assets = {"BTC"};
+    auto loaded = mStore->LoadUpTo(kVenue, At(100), assets);
+    ASSERT_OK(loaded);
+    ASSERT_EQ(loaded->size(), 2u);
+    EXPECT_EQ((*loaded)[0].fill_id, "zec-btc");
+    EXPECT_EQ((*loaded)[1].fill_id, "btc-usdt");
+}
+
+// What `run` does without a prior `account --store`: the default loader from
+// CreateRunner syncs the venue's fills into account_fills, then loads those
+// for the configured coins up to the start.
+TEST_F(AccountFillStoreTest, OpenAccountFillsSyncsWithoutAPriorAccountStore) {
+    const auto options = kestrel::testing::TestConnectionOptions();
+    config::LoadOptions load;
+    load.getenv = [&](const std::string& name) -> std::optional<std::string> {
+        if (name == "KESTREL_DATABASE_PASSWORD") return options.password;
+        return std::nullopt;
+    };
+    auto cfg = config::BinanceUSConfiguration::Parse(
+        "[general]\nmode='paper'\nsymbols=['ZEC/USDT']\n[database]\ndbname='" +
+            options.dbname + "'\nhost='" + options.host + "'\nuser='" +
+            options.user + "'\n",
+        load);
+    ASSERT_OK(cfg);
+    auto loader = OpenAccountFills(*cfg, kVenue);
+    ASSERT_OK(loader);
+
+    RecordingVenue venue;  // nothing stored yet for it
+    venue.fills = {FillOf("zec", 10), FillOf("eth", 20, "ETH/USDT"),
+                   FillOf("after", 200)};
+    auto loaded = (*loader)(venue, [] { return At(100); });
+    ASSERT_OK(loaded);
+    EXPECT_EQ(loaded->since, At(100));
+    // Only the configured coin, and only up to the start.
+    ASSERT_EQ(loaded->fills.size(), 1u);
+    EXPECT_EQ(loaded->fills[0].fill_id, "zec");
+    // The sync stored what the venue returned.
+    EXPECT_EQ(mStore->Load(kVenue, At(0), At(1000))->size(), 3u);
 }
 
 }  // namespace

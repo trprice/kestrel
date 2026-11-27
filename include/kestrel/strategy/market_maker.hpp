@@ -113,6 +113,11 @@ class MarketMaker : public Strategy {
         types::Timestamp placed;
         bool cancel_raced = false;  // a fill beat our cancel; await settlement
         types::Timestamp raced_at;  // when cancel_raced was set
+        // Next attempt after a failed PlaceOrder (other than kWouldTake) or
+        // one refused at once, and the backoff delay used last (doubled on
+        // consecutive failures).
+        types::Timestamp retry_at{};
+        std::chrono::milliseconds retry_delay{0};
 
         types::Decimal Remaining() const { return quantity - filled; }
     };
@@ -122,7 +127,10 @@ class MarketMaker : public Strategy {
     // side the market came from (below a bid, above an ask), or `away` or
     // more on the other.
     // With keep_at_touch, a quote at `best` (the book's best price on its
-    // side) is not replaced for a move away.
+    // side) is not replaced for a move away. A placement that fails (other
+    // than kWouldTake) or is refused at once backs off from
+    // kOrderRetryInterval up to kMaxOrderRetryInterval, resetting once a
+    // placement succeeds or a fill arrives.
     void Manage(Context& context, Resting& quote, types::Side side,
                 const std::optional<types::Decimal>& price,
                 const types::Decimal& size, const types::Decimal& room,

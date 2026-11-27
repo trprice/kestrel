@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -37,6 +38,14 @@ class AccountFillStore {
         const std::string& venue, types::Timestamp from, types::Timestamp to,
         const std::optional<types::Symbol>& symbol = std::nullopt) const;
 
+    // Every fill stored for `venue` with fill_time <= up_to (and whose base or
+    // quote asset is in `assets`, unless empty: a ZEC/BTC fill changes the BTC
+    // held too), oldest first (ordered by fill_time, length(fill_id),
+    // fill_id).
+    types::Result<std::vector<types::Fill>> LoadUpTo(
+        const std::string& venue, types::Timestamp up_to,
+        std::span<const std::string> assets = {}) const;
+
    private:
     std::shared_ptr<Database> mDatabase;
 };
@@ -62,5 +71,24 @@ types::Result<types::Timestamp> SyncStart(
 types::Result<FillSync> SyncAccountFills(
     trading::TradingVenue& venue, AccountFillStore& store,
     const std::vector<types::Symbol>& symbols, types::Timestamp first_since);
+
+using StartingFills = types::StartingFills;
+
+// The stored history a live spot run works out its starting cost basis from:
+// first tops `store` up with SyncAccountFills for `symbols` (from
+// kFirstSyncDays before `clock()` for a symbol never synced), so trades since
+// the last `account --store` are in it, then stamps `since = clock()` and
+// returns LoadUpTo(venue.Name(), since, assets). Stamping `since` after the
+// sync means no fill is counted twice: one the sync fetched is in the
+// history (and the run's seen-fill set), not polled again; one after the
+// fetch but before `since` is in neither, only in GetBalances(), so it is
+// valued as wallet excess instead of at its own price. A failed sync is
+// logged and the history stored so far is used; a failed load is returned.
+inline constexpr int kFirstSyncDays = 7;
+types::Result<StartingFills> SyncAndLoadStartingFills(
+    trading::TradingVenue& venue, AccountFillStore& store,
+    const std::vector<types::Symbol>& symbols,
+    std::span<const std::string> assets,
+    const std::function<types::Timestamp()>& clock = types::Now);
 
 }  // namespace kestrel::db

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -207,6 +208,18 @@ class RiskGatedVenue : public TradingVenue {
     // max_daily_loss. A fill is counted if its time is at or after this call,
     // so the venue's and the gate's clocks should roughly agree.
     types::Result<void> ResetDailyBaseline();
+    // Starts the loss count from `positions` (the runner passes what the
+    // venue reports, so on spot only what fills during the run is counted),
+    // counting fills at or after `since` and skipping any fill ID already in
+    // `seen_fill_ids`.
+    // As with ResetDailyBaseline(), peak equity restarts at zero (the starting
+    // holdings' cost basis), so a starting holding already below its average
+    // cost counts that unrealized loss towards max_drawdown,
+    // max_drawdown_close and max_loss_per_position instead of forgiving losses
+    // across a restart.
+    void ResetDailyBaseline(const std::vector<types::Position>& positions,
+                            types::Timestamp since,
+                            std::span<const std::string> seen_fill_ids = {});
 
     // Kill switch: stops all orders except position-reducing ones and cancels
     // everything open. The first cancel is issued at once, without the order
@@ -269,6 +282,9 @@ class RiskGatedVenue : public TradingVenue {
     };
 
     // All require mMutex.
+    void ResetBaseline(const std::vector<types::Position>& positions,
+                       types::Timestamp since,
+                       std::span<const std::string> seen_fill_ids);
     types::Result<void> StartLossCount();
     // Starts the loss count if needed and applies the venue's fills since
     // the last call to mPnl.

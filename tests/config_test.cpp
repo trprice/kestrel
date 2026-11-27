@@ -1566,6 +1566,117 @@ TEST(Factory, CreateRunnerChecksBeforeConnecting) {
     EXPECT_EQ(fake.built, 0);  // refused before any connection was made
 }
 
+TEST(Factory, CreateRunnerScopesStartingAccountFillsToRecordedLiveSpotRuns) {
+    const auto binance_env = NoEnv({{"KESTREL_BINANCEUS_API_KEY", "k"},
+                                    {"KESTREL_BINANCEUS_API_SECRET", "s"}});
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    using FillsResult =
+        types::Result<strategy::RunnerOptions::StartingFillsLoader>;
+    const auto no_log = [](const config::Configuration&, const std::string&,
+                           const std::string&) {
+        return types::Result<std::shared_ptr<trading::TradeLog>>(
+            types::MakeError(types::ErrorCategory::kInternal, "not asked"));
+    };
+    const auto no_state = [](const config::Configuration&, const std::string&) {
+        return types::Result<std::shared_ptr<strategy::StateStore>>(
+            types::MakeError(types::ErrorCategory::kInternal, "not asked"));
+    };
+
+    // Paper mode never asks for account_fills.
+    auto paper = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[risk]\nmax_open_orders=1\n"),
+        NoEnv());
+    ASSERT_OK(paper);
+    FakeComponents paper_fake;
+    bool paper_asked = false;
+    ASSERT_OK(CreateRunner(
+        "ma_crossover", *paper, paper_fake.Factory(), no_log, no_state,
+        [&](const config::Configuration&, const std::string&) {
+            paper_asked = true;
+            return FillsResult{};
+        }));
+    EXPECT_FALSE(paper_asked);
+
+    // Schwab live mode reports brokerage positions natively, so it never asks
+    // for account_fills either.
+    auto schwab = config::SchwabConfiguration::Parse(
+        "[general]\nprovider='schwab'\nmode='live'\nsymbols=['BTC/USD']\n" +
+            std::string(kSmaParams) +
+            "[schwab]\nlive_trading=true\n[risk]\nmax_open_orders=1\n",
+        NoEnv());
+    ASSERT_OK(schwab);
+    FakeComponents schwab_fake;
+    bool schwab_asked = false;
+    ASSERT_OK(CreateRunner(
+        "ma_crossover", *schwab, schwab_fake.Factory(), no_log, no_state,
+        [&](const config::Configuration&, const std::string&) {
+            schwab_asked = true;
+            return FillsResult{};
+        }));
+    EXPECT_FALSE(schwab_asked);
+
+    // Live spot mode without recording never asks either: only the recorder
+    // uses the starting cost basis, never the risk gate.
+    auto unrecorded = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[risk]\nmax_open_orders=1\n",
+                   "live"),
+        binance_env);
+    ASSERT_OK(unrecorded);
+    FakeComponents unrecorded_fake;
+    bool unrecorded_asked = false;
+    ASSERT_OK(CreateRunner(
+        "ma_crossover", *unrecorded, unrecorded_fake.Factory(), no_log,
+        no_state, [&](const config::Configuration&, const std::string&) {
+            unrecorded_asked = true;
+            return FillsResult{};
+        }));
+    EXPECT_FALSE(unrecorded_asked);
+
+    // Live spot mode with recording passes venue->Name() ("recording" on
+    // FakeComponents), gracefully handles a missing [database] (default
+    // OpenAccountFills -> kNotFound), and fails closed if a configured
+    // database fails.
+    auto live = config::BinanceUSConfiguration::Parse(
+        WithTables(std::string(kSmaParams) + "[risk]\nmax_open_orders=1\n" +
+                       "[recording]\nenabled=true\n",
+                   "live"),
+        binance_env);
+    ASSERT_OK(live);
+    const auto fake_log = [](const config::Configuration&, const std::string&,
+                             const std::string&) {
+        return types::Result<std::shared_ptr<trading::TradeLog>>(
+            std::make_shared<kestrel::testing::FakeTradeLog>());
+    };
+    FakeComponents live_fake;
+    std::string venue_seen;
+    ASSERT_OK(CreateRunner(
+        "ma_crossover", *live, live_fake.Factory(), fake_log, no_state,
+        [&](const config::Configuration&, const std::string& venue) {
+            venue_seen = venue;
+            return FillsResult{[](trading::TradingVenue&, const Clock& clock) {
+                return types::Result<StartingFills>(StartingFills{clock(), {}});
+            }};
+        }));
+    EXPECT_EQ(venue_seen, "recording");
+
+    // Default OpenAccountFills with no [database] configured succeeds cleanly.
+    FakeComponents no_db_fake;
+    ASSERT_OK(CreateRunner("ma_crossover", *live, no_db_fake.Factory(),
+                           fake_log, no_state));
+
+    // A database error other than kNotFound fails CreateRunner.
+    FakeComponents broken_db_fake;
+    auto failed = CreateRunner(
+        "ma_crossover", *live, broken_db_fake.Factory(), fake_log, no_state,
+        [](const config::Configuration&, const std::string&) {
+            return FillsResult(
+                types::MakeError(types::ErrorCategory::kNetwork, "db down"));
+        });
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_NE(failed.error().message.find("account fills"), std::string::npos);
+}
+
 TEST(Factory, ValidateForRunRefusesUnsafeLiveModes) {
     auto paper = config::BinanceUSConfiguration::Parse(WithTables(""), NoEnv());
     ASSERT_OK(paper);

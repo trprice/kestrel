@@ -55,14 +55,17 @@ class FakeDataSource : public data::DataSource {
     std::string_view Name() const override { return "fake"; }
 
     types::Result<std::vector<types::Bar>> GetBars(
-        const types::Symbol&, Timeframe, types::Timestamp start,
+        const types::Symbol&, Timeframe tf, types::Timestamp start,
         types::Timestamp end) override {
         if (fail_get_bars) {
             return types::MakeError(ErrorCategory::kNetwork, "down");
         }
         get_bars_ranges.emplace_back(start, end);
+        const auto by_tf = bars_by_timeframe.find(tf);
+        const auto& source =
+            by_tf != bars_by_timeframe.end() ? by_tf->second : history;
         std::vector<types::Bar> out;
-        for (const auto& bar : history) {
+        for (const auto& bar : source) {
             if (bar.open_time >= start && bar.open_time < end) {
                 out.push_back(bar);
             }
@@ -75,6 +78,9 @@ class FakeDataSource : public data::DataSource {
             return types::MakeError(ErrorCategory::kNetwork, "no quotes");
         }
         quote_callback = std::move(cb);
+        if (quote_on_subscribe) {
+            quote_callback(*quote_on_subscribe);
+        }
         return std::unique_ptr<data::Subscription>(new Sub(stops));
     }
     types::Result<std::unique_ptr<data::Subscription>> StreamBars(
@@ -108,6 +114,8 @@ class FakeDataSource : public data::DataSource {
     bool fail_stream_quotes = false;
     bool unknown_symbol = false;
     std::vector<types::Bar> history;
+    std::map<Timeframe, std::vector<types::Bar>> bars_by_timeframe;
+    std::optional<types::Quote> quote_on_subscribe;
     std::shared_ptr<const types::MarketHours> hours =
         types::MarketHours::AlwaysOpen();
     std::vector<std::pair<types::Timestamp, types::Timestamp>> get_bars_ranges;
@@ -1267,6 +1275,643 @@ TEST(EntriesToCancelTest, ReportsAHoldingLeftWithoutAClosingOrder) {
     EXPECT_EQ(cancel.unprotected, std::vector<types::Symbol>{kSymbol});
 }
 
+TEST(EntriesToCancelTest, SharedBaseAssetBalanceIsNotCountedTwiceAcrossPairs) {
+    const std::vector open = {
+        OpenOrder("stop-usd", Side::kSell, OrderType::kStop, "2", 0, "ZEC/USD"),
+        OpenOrder("stop-usdt", Side::kSell, OrderType::kStop, "2", 1,
+                  "ZEC/USDT"),
+    };
+    types::Balance zec{
+        "ZEC", kestrel::testing::D("2"), kestrel::testing::D("2"), {}};
+    const auto cancel = strategy::EntriesToCancel(
+        open, {"ZEC/USD", "ZEC/USDT"}, std::vector<types::Position>{},
+        std::vector{zec});
+    EXPECT_EQ(cancel.ids, (Ids{"stop-usdt"}));
+    EXPECT_TRUE(cancel.unprotected.empty());
+
+    // When only the second pair has the protective stop, neither pair is
+    // reported unprotected.
+    const std::vector second_only = {open[1]};
+    const auto kept = strategy::EntriesToCancel(
+        second_only, {"ZEC/USD", "ZEC/USDT"}, std::vector<types::Position>{},
+        std::vector{zec});
+    EXPECT_TRUE(kept.ids.empty());
+    EXPECT_TRUE(kept.unprotected.empty());
+}
+
+TEST_F(RunnerTest,
+       StartingFillsSeedTheRecorderNotTheGateAndDeduplicateBoundaryFills) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.risk = trading::RiskLimits{};
+    options.risk->max_position_notional = D("250");
+    options.risk->max_daily_loss = D("15");
+
+    // Stored history up to Hour(5): a closed +40 round trip (must not leak
+    // into realized P&L), plus 1 BTC @ 100 earlier and 1 BTC @ 100 right on
+    // the Hour(5) startup boundary.
+    types::Fill old_buy = FillAt("h-buy", 1);
+    old_buy.side = Side::kBuy;
+    old_buy.quantity = D("1");
+    old_buy.price = D("60");
+    types::Fill old_sell = FillAt("h-sell", 2);
+    old_sell.side = Side::kSell;
+    old_sell.quantity = D("1");
+    old_sell.price = D("100");
+    types::Fill open_buy = FillAt("h-open", 3);
+    open_buy.side = Side::kBuy;
+    open_buy.quantity = D("1");
+    open_buy.price = D("100");
+    types::Fill boundary = FillAt("h-boundary", 5);
+    boundary.side = Side::kBuy;
+    boundary.quantity = D("1");
+    boundary.price = D("100");
+
+    const std::vector<types::Fill> history = {
+        old_buy,
+        old_sell,
+        open_buy,
+        boundary,
+    };
+    options.starting_fills = [&](trading::TradingVenue&, const Clock& clock) {
+        EXPECT_EQ(clock(), Hour(5));
+        return types::Result<StartingFills>(StartingFills{clock(), history});
+    };
+    venue->balances = {types::Balance{"BTC", D("2"), D("2"), {}}};
+    // `boundary` at Hour(5) also comes back from GetFills(Hour(5)); it must
+    // not be delivered or counted a second time.
+    venue->fills = {boundary};
+
+    Build();
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->fills.empty());
+    EXPECT_TRUE(log->fills.empty());
+
+    auto gate = runner->RiskGate();
+    ASSERT_NE(gate, nullptr);
+    gate->NoteReferencePrice(kSymbol, D("100"));
+
+    // The gate limits only what the strategy holds: the starting 2 BTC do not
+    // count against max_position_notional (250), so +2 BTC @ 100 (200) is
+    // allowed, where counting them would make it 400.
+    types::OrderRequest buy_two;
+    buy_two.symbol = kSymbol;
+    buy_two.side = Side::kBuy;
+    buy_two.type = OrderType::kLimit;
+    buy_two.quantity = D("2");
+    buy_two.limit_price = D("100");
+    ASSERT_OK(gate->PlaceOrder(buy_two));
+
+    // Selling 1 BTC of the starting 2 BTC at 80 realizes -20 for the
+    // recorder against the 100 starting cost basis, but nothing for the
+    // gate, so max_daily_loss (15) is not tripped and buys go on.
+    types::Fill losing_sell = FillAt("in-run-sell", 5);
+    losing_sell.time += std::chrono::seconds(1);
+    losing_sell.side = Side::kSell;
+    losing_sell.quantity = D("1");
+    losing_sell.price = D("80");
+    venue->fills.push_back(losing_sell);
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_EQ(strategy->fills, (std::vector<std::string>{"in-run-sell"}));
+
+    types::OrderRequest buy_small = buy_two;
+    buy_small.quantity = D("0.1");
+    ASSERT_OK(gate->PlaceOrder(buy_small));
+
+    runner->End();
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.symbol, kSymbol);
+    EXPECT_EQ(row.quantity, D("1"));
+    EXPECT_EQ(row.average_price, D("100"));
+    EXPECT_EQ(row.realized, D("-20"));
+}
+
+TEST_F(RunnerTest,
+       StartingFillsStampSinceAfterSyncSoFillsDuringSyncAreNotDoubleCounted) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.risk = trading::RiskLimits{};
+    options.risk->max_daily_loss = D("15");
+
+    types::Timestamp now = Hour(5);
+    const types::Timestamp mid_sync = Hour(5) + std::chrono::milliseconds(200);
+    const types::Timestamp after_sync =
+        Hour(5) + std::chrono::milliseconds(300);
+
+    types::Fill open_buy = FillAt("h-open", 3);
+    open_buy.side = Side::kBuy;
+    open_buy.quantity = D("1");
+    open_buy.price = D("80");
+
+    // Lands while `starting_fills` is syncing (after Hour(5), before
+    // `after_sync`), plus a fill right at `after_sync` that GetFills(since)
+    // returns again on the first poll.
+    types::Fill mid_fill = FillAt("mid-sync", 5);
+    mid_fill.time = mid_sync;
+    mid_fill.side = Side::kBuy;
+    mid_fill.quantity = D("0.5");
+    mid_fill.price = D("120");
+
+    types::Fill end_sync_fill = FillAt("at-sync-end", 5);
+    end_sync_fill.time = after_sync;
+    end_sync_fill.side = Side::kBuy;
+    end_sync_fill.quantity = D("0.5");
+    end_sync_fill.price = D("120");
+
+    venue->fills = {open_buy};
+    venue->balances = {types::Balance{"BTC", D("1"), D("1"), {}}};
+    options.starting_fills = [&](trading::TradingVenue&, const Clock& clock) {
+        EXPECT_EQ(clock(), Hour(5));
+        venue->fills.push_back(mid_fill);
+        venue->fills.push_back(end_sync_fill);
+        venue->balances = {types::Balance{"BTC", D("2"), D("2"), {}}};
+        now = after_sync;
+        return types::Result<StartingFills>(
+            StartingFills{clock(), {open_buy, mid_fill, end_sync_fill}});
+    };
+
+    runner = std::make_unique<strategy::Runner>(
+        data, venue, std::move(strategy_owner), options, [&] { return now; });
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+
+    // Poll cursor started at `after_sync` (not Hour(5)), and neither sync-time
+    // fill was re-delivered or double-counted in the recorder.
+    EXPECT_EQ(venue->last_fills_since.load(), after_sync);
+    EXPECT_TRUE(strategy->fills.empty());
+    EXPECT_TRUE(log->fills.empty());
+
+    runner->End();
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.quantity, D("2"));
+    EXPECT_EQ(row.average_price, D("100"));  // (80 * 1 + 120 * 1) / 2
+    EXPECT_EQ(row.realized, D("0"));
+}
+
+// Collects what is logged while it lives.
+class LogCapture {
+   public:
+    LogCapture()
+        : mSink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
+        spdlog::default_logger()->sinks().push_back(mSink);
+    }
+    ~LogCapture() {
+        auto& sinks = spdlog::default_logger()->sinks();
+        sinks.erase(std::remove(sinks.begin(), sinks.end(), mSink),
+                    sinks.end());
+    }
+    bool Saw(const std::string& text) const {
+        for (const auto& line : mSink->last_formatted()) {
+            if (line.find(text) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+   private:
+    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> mSink;
+};
+
+TEST_F(RunnerTest, ValuesUnexplainedStartingBalanceAtWarmupReferencePrice) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    LogCapture captured;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.starting_fills = [](trading::TradingVenue&, const Clock& clock) {
+        return types::Result<StartingFills>(StartingFills{clock(), {}});
+    };
+    venue->balances = {types::Balance{"BTC", D("2"), D("2"), {}}};
+
+    Build();  // warmup loads BarAt(2..4), so newest close is 4
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(captured.Saw("BTC/USD"));
+
+    // Selling at the startup reference price (4) realizes zero phantom P&L.
+    types::Fill sell = FillAt("s1", 6);
+    sell.side = Side::kSell;
+    sell.quantity = D("1");
+    sell.price = D("4");
+    venue->fills = {sell};
+    EXPECT_TRUE(runner->Drain());
+    runner->End();
+
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.quantity, D("1"));
+    EXPECT_EQ(row.average_price, D("4"));
+    EXPECT_EQ(row.realized, D("0"));
+}
+
+TEST_F(RunnerTest,
+       AccountSymbolsShareWalletBalanceWithoutStealingOrWarningOnOtherBases) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    LogCapture warns;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.account_symbols = {"ZEC/USD", "ZEC/USDT", "BTC/USD"};
+
+    strategy->requirements.symbols = {"ZEC/USD"};
+    types::Fill usd_buy = FillAt("m-usd", 3);
+    usd_buy.symbol = "ZEC/USD";
+    usd_buy.side = Side::kBuy;
+    usd_buy.quantity = D("1");
+    usd_buy.price = D("100");
+    types::Fill usdt_buy = FillAt("m-usdt", 4);
+    usdt_buy.symbol = "ZEC/USDT";
+    usdt_buy.side = Side::kBuy;
+    usdt_buy.quantity = D("1");
+    usdt_buy.price = D("110");
+
+    options.starting_fills = [&](trading::TradingVenue&, const Clock& clock) {
+        return types::Result<StartingFills>(
+            StartingFills{clock(), {usd_buy, usdt_buy}});
+    };
+    venue->balances.push_back(types::Balance{"ZEC", D("2"), D("2"), {}});
+    venue->balances.push_back(types::Balance{"BTC", D("5"), D("5"), {}});
+
+    Build();
+    ASSERT_OK(runner->Begin());
+    runner->End();
+
+    EXPECT_FALSE(warns.Saw("starting cost basis"));
+    ASSERT_EQ(log->snapshots.size(), 1u);
+    ASSERT_EQ(log->snapshots[0].second.size(), 1u);
+    const auto& row = log->snapshots[0].second.at(0);
+    EXPECT_EQ(row.symbol, "ZEC/USD");
+    EXPECT_EQ(row.quantity, D("1"));
+    EXPECT_EQ(row.average_price, D("100"));
+}
+
+TEST_F(RunnerTest,
+       StartupReferencePriceFollowsFreshnessAndMarksTheRecorderOnlyWhenFresh) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    auto run_for_avg =
+        [&](std::function<void()> setup,
+            std::shared_ptr<kestrel::testing::FakeTradeLog>& log_out) {
+            data = std::make_shared<FakeDataSource>();
+            data->history = {BarAt(2), BarAt(3), BarAt(4)};
+            venue = std::make_shared<RecordingVenue>();
+            venue->balances = {types::Balance{"BTC", D("2"), D("2"), {}}};
+            log_out = std::make_shared<kestrel::testing::FakeTradeLog>();
+            options = strategy::RunnerOptions{};
+            options.trade_log = log_out;
+            options.pnl_interval = std::chrono::milliseconds(0);
+            options.starting_fills = [](trading::TradingVenue&,
+                                        const Clock& clock) {
+                return types::Result<StartingFills>(StartingFills{clock(), {}});
+            };
+            auto strat = std::make_unique<RecordingStrategy>();
+            strategy = strat.get();
+            strategy->requirements.symbols = {kSymbol};
+            strategy->requirements.bar_timeframes = {Timeframe::kH1};
+            strategy->requirements.warmup_bars = 3;
+            setup();
+            runner = std::make_unique<strategy::Runner>(
+                data, venue, std::move(strat), options, [] { return Hour(5); });
+            ASSERT_OK(runner->Begin());
+            runner->End();
+        };
+
+    // 1) Pending live quote (mid 11) beats fresh warmup bar (close 4).
+    {
+        std::shared_ptr<kestrel::testing::FakeTradeLog> log;
+        run_for_avg(
+            [&] {
+                options.risk = trading::RiskLimits{};
+                options.risk->max_order_notional = D("10");
+                options.risk->max_price_age = std::chrono::seconds(5);
+                strategy->requirements.quotes = true;
+                types::Quote q;
+                q.symbol = kSymbol;
+                q.bid = D("10");
+                q.ask = D("12");
+                data->quote_on_subscribe = q;
+            },
+            log);
+        ASSERT_EQ(log->snapshots.size(), 1u);
+        EXPECT_EQ(log->snapshots[0].second.at(0).average_price, D("11"));
+        EXPECT_EQ(log->snapshots[0].second.at(0).mark_price, D("11"));
+    }
+
+    // 2) Stale warmup bar (1d bar closing 24h ago, price 99) is skipped in
+    // favor of a fresh M1 bar (price 7).
+    {
+        std::shared_ptr<kestrel::testing::FakeTradeLog> log;
+        run_for_avg(
+            [&] {
+                strategy->requirements.bar_timeframes = {Timeframe::kD1};
+                strategy->requirements.warmup_bars = 1;
+                types::Bar stale_d1;
+                stale_d1.open_time = Hour(5) - std::chrono::hours(48);
+                stale_d1.open = stale_d1.high = stale_d1.low = stale_d1.close =
+                    D("99");
+                data->bars_by_timeframe[Timeframe::kD1] = {stale_d1};
+                types::Bar fresh_m1;
+                fresh_m1.open_time = Hour(5) - std::chrono::minutes(5);
+                fresh_m1.open = fresh_m1.high = fresh_m1.low = fresh_m1.close =
+                    D("7");
+                data->bars_by_timeframe[Timeframe::kM1] = {fresh_m1};
+            },
+            log);
+        ASSERT_EQ(log->snapshots.size(), 1u);
+        EXPECT_EQ(log->snapshots[0].second.at(0).average_price, D("7"));
+    }
+
+    // 3) Empty M1 falls through to H1 (price 8), and bar-derived marks do NOT
+    // stamp a fresh reference price onto the risk gate.
+    {
+        std::shared_ptr<kestrel::testing::FakeTradeLog> log;
+        run_for_avg(
+            [&] {
+                options.risk = trading::RiskLimits{};
+                options.risk->max_order_notional = D("100");
+                strategy->requirements.warmup_bars = 0;
+                data->bars_by_timeframe[Timeframe::kM1] = {};
+                types::Bar h1 = BarAt(4);
+                h1.close = D("8");
+                data->bars_by_timeframe[Timeframe::kH1] = {h1};
+            },
+            log);
+        ASSERT_EQ(log->snapshots.size(), 1u);
+        EXPECT_EQ(log->snapshots[0].second.at(0).average_price, D("8"));
+        types::OrderRequest mkt;
+        mkt.symbol = kSymbol;
+        mkt.side = Side::kBuy;
+        mkt.type = OrderType::kMarket;
+        mkt.quantity = D("1");
+        auto rejected = runner->RiskGate()->PlaceOrder(mkt);
+        ASSERT_FALSE(rejected.has_value());
+        EXPECT_NE(rejected.error().message.find("no current price"),
+                  std::string::npos);
+    }
+
+    // 5) An H1 close from 10 hours ago still values the excess (cost basis
+    // 6), but is too old to mark the recorder's P&L with, whether or not
+    // Warmup() loaded that bar.
+    for (std::size_t warmup : {0u, 1u}) {
+        std::shared_ptr<kestrel::testing::FakeTradeLog> log;
+        run_for_avg(
+            [&] {
+                strategy->requirements.warmup_bars = warmup;
+                data->history.clear();
+                data->bars_by_timeframe[Timeframe::kM1] = {};
+                types::Bar old_h1;
+                old_h1.open_time = Hour(5) - std::chrono::hours(10);
+                old_h1.open = old_h1.high = old_h1.low = old_h1.close = D("6");
+                data->bars_by_timeframe[Timeframe::kH1] = {old_h1};
+            },
+            log);
+        ASSERT_EQ(log->snapshots.size(), 1u) << warmup;
+        const auto& row = log->snapshots[0].second.at(0);
+        EXPECT_EQ(row.average_price, D("6")) << warmup;
+        EXPECT_FALSE(row.mark_price.has_value()) << warmup;
+        EXPECT_FALSE(row.unrealized.has_value()) << warmup;
+    }
+
+    // 4) With no quote, M1, or H1 mark at all, unpriced excess stays out of
+    // starting positions.
+    {
+        std::shared_ptr<kestrel::testing::FakeTradeLog> log;
+        run_for_avg(
+            [&] {
+                strategy->requirements.warmup_bars = 0;
+                data->history.clear();
+            },
+            log);
+        EXPECT_TRUE(log->snapshots.empty());
+    }
+}
+
+TEST_F(RunnerTest,
+       StartingFillsAndBalanceErrorsOnlyWarnAndSkipPaperAndGateOnlyRuns) {
+    using kestrel::testing::D;
+    using Clock = strategy::RunnerOptions::Clock;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    const auto make_runner = [&] {
+        auto strat = std::make_unique<RecordingStrategy>();
+        strat->requirements.symbols = {kSymbol};
+        strat->requirements.bar_timeframes = {Timeframe::kH1};
+        strat->requirements.warmup_bars = 3;
+        runner = std::make_unique<strategy::Runner>(
+            data, venue, std::move(strat), options, [] { return Hour(5); });
+    };
+
+    // PaperTradingVenue never calls starting_fills, even if set.
+    {
+        trading::PaperOptions paper_opts;
+        paper_opts.initial_balances = {{"USD", D("1000")}, {"BTC", D("1")}};
+        auto paper = std::make_shared<trading::PaperTradingVenue>(
+            data, paper_opts, [] { return Hour(5); });
+        bool called = false;
+        options.risk = trading::RiskLimits{};
+        options.risk->max_open_orders = 5;
+        options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+        options.starting_fills = [&](trading::TradingVenue&, const Clock& c) {
+            called = true;
+            return types::Result<StartingFills>(StartingFills{c(), {}});
+        };
+        auto strat = std::make_unique<RecordingStrategy>();
+        strat->requirements.symbols = {kSymbol};
+        strat->requirements.bar_timeframes = {Timeframe::kH1};
+        runner = std::make_unique<strategy::Runner>(
+            data, paper, std::move(strat), options, [] { return Hour(5); });
+        ASSERT_OK(runner->Begin());
+        EXPECT_FALSE(called);
+        runner->End();
+    }
+
+    // With the risk gate on but no recorder, starting_fills is never called
+    // (the gate counts only the run's own fills).
+    {
+        options = strategy::RunnerOptions{};
+        options.risk = trading::RiskLimits{};
+        options.risk->max_daily_loss = D("50");
+        bool called = false;
+        options.starting_fills = [&](trading::TradingVenue&, const Clock& c) {
+            called = true;
+            return types::Result<StartingFills>(StartingFills{c(), {}});
+        };
+        make_runner();
+        ASSERT_OK(runner->Begin());
+        EXPECT_FALSE(called);
+        runner->End();
+    }
+    // With the gate and a recorder, a starting_fills or GetBalances failure
+    // only warns: the starting cost basis is the recorder's alone.
+    {
+        LogCapture warns;
+        options = strategy::RunnerOptions{};
+        options.risk = trading::RiskLimits{};
+        options.risk->max_daily_loss = D("50");
+        options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+        options.starting_fills = [](trading::TradingVenue&, const Clock&) {
+            return types::Result<StartingFills>(
+                types::MakeError(ErrorCategory::kNetwork, "db down"));
+        };
+        make_runner();
+        ASSERT_OK(runner->Begin());
+        EXPECT_TRUE(warns.Saw("without stored account fills"));
+        runner->End();
+    }
+    {
+        LogCapture warns;
+        options = strategy::RunnerOptions{};
+        options.risk = trading::RiskLimits{};
+        options.risk->max_daily_loss = D("50");
+        options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+        options.starting_fills = [](trading::TradingVenue&, const Clock& c) {
+            return types::Result<StartingFills>(StartingFills{c(), {}});
+        };
+        venue->fail_balances = true;
+        make_runner();
+        ASSERT_OK(runner->Begin());
+        EXPECT_TRUE(warns.Saw("without the starting balances"));
+        runner->End();
+        venue->fail_balances = false;
+    }
+
+    // Recorder-only warns and continues on starting_fills or GetBalances
+    // failure.
+    {
+        LogCapture warns;
+        options = strategy::RunnerOptions{};
+        options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+        options.starting_fills = [](trading::TradingVenue&, const Clock&) {
+            return types::Result<StartingFills>(
+                types::MakeError(ErrorCategory::kNetwork, "db down"));
+        };
+        make_runner();
+        ASSERT_OK(runner->Begin());
+        EXPECT_TRUE(warns.Saw("without stored account fills"));
+        runner->End();
+    }
+    {
+        LogCapture warns;
+        options = strategy::RunnerOptions{};
+        options.trade_log = std::make_shared<kestrel::testing::FakeTradeLog>();
+        options.starting_fills = [](trading::TradingVenue&, const Clock& c) {
+            return types::Result<StartingFills>(StartingFills{c(), {}});
+        };
+        venue->fail_balances = true;
+        make_runner();
+        ASSERT_OK(runner->Begin());
+        EXPECT_TRUE(warns.Saw("without the starting balances"));
+        runner->End();
+        venue->fail_balances = false;
+    }
+}
+
+TEST_F(RunnerTest, APriorLossInTheHistoryNeitherBlocksTheGateNorIsRecorded) {
+    using kestrel::testing::D;
+    using StartingFills = strategy::RunnerOptions::StartingFills;
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.risk = trading::RiskLimits{};
+    options.risk->max_daily_loss = D("50");
+
+    // BUY 10 @ 80, SELL 10 @ 20 (flat at -600, past max_daily_loss), BUY 3 @
+    // 100, SELL 1 @ 110: 2 BTC @ 100 (an all-buy average would be 84.62).
+    const auto fill = [](const char* id, int hour, Side side,
+                         const char* quantity, const char* price) {
+        types::Fill f = FillAt(id, hour);
+        f.side = side;
+        f.quantity = D(quantity);
+        f.price = D(price);
+        return f;
+    };
+    const std::vector<types::Fill> history = {
+        fill("h1", 1, Side::kBuy, "10", "80"),
+        fill("h2", 2, Side::kSell, "10", "20"),
+        fill("h3", 3, Side::kBuy, "3", "100"),
+        fill("h4", 4, Side::kSell, "1", "110"),
+    };
+    options.starting_fills = [&](trading::TradingVenue&,
+                                 const strategy::RunnerOptions::Clock& clock) {
+        return types::Result<StartingFills>(StartingFills{clock(), history});
+    };
+    venue->balances = {types::Balance{"BTC", D("2"), D("2"), {}}};
+
+    Build();
+    ASSERT_OK(runner->Begin());
+    auto gate = runner->RiskGate();
+    ASSERT_NE(gate, nullptr);
+    gate->NoteReferencePrice(kSymbol, D("100"));
+    types::OrderRequest buy;
+    buy.symbol = kSymbol;
+    buy.side = Side::kBuy;
+    buy.type = OrderType::kLimit;
+    buy.quantity = D("0.1");
+    buy.limit_price = D("100");
+    ASSERT_OK(gate->PlaceOrder(buy));  // not blocked by the -590
+
+    // Selling 1 of the 2 @ 120 records +20 against the replayed 100.
+    venue->fills = {fill("in-run-sell", 6, Side::kSell, "1", "120")};
+    EXPECT_TRUE(runner->Drain());
+    runner->End();
+    ASSERT_FALSE(log->snapshots.empty());
+    const auto& row = log->snapshots.back().second.at(0);
+    EXPECT_EQ(row.quantity, D("1"));
+    EXPECT_EQ(row.average_price, D("100"));
+    EXPECT_EQ(row.realized, D("20"));
+}
+
+TEST_F(RunnerTest, CountsFillsFromAfterThePositionsWereRead) {
+    using kestrel::testing::D;
+    // A venue that reports positions (as Schwab does): a fill landing while
+    // they are read is already in them, so it is not polled as a new fill.
+    auto log = std::make_shared<kestrel::testing::FakeTradeLog>();
+    options.trade_log = log;
+    options.pnl_interval = std::chrono::milliseconds(0);
+    options.risk = trading::RiskLimits{};
+    options.risk->max_daily_loss = D("50");
+    auto now = std::make_shared<types::Timestamp>(Hour(5));
+    types::Fill during = FillAt("during-read", 5);
+    during.time += std::chrono::milliseconds(500);
+    during.side = Side::kBuy;
+    during.quantity = D("1");
+    during.price = D("100");
+    venue->fills = {during};
+    venue->positions = {types::Position{kSymbol, D("1"), D("100"), D("0")}};
+    venue->on_get_positions = [now] {
+        *now = Hour(5) + std::chrono::seconds(1);
+    };
+    auto strat = std::make_unique<RecordingStrategy>();
+    strategy = strat.get();
+    strategy->requirements.symbols = {kSymbol};
+    strategy->requirements.bar_timeframes = {Timeframe::kH1};
+    strategy->requirements.warmup_bars = 3;
+    runner = std::make_unique<strategy::Runner>(data, venue, std::move(strat),
+                                                options, [now] { return *now; });
+    ASSERT_OK(runner->Begin());
+    EXPECT_TRUE(runner->Drain());
+    EXPECT_TRUE(strategy->fills.empty());
+    EXPECT_TRUE(log->fills.empty());
+    runner->End();
+    ASSERT_FALSE(log->snapshots.empty());
+    EXPECT_EQ(log->snapshots.back().second.at(0).quantity, D("1"));
+}
+
 TEST_F(RunnerTest, LeavesOrdersOpenOnStopUnlessAsked) {
     Build();
     ASSERT_OK(runner->Begin());
@@ -1335,31 +1980,6 @@ class DailyCalendar : public types::TradingCalendar {
         return std::chrono::year_month_day{
             std::chrono::floor<std::chrono::days>(t)};
     }
-};
-
-// Collects what is logged while it lives.
-class LogCapture {
-   public:
-    LogCapture()
-        : mSink(std::make_shared<spdlog::sinks::ringbuffer_sink_mt>(256)) {
-        spdlog::default_logger()->sinks().push_back(mSink);
-    }
-    ~LogCapture() {
-        auto& sinks = spdlog::default_logger()->sinks();
-        sinks.erase(std::remove(sinks.begin(), sinks.end(), mSink),
-                    sinks.end());
-    }
-    bool Saw(const std::string& text) const {
-        for (const auto& line : mSink->last_formatted()) {
-            if (line.find(text) != std::string::npos) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-   private:
-    std::shared_ptr<spdlog::sinks::ringbuffer_sink_mt> mSink;
 };
 
 // A daily bar that has not come half an hour (late_bar_error) after its

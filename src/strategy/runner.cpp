@@ -15,6 +15,15 @@ using types::MakeError;
 
 namespace {
 
+// How recent a bar's close must be to mark the recorder's P&L at startup (and
+// to beat an M1 lookup in StartupReferencePrice).
+constexpr auto kFreshBarAge = std::chrono::minutes(15);
+
+types::Timestamp BarCloseTime(const types::Bar& bar, types::Timeframe tf) {
+    return bar.open_time +
+           types::FixedDuration(tf).value_or(std::chrono::seconds::zero());
+}
+
 // What a market order should be valued at: the midpoint when both sides of the
 // book are known, otherwise whichever price the quote has.
 std::optional<Decimal> QuotePrice(const types::Quote& quote) {
@@ -405,7 +414,9 @@ types::Result<void> Runner::Begin() {
     // recorder: with only bar closes, a paper order would have no book to
     // trade against, and a loss limit and the recorded marks would be up to a
     // bar behind the market.
-    if (requirements.quotes || mPaper || mGate || mRecorder) {
+    const bool quote_stream =
+        requirements.quotes || mPaper || mGate || mRecorder;
+    if (quote_stream) {
         // Before the stream's thread starts, which notes each quote as it
         // arrives (PushQuote), so a strategy slow to take them from the
         // queue does not look like a stream down. Checked only in Run().
@@ -449,30 +460,41 @@ types::Result<void> Runner::Begin() {
     }
 
     auto ready = Warmup(requirements);
-    if (ready && mGate) {
-        // Losses are counted from here; fails closed if positions can't be
-        // read.
-        ready = mGate->ResetDailyBaseline();
-    }
     if (!ready) {
         mSubscriptions.clear();
         return ready;
     }
 
-    mRunStart = mFillCursor = mClock();
+    auto basis = LoadStartingBasis(quote_stream);
+    if (!basis) {
+        mSubscriptions.clear();
+        return std::unexpected(basis.error());
+    }
+    if (mGate) {
+        // Losses are counted from here, from the positions the venue reports
+        // (none on spot): the gate limits only what the strategy holds, never
+        // coins the account had before the run. Boundary fill IDs already in
+        // the stored history are skipped.
+        mGate->ResetDailyBaseline(basis->venue_positions, basis->since,
+                                  basis->seen_fill_ids);
+    }
+    if (mRecorder) {
+        for (const auto& [sym, mark] : basis->marks) {
+            if (mark.fresh) {
+                mRecorder->NotePrice(sym, mark.price);
+            }
+        }
+    }
+
+    mRunStart = mFillCursor = basis->since;
     mPublishedCursor = mFillCursor.time_since_epoch().count();
     mSeenFills.clear();
+    for (const std::string& id : basis->seen_fill_ids) {
+        mSeenFills.emplace(id, basis->since);
+    }
     SubscribeExecutions();
     if (mRecorder) {
-        // The venue's holdings are the cost basis. Without them a sale of
-        // what was held at the start would realize nothing.
-        auto positions = mVenue->GetPositions();
-        if (!positions) {
-            mLog.Warn("recording P&L without the starting positions: {}",
-                      positions.error().ToString());
-        }
-        mRecorder->Start(
-            positions ? *positions : std::vector<types::Position>{}, mClock());
+        mRecorder->Start(basis->positions, mClock());
     }
     mBegun = true;
     Guarded("OnStart", [this] { mStrategy->OnStart(*this); });
@@ -711,6 +733,28 @@ EntryCancels EntriesToCancel(
     const std::optional<std::vector<types::Position>>& positions,
     const std::optional<std::vector<types::Balance>>& balances) {
     EntryCancels result;
+    std::map<std::string, Decimal> base_remaining;
+    if (positions && balances) {
+        for (const auto& balance : *balances) {
+            if (balance.total.Sign() > 0) {
+                base_remaining[balance.asset] += balance.total;
+            }
+        }
+        for (const auto& position : *positions) {
+            if (position.quantity.Sign() > 0) {
+                if (const auto parts = types::SplitSymbol(position.symbol)) {
+                    if (const auto it = base_remaining.find(parts->base);
+                        it != base_remaining.end()) {
+                        it->second =
+                            std::max(Decimal(), it->second - position.quantity);
+                    }
+                }
+            }
+        }
+    }
+    std::vector<std::pair<std::string, types::Symbol>> balance_bases;
+    std::set<std::string> seen_bases;
+    std::map<std::string, Decimal> kept_for_base;
     std::vector<types::Symbol> seen;
     for (const types::Symbol& symbol : symbols) {
         if (std::ranges::find(seen, symbol) != seen.end()) {
@@ -723,8 +767,10 @@ EntryCancels EntriesToCancel(
                 orders.push_back(&order);
             }
         }
-        // Held: the venue's position, or else the base asset held.
+        // Held: the venue's position, or else the remaining base asset held.
         std::optional<Decimal> held;
+        bool from_balance = false;
+        std::string base_asset;
         if (positions && balances) {
             held = Decimal();
             bool found = false;
@@ -736,10 +782,14 @@ EntryCancels EntriesToCancel(
             }
             if (!found) {
                 if (const auto parts = types::SplitSymbol(symbol)) {
-                    for (const auto& balance : *balances) {
-                        if (balance.asset == parts->base) {
-                            held = balance.total;
-                        }
+                    base_asset = parts->base;
+                    from_balance = true;
+                    if (const auto it = base_remaining.find(base_asset);
+                        it != base_remaining.end()) {
+                        held = it->second;
+                    }
+                    if (seen_bases.insert(base_asset).second) {
+                        balance_bases.emplace_back(base_asset, symbol);
                     }
                 } else {
                     held.reset();  // unknown, not flat
@@ -776,8 +826,19 @@ EntryCancels EntriesToCancel(
                 result.ids.push_back(order->order_id);
             }
         }
-        if (held && held->Sign() != 0 && !closing) {
+        if (from_balance && held && held->Sign() > 0) {
+            const Decimal kept = *held - room;
+            kept_for_base[base_asset] += kept;
+            base_remaining[base_asset] =
+                std::max(Decimal(), base_remaining[base_asset] - kept);
+        }
+        if (!from_balance && held && held->Sign() != 0 && !closing) {
             result.unprotected.push_back(symbol);
+        }
+    }
+    for (const auto& [base, first_symbol] : balance_bases) {
+        if (base_remaining[base].Sign() > 0 && kept_for_base[base].IsZero()) {
+            result.unprotected.push_back(first_symbol);
         }
     }
     return result;
@@ -1055,13 +1116,194 @@ types::Result<void> Runner::Warmup(const Requirements& requirements) {
                 if (mGate) {
                     mGate->NoteReferencePrice(symbol, window.back().close);
                 }
-                if (mRecorder) {
+                if (mRecorder && BarCloseTime(window.back(), timeframe) >=
+                                     now - kFreshBarAge) {
                     mRecorder->NotePrice(symbol, window.back().close);
                 }
             }
         }
     }
     return {};
+}
+
+types::Result<Runner::StartingBasis> Runner::LoadStartingBasis(
+    bool quote_stream) {
+    StartingBasis basis;
+    basis.since = mClock();
+    if (!mGate && !mRecorder) {
+        return basis;
+    }
+    auto positions = mVenue->GetPositions();
+    if (!positions) {
+        if (mGate) {
+            // Fails closed: the gate's limits need the positions.
+            return std::unexpected(positions.error());
+        }
+        mLog.Warn("recording P&L without the starting positions: {}",
+                  positions.error().ToString());
+        return basis;
+    }
+    // Counted from after the positions were read: a fill landing during the
+    // read is in them and must not be polled again (no strategy order is
+    // open yet, so nothing of the run's own can fill in the gap).
+    basis.since = mClock();
+    basis.venue_positions = *positions;
+    basis.positions = std::move(*positions);
+    // The reconciled cost basis is for the recorder only, so nothing below
+    // can stop the run: a failure records P&L from no starting holdings.
+    if (!mRecorder || !basis.positions.empty() || mPaper ||
+        !mOptions.starting_fills) {
+        return basis;
+    }
+    // `starting_fills` stamps `since` after its sync returns, so a fill the
+    // sync fetched is in the starting history (and `seen_fill_ids`) and not
+    // polled again. A fill after the sync's fetch but before `since` is in
+    // neither the history nor the polls, only in GetBalances(): it is valued
+    // as excess at the startup price, never counted twice. CancelAll() above
+    // cleared open orders on `mSymbols`, so any such fill is from outside the
+    // run; one landing during the GetBalances() round trip after `since`
+    // could still appear in both the wallet balance and GetFills(since).
+    auto starting = mOptions.starting_fills(*mVenue, mClock);
+    if (!starting) {
+        basis.since = mClock();
+        mLog.Warn("recording P&L without stored account fills: {}",
+                  starting.error().ToString());
+        return basis;
+    }
+    basis.since = starting->since;
+    const types::Timestamp keep = basis.since - std::chrono::hours(2);
+    for (const types::Fill& fill : starting->fills) {
+        if (fill.time >= keep && !fill.fill_id.empty()) {
+            basis.seen_fill_ids.push_back(fill.fill_id);
+        }
+    }
+    auto balances = mVenue->GetBalances();
+    if (!balances) {
+        mLog.Warn("recording P&L without the starting balances: {}",
+                  balances.error().ToString());
+        return basis;
+    }
+    std::set<types::Symbol> run_symbols;
+    std::set<std::string> run_bases;
+    std::vector<types::Symbol> reconcile_symbols;
+    for (const auto& raw : mSymbols) {
+        const types::Symbol sym = types::NormalizeSymbol(raw).value_or(raw);
+        if (run_symbols.insert(sym).second) {
+            reconcile_symbols.push_back(sym);
+            if (const auto parts = types::SplitSymbol(sym)) {
+                run_bases.insert(parts->base);
+            }
+        }
+    }
+    std::set<types::Symbol> seen_reconcile = run_symbols;
+    for (const auto& raw : mOptions.account_symbols) {
+        const types::Symbol sym = types::NormalizeSymbol(raw).value_or(raw);
+        const auto parts = types::SplitSymbol(sym);
+        if (parts && run_bases.contains(parts->base) &&
+            seen_reconcile.insert(sym).second) {
+            reconcile_symbols.push_back(sym);
+        }
+    }
+    std::map<types::Symbol, std::optional<StartupMark>> cached_marks;
+    auto reconciled = trading::ReconcileStartingPositions(
+        reconcile_symbols, starting->fills, *balances,
+        [&](const types::Symbol& sym) -> std::optional<Decimal> {
+            if (!run_symbols.contains(sym)) {
+                return std::nullopt;
+            }
+            auto [it, inserted] = cached_marks.try_emplace(sym);
+            if (inserted) {
+                it->second =
+                    StartupReferencePrice(sym, basis.since, quote_stream);
+                if (it->second) {
+                    basis.marks.emplace_back(sym, *it->second);
+                }
+            }
+            return it->second ? std::optional<Decimal>(it->second->price)
+                              : std::nullopt;
+        });
+    basis.positions.clear();
+    for (auto& pos : reconciled) {
+        if (run_symbols.contains(pos.symbol)) {
+            basis.positions.push_back(std::move(pos));
+        }
+    }
+    return basis;
+}
+
+std::optional<Runner::StartupMark> Runner::StartupReferencePrice(
+    const types::Symbol& symbol, types::Timestamp now, bool quote_stream) {
+    const auto pending_quote_price = [&]() -> std::optional<Decimal> {
+        std::lock_guard lock(mMutex);
+        const auto it = mPendingQuotes.find(symbol);
+        if (it == mPendingQuotes.end()) {
+            return std::nullopt;
+        }
+        const auto price = QuotePrice(it->second);
+        return price && price->Sign() > 0 ? price : std::nullopt;
+    };
+    if (const auto price = pending_quote_price()) {
+        return StartupMark{*price, true};
+    }
+    const auto newest_close =
+        [&](const std::vector<types::Bar>& bars,
+            types::Timeframe timeframe) -> std::optional<StartupMark> {
+        if (bars.empty() || bars.back().close.Sign() <= 0) {
+            return std::nullopt;
+        }
+        const bool fresh =
+            BarCloseTime(bars.back(), timeframe) >= now - kFreshBarAge;
+        return StartupMark{bars.back().close, fresh};
+    };
+
+    std::optional<std::pair<types::Timestamp, Decimal>> newest_bar;
+    for (const auto& [series, window] : mBars) {
+        if (series.first != symbol || window.empty() ||
+            window.back().close.Sign() <= 0) {
+            continue;
+        }
+        const auto close_time = BarCloseTime(window.back(), series.second);
+        if (!newest_bar || close_time >= newest_bar->first) {
+            newest_bar.emplace(close_time, window.back().close);
+        }
+    }
+    if (newest_bar && newest_bar->first >= now - kFreshBarAge) {
+        return StartupMark{newest_bar->second, true};
+    }
+
+    if (auto bars = mData->GetBars(symbol, types::Timeframe::kM1,
+                                   now - kFreshBarAge, now)) {
+        if (auto mark = newest_close(*bars, types::Timeframe::kM1)) {
+            return mark;
+        }
+    }
+
+    if (quote_stream) {
+        std::unique_lock lock(mMutex);
+        mWake.wait_for(lock, std::chrono::milliseconds(200), [&] {
+            const auto it = mPendingQuotes.find(symbol);
+            if (it == mPendingQuotes.end()) {
+                return false;
+            }
+            const auto p = QuotePrice(it->second);
+            return p && p->Sign() > 0;
+        });
+        if (const auto it = mPendingQuotes.find(symbol);
+            it != mPendingQuotes.end()) {
+            if (const auto price = QuotePrice(it->second);
+                price && price->Sign() > 0) {
+                return StartupMark{*price, true};
+            }
+        }
+    }
+
+    // Up to a day old: good enough for a cost basis, but not fresh enough
+    // (unless it closed in the last 15 minutes) to mark the recorder with.
+    if (auto bars = mData->GetBars(symbol, types::Timeframe::kH1,
+                                   now - std::chrono::hours(24), now)) {
+        return newest_close(*bars, types::Timeframe::kH1);
+    }
+    return std::nullopt;
 }
 
 void Runner::HandleBar(const BarEvent& event) {

@@ -1,7 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <map>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -68,5 +71,38 @@ class PnlTracker {
     bool mShorts = false;
     std::set<std::string> mOtherFeeAssets;  // logged once each
 };
+
+// Works out a live spot account's starting holdings and average-cost basis for
+// `symbols` from the venue's stored `fills` (replayed oldest first by
+// (time, length(fill_id), fill_id) through PnlTracker, with historical realized
+// P&L zeroed) reconciled against the account's `balances` by base asset. Used
+// for the recorder's P&L only; the risk gate never counts these holdings.
+//   - A fill quoted in one of the symbols' base assets (a ZEC/BTC buy spends
+//     BTC) takes the coins spent off that asset's replayed holdings at their
+//     average cost; coins received that way, or bought on pairs outside
+//     `symbols` (whose prices are in another quote currency), have no cost
+//     basis in `symbols`' quote currency and are reconciled as excess below.
+//   - wallet == replayed across `symbols`: keeps each symbol's replayed
+//     quantity and average price;
+//   - wallet > replayed across `symbols` (a transfer in, buys before the first
+//     sync, or coins from pairs outside `symbols`): values the excess at
+//     `reference_price(symbol)`, blends it into the symbol's quantity and
+//     average price, and logs a warning (if no symbol for that base asset has
+//     a positive reference price, the unpriced excess is left out of the
+//     starting positions with a warning, so selling it realizes nothing rather
+//     than a phantom gain);
+//   - wallet < replayed across `symbols` (a withdrawal, or an unsynced sale):
+//     clamps `symbols` in order down to the wallet balance while keeping each
+//     symbol's average price (zero when clamped to zero), and logs a warning.
+// A difference worth less than 1 in the quote currency (exchange dust) is
+// logged at info instead of as a warning; the values are the same.
+// Pairs in `symbols` that share a base asset (e.g. ZEC/USD and ZEC/USDT) share
+// one wallet balance, so it is never counted twice or warned about when their
+// replayed holdings add up to it.
+std::vector<types::Position> ReconcileStartingPositions(
+    std::span<const types::Symbol> symbols, std::span<const types::Fill> fills,
+    std::span<const types::Balance> balances,
+    const std::function<std::optional<types::Decimal>(const types::Symbol&)>&
+        reference_price = {});
 
 }  // namespace kestrel::trading

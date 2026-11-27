@@ -134,27 +134,44 @@ void RiskGatedVenue::SetSymbolInfo(
     mSymbolInfo = std::move(info);
 }
 
-types::Result<void> RiskGatedVenue::StartLossCount() {
-    auto positions = mVenue->GetPositions();
-    if (!positions) {
-        return std::unexpected(positions.error());
-    }
-    const types::Timestamp now = mClock();
-    mPnl.Reset(*positions);
-    mDay = DayOf(now);
-    mFillCursor = now;
+void RiskGatedVenue::ResetBaseline(
+    const std::vector<types::Position>& positions, types::Timestamp since,
+    std::span<const std::string> seen_fill_ids) {
+    mPnl.Reset(positions);
+    mDay = DayOf(since);
+    mFillCursor = since;
     mSeenFills.clear();
+    for (const std::string& id : seen_fill_ids) {
+        if (!id.empty()) {
+            mSeenFills.emplace(id, since);
+        }
+    }
     mConsecutiveLosses = 0;
     mTotalRealized = Decimal();
     mPeakEquity = Decimal();
     mDrawdownNoticed = false;
     mCounting = true;
+}
+
+types::Result<void> RiskGatedVenue::StartLossCount() {
+    auto positions = mVenue->GetPositions();
+    if (!positions) {
+        return std::unexpected(positions.error());
+    }
+    ResetBaseline(*positions, mClock(), {});
     return {};
 }
 
 types::Result<void> RiskGatedVenue::ResetDailyBaseline() {
     std::lock_guard lock(mMutex);
     return StartLossCount();
+}
+
+void RiskGatedVenue::ResetDailyBaseline(
+    const std::vector<types::Position>& positions, types::Timestamp since,
+    std::span<const std::string> seen_fill_ids) {
+    std::lock_guard lock(mMutex);
+    ResetBaseline(positions, since, seen_fill_ids);
 }
 
 types::Result<std::vector<std::string>> RiskGatedVenue::Halt(

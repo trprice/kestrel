@@ -130,6 +130,9 @@ class RecordingVenue : public trading::TradingVenue {
         return out;
     }
     types::Result<std::vector<types::Position>> GetPositions() override {
+        if (on_get_positions) {
+            on_get_positions();
+        }
         if (fail_reads) {
             return types::MakeError(types::ErrorCategory::kNetwork, "down");
         }
@@ -170,6 +173,8 @@ class RecordingVenue : public trading::TradingVenue {
     bool fail_open_orders = false;
     bool fail_fills = false;
     bool fail_balances = false;
+    // Called at the start of each GetPositions (to move a test clock on).
+    std::function<void()> on_get_positions;
     bool fail_cancel_all = false;
     std::function<void()> before_get_fills;      // e.g. to hold a poll
     std::vector<std::string> cancel_all_result;  // returned once

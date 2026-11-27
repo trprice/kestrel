@@ -23,6 +23,12 @@ constexpr std::chrono::minutes kHistory{15};
 constexpr std::chrono::seconds kStateSaveInterval{60};
 // After a failed save, the next attempt waits this long.
 constexpr std::chrono::seconds kStateRetryInterval{10};
+// After a rejected or failed quote placement (other than kWouldTake), that
+// level backs off starting here and doubling on consecutive failures up to
+// kMaxOrderRetryInterval (or until a fill lands), so a persistent risk or
+// balance rejection cannot drain the venue's rate limit.
+constexpr std::chrono::seconds kOrderRetryInterval{10};
+constexpr std::chrono::minutes kMaxOrderRetryInterval{5};
 // How long a reported fill may go without its OnFill before it is logged.
 constexpr std::chrono::seconds kUnconfirmedWarning{30};
 // An unconfirmed fill is checked with the venue after this long, and again
@@ -927,7 +933,7 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
         }
         replaced = ", replaces " + old_id + " @ " + old_price + ", " + why;
     }
-    if (!wanted) {
+    if (!wanted || context.Now() < quote.retry_at) {
         return;
     }
 
@@ -947,7 +953,18 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                             price->ToString(), ack.error().ToString());
         return;
     }
+    // Waits before this level is placed again, doubling on each failure in a
+    // row.
+    const auto back_off = [&] {
+        quote.retry_delay =
+            quote.retry_delay > std::chrono::milliseconds::zero()
+                ? std::min<std::chrono::milliseconds>(quote.retry_delay * 2,
+                                                      kMaxOrderRetryInterval)
+                : std::chrono::milliseconds(kOrderRetryInterval);
+        quote.retry_at = context.Now() + quote.retry_delay;
+    };
     if (!ack) {
+        back_off();
         context.Log().Warn("{} {} @ {} failed: {}", types::ToString(side),
                            size.ToString(), price->ToString(),
                            ack.error().ToString());
@@ -960,7 +977,12 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
                            types::ToString(side), size.ToString(),
                            price->ToString(), ack->order_id, replaced,
                            types::ToString(ack->state));
-        if (ack->state == types::OrderState::kFilled) {
+        if (ack->state != types::OrderState::kFilled) {
+            // Refused at once (rejected, or cancelled or expired on
+            // arrival): as likely to happen again as a failed placement.
+            back_off();
+        } else {
+            quote = Resting();
             ExpectFills(ack->order_id, side, size, Decimal(), context.Now(),
                         *price);
             if (top) {
@@ -969,8 +991,8 @@ void MarketMaker::Manage(Context& context, Resting& quote, Side side,
         }
         return;
     }
-    quote = Resting{ack->order_id, side,          *price, size,
-                    Decimal(),     context.Now(), false,  {}};
+    quote = Resting{ack->order_id, side,  *price, size, Decimal(),
+                    context.Now(), false, {},     {},   {}};
     if (top) {
         (side == Side::kBuy ? mLastBidPrice : mLastAskPrice) = *price;
     }
@@ -1080,6 +1102,8 @@ void MarketMaker::ApplyFill(Context& context, const types::Fill& fill) {
     }
     for (auto* side : {&mBids, &mAsks}) {
         for (Resting& quote : *side) {
+            quote.retry_at = {};
+            quote.retry_delay = std::chrono::milliseconds::zero();
             if (!quote.order_id.empty() && quote.order_id == fill.order_id) {
                 quote.filled += fill.quantity;
                 if (quote.filled >= quote.quantity) {

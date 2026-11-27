@@ -105,6 +105,19 @@ using StateStoreFactory =
 types::Result<std::shared_ptr<strategy::StateStore>> OpenStateStore(
     const config::Configuration& configuration, const std::string& venue);
 
+// Where a live spot run with a recorder reads the venue's trade history
+// (account_fills) to work out the starting holdings' cost basis for its P&L.
+// The default, OpenAccountFills, connects to the [database] and applies the
+// migrations; its loader syncs account_fills from the venue it is handed and
+// then loads that venue's rows (db::SyncAndLoadStartingFills). It fails with
+// kNotFound without a [database], in which case CreateRunner reconciles the
+// wallet balances against an empty history instead of refusing the run.
+using AccountFillsFactory =
+    std::function<types::Result<strategy::RunnerOptions::StartingFillsLoader>(
+        const config::Configuration&, const std::string& venue)>;
+types::Result<strategy::RunnerOptions::StartingFillsLoader> OpenAccountFills(
+    const config::Configuration& configuration, const std::string& venue);
+
 // Builds everything `kestrel_app run` needs, ready for Runner::Run(): checks
 // the configuration may trade (ValidateForRun), resolves the strategy's risk
 // limits, builds the strategy, the provider connection (CreateComponents) and
@@ -123,6 +136,7 @@ types::Result<std::unique_ptr<strategy::Runner>> CreateRunner(
     const config::Configuration& configuration,
     const ComponentsFactory& make_components = CreateComponents,
     const TradeLogFactory& make_log = OpenTradeLog,
-    const StateStoreFactory& make_state = OpenStateStore);
+    const StateStoreFactory& make_state = OpenStateStore,
+    const AccountFillsFactory& make_account_fills = OpenAccountFills);
 
 }  // namespace kestrel

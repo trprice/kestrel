@@ -1122,6 +1122,80 @@ TEST(MarketMakerTest, QuotesPostOnlyWhenAskedAndRetriesARefusal) {
     EXPECT_TRUE(m.Orders()[1].post_only);
 }
 
+TEST(MarketMakerTest, ARejectedPlacementPausesRetriesUntilTheIntervalOrAFill) {
+    Maker m("1");
+    m.context.venue.reject_orders = true;
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 2);
+    EXPECT_TRUE(m.Orders().empty());
+
+    // Subsequent quotes within 10 s do not hammer PlaceOrder again.
+    m.context.now += std::chrono::seconds(9);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 2);
+
+    // At 10 s, a second failure doubles the backoff to 20 s.
+    m.context.now += std::chrono::seconds(1);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 4);
+
+    m.context.venue.reject_orders = false;
+    m.context.now += std::chrono::seconds(19);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 4);
+
+    // At 20 s, both sides retry, succeed, and reset the backoff to 10 s.
+    m.context.now += std::chrono::seconds(1);
+    m.Quote("99.99", "100.01");
+    ASSERT_EQ(m.Orders().size(), 2u);
+
+    m.strategy.OnOrderUpdate(m.context,
+                             StatusOf("order-1", OrderState::kCancelled));
+    m.context.venue.reject_orders = true;
+    m.Quote("99.99", "100.01");  // fails once -> 10 s backoff, not 40 s
+    const int after_cancel = m.context.venue.attempts;
+    m.context.venue.reject_orders = false;
+    m.context.now += std::chrono::seconds(10);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, after_cancel + 1);
+    EXPECT_EQ(m.Orders().size(), 3u);
+
+    // A fill clears both retry_at and the doubled backoff immediately.
+    Maker on_fill("1");
+    on_fill.context.venue.reject_orders = true;
+    on_fill.Quote("99.99", "100.01");  // 10 s backoff
+    on_fill.context.now += std::chrono::seconds(10);
+    on_fill.Quote("99.99", "100.01");  // 20 s backoff
+    EXPECT_EQ(on_fill.context.venue.attempts, 4);
+    on_fill.context.now += std::chrono::seconds(1);
+    on_fill.strategy.OnFill(on_fill.context, FillOf(Side::kSell, "0.5"));
+    on_fill.Quote("99.99", "100.01");  // tries now -> 10 s backoff, not 40 s
+    EXPECT_EQ(on_fill.context.venue.attempts, 6);
+    on_fill.context.venue.reject_orders = false;
+    on_fill.context.now += std::chrono::seconds(10);
+    on_fill.Quote("99.99", "100.01");
+    EXPECT_EQ(on_fill.Orders().size(), 2u);
+}
+
+TEST(MarketMakerTest, APlacementRefusedAtOnceBacksOffLikeAFailedOne) {
+    Maker m("1");
+    m.context.venue.ack_state = OrderState::kRejected;  // refused on arrival
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 2);
+    EXPECT_EQ(m.Orders().size(), 2u);  // sent, then refused
+
+    // Within 10 s, no new placements.
+    m.context.now += std::chrono::seconds(9);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 2);
+
+    // At 10 s both sides try again.
+    m.context.venue.ack_state = OrderState::kNew;
+    m.context.now += std::chrono::seconds(1);
+    m.Quote("99.99", "100.01");
+    EXPECT_EQ(m.context.venue.attempts, 4);
+}
+
 TEST(MarketMakerTest, QuotesAgainAfterARestingQuoteIsRejectedOrExpires) {
     Maker m;
     m.Quote("99.99", "100.01");

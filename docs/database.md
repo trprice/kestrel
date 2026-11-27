@@ -86,7 +86,7 @@ FROM show_chunks('quotes', older_than => INTERVAL '2 days') c;
 | `bars` | `bars --store`, `stream-bars --store`, `databento --store` (OHLCV schemas and rollups), and `backtest` (the bars it had to fetch) | hypertable keyed by venue, symbol, timeframe, open_time |
 | `quotes` | `stream --store`, `databento --store` (`bbo-1s`, `bbo-1m`, `tbbo`, `mbp-1`) | hypertable chunked per day: one row per delivered quote |
 | `runs`, `fills`, `pnl_snapshots`, `pnl_totals`, `venue_latency` | `run` with `[recording]` | one run's record; see below |
-| `account_fills` | `account --store` | the account's whole trade history; see below |
+| `account_fills` | `account --store`, and live spot `run` with `[recording]` (synced, then read, at startup) | the account's whole trade history; see below |
 | `strategy_state` | `run`, for a strategy that keeps state | one row per key (provider, mode, strategy and symbol, e.g. `binanceus/live/market_maker/ZEC/USDT`): the strategy's saved state as JSON, and when it was saved. `DELETE` a row, or set the strategy's `reset_state`, to start it afresh |
 | `market_trades` | `trades --store`, `databento --store` (`trades`) | hypertable chunked per week: every public trade on the venue, keyed by venue, symbol, trade ID; see below |
 | `databento_imports` | `databento --store` over HTTP | the import ledger: one row per finished slice, keyed by venue, dataset, symbol, target (the schema, or `rollup:` and a timeframe) and the slice's start and end; a resumed import skips what it records. Delete its rows along with the bars, quotes or trades they cover, or the import will not fetch them again (see [venues/databento.md](venues/databento.md)) |
@@ -186,8 +186,13 @@ ORDER BY snapshot_time DESC LIMIT 10;
 ```
 
 P&L is the same average-cost figure the risk gate uses, realized net of fees,
-starting from the positions the venue reported at startup; the mark is the
-last quote mid or bar close (`run` streams quotes for the marks even when the
+starting from the positions the venue reported at startup (or, on a live spot
+venue, from `account_fills`, synced from the venue first, replayed for the
+run's coins and reconciled against the wallet's balances: unexplained excess
+coins are valued at the startup market price, or left out of the basis without
+one, and deficits are clamped to the wallet balance). The risk gate does not
+use this basis; it limits only what fills during the run. The mark is the last
+quote mid or bar close (`run` streams quotes for the marks even when the
 strategy takes only bars). A failed write is logged and retried, never fatal
 to the run; if the database cannot be reached at startup, `run` refuses to
 start.

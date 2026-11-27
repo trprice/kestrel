@@ -112,17 +112,43 @@ struct RunnerOptions {
     // name is empty, the runner sets it to Strategy::Name(); when the strategy
     // trades one symbol and `symbol` is not set, Begin() adds symbol=<symbol>.
     LogContext log;
+    // Live spot runs with a recorder only (where GetPositions returns
+    // nothing): syncs the venue's account_fills through `venue`, stamps
+    // `since` from `clock` once the sync returns, and loads the rows with
+    // fill_time <= since, so Begin() can work out the starting holdings' cost
+    // basis against GetBalances() for the recorder's P&L without counting a
+    // fill twice (see db::SyncAndLoadStartingFills). The risk gate never
+    // sees these holdings: it counts only what fills during the run (see
+    // RiskGatedVenue). An empty function leaves GetPositions as the only
+    // source of starting positions; one that returns an empty `fills` vector
+    // (when no [database] is configured) still reconciles the live wallet
+    // balances against an empty fill history.
+    using StartingFills = types::StartingFills;
+    using Clock = std::function<types::Timestamp()>;
+    using StartingFillsLoader = std::function<types::Result<StartingFills>(
+        trading::TradingVenue& venue, const Clock& clock)>;
+    StartingFillsLoader starting_fills;
+    // Configured universe symbols ([general] symbols) when broader than the
+    // strategy's own symbols: LoadStartingBasis reconciles shared base assets
+    // across them so coins bought on another configured pair (e.g. ZEC/USDT
+    // beside a ZEC/USD strategy) keep that pair's claim on the wallet instead
+    // of being valued again on the strategy's pair. Empty defaults to the
+    // strategy's symbols.
+    std::vector<types::Symbol> account_symbols;
 };
 
 // Which of `open` (the orders open on the venue) are entries, to cancel when a
 // run stops: those on `symbols` that do not reduce the position. Held is the
-// symbol's entry in `positions`, or else the base asset's total in
-// `balances` (a spot venue reports no positions); nullopt for either means it
-// could not be read, and then every sell is taken to reduce and every buy is
-// an entry (a spot account cannot be short). Orders that reduce it (sells
-// when long, buys when short) are kept while their remaining quantities fit
-// within it, stops first, then oldest first; the rest are entries too.
-// `unprotected` lists the symbols held with no order kept to close them.
+// symbol's entry in `positions`, or else the base asset's total in `balances`
+// left after positive entries in `positions` and closing orders kept on earlier
+// symbols sharing that base asset (a spot venue reports no positions); nullopt
+// for either means it could not be read, and then every sell is taken to reduce
+// and every buy is an entry (a spot account cannot be short). Orders that
+// reduce it (sells when long, buys when short) are kept while their remaining
+// quantities fit within it, stops first, then oldest first; the rest are
+// entries too. `unprotected` lists each held position with no closing order
+// kept, and each balance-derived base asset once (under its first symbol) when
+// coins remain and no closing order was kept on any symbol of that base.
 struct EntryCancels {
     std::vector<std::string> ids;
     std::vector<types::Symbol> unprotected;
@@ -285,7 +311,26 @@ class Runner : private Context {
     // Returns false for a StopEvent.
     bool Handle(const Event& event);
 
+    struct StartupMark {
+        types::Decimal price;
+        // A live quote, or a bar closed within the last 15 minutes: good
+        // enough to mark the recorder's P&L with until the first quote.
+        bool fresh = false;
+    };
+    struct StartingBasis {
+        types::Timestamp since;
+        // What the venue reports (for the risk gate), and those reconciled
+        // with account_fills and balances on spot (for the recorder).
+        std::vector<types::Position> venue_positions;
+        std::vector<types::Position> positions;
+        std::vector<std::string> seen_fill_ids;
+        std::vector<std::pair<types::Symbol, StartupMark>> marks;
+    };
+
     types::Result<void> Warmup(const Requirements& requirements);
+    types::Result<StartingBasis> LoadStartingBasis(bool quote_stream);
+    std::optional<StartupMark> StartupReferencePrice(
+        const types::Symbol& symbol, types::Timestamp now, bool quote_stream);
     void HandleBar(const BarEvent& event);
     // Records the bar in its window and hands it to the strategy; ignores
     // bars at or before the newest one already seen (reconnect duplicates).
