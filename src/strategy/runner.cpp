@@ -185,8 +185,8 @@ Runner::Runner(std::shared_ptr<data::DataSource> data_source,
     mTracker = std::make_shared<OrderTracker>(mVenue);
     mVenue = mTracker;
     if (mOptions.trade_log) {
-        mRecorder = std::make_unique<RunRecorder>(
-            mOptions.trade_log, mOptions.pnl_interval, mLog);
+        mRecorder = std::make_unique<RunRecorder>(mOptions.trade_log,
+                                                  mOptions.pnl_interval, mLog);
         mRecorder->RecordLatency(mOptions.latency_interval,
                                  mOptions.latency_source);
     }
@@ -373,8 +373,8 @@ types::Result<void> Runner::Begin() {
     auto cancelled = mVenue->CancelAll();
     if (!cancelled) {
         types::Error error = cancelled.error();
-        error.message = "cannot start with orders possibly left open: " +
-                        error.message;
+        error.message =
+            "cannot start with orders possibly left open: " + error.message;
         return std::unexpected(std::move(error));
     }
     if (!cancelled->empty()) {

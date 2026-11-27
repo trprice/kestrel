@@ -687,7 +687,8 @@ TEST_F(RunnerTest, IgnoresAnOrderStateBehindTheOneAlreadySeen) {
     // Pushed: 2 filled. The poll then reads an older snapshot, 1 filled, as a
     // poll queued before the push would deliver it.
     venue->Push(trading::ExecutionUpdate{
-        std::nullopt, StatusOf("order-1", types::OrderState::kPartiallyFilled, 2)});
+        std::nullopt,
+        StatusOf("order-1", types::OrderState::kPartiallyFilled, 2)});
     venue->open_orders = {
         StatusOf("order-1", types::OrderState::kPartiallyFilled, 1),
     };
@@ -766,7 +767,8 @@ TEST_F(RunnerTest, StopWaitsForAPollInFlight) {
     options.fill_poll_interval = std::chrono::milliseconds(1);
     Build();
     auto started = strategy->started.get_future();
-    auto done = std::async(std::launch::async, [this] { return runner->Run(); });
+    auto done =
+        std::async(std::launch::async, [this] { return runner->Run(); });
     started.wait();
     poll_started.get_future().wait();
     runner->Stop();

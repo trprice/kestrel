@@ -167,7 +167,9 @@ types::Result<std::vector<std::string>> RiskGatedVenue::Halt(
     // can still land after the cancel above. PlaceOrder holds the order lock
     // from its checks to the venue call, so once the lock is ours that order
     // has landed, and any later one sees the halt. Cancel again to catch it.
-    { std::lock_guard lock(mMutex); }
+    {
+        std::lock_guard lock(mMutex);
+    }
     auto recancelled = mVenue->CancelAll();
 
     if (!recancelled) {

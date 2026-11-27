@@ -108,8 +108,8 @@ Result<types::Timestamp> SyncStart(const AccountFillStore& store,
         if (!newest) {
             return std::unexpected(newest.error());
         }
-        start = std::min(start, *newest ? **newest - kSyncOverlap
-                                        : first_since);
+        start =
+            std::min(start, *newest ? **newest - kSyncOverlap : first_since);
     }
     return start;
 }
