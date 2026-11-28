@@ -50,7 +50,7 @@ for the config file.
 | `stream <seconds> [--store]` | live quotes for that many seconds; Ctrl-C or SIGTERM stops it early, with the quotes stored; with `--store` and a Discord webhook, posts its error lines and a notice when it starts and stops |
 | `stream-bars <timeframe> <seconds> [--store]` | completed bars as they close, for that many seconds (providers that offer it) |
 | `init-db` | creates or updates the database schema |
-| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--bars-from-database] [--fill-at-close] [--fill-timeframe TF] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--bars-from-database` never fetches bars from the provider; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
+| `backtest <strategy> --from <date> --to <date> [--quotes-from-trades] [--bars-from-database] [--fill-at-close] [--fill-timeframe TF [--fill-delay TF]] [--equity-csv FILE [--equity-interval TF]]` | replays a strategy over stored bars and quotes (or quotes rebuilt from stored trades) and prints a P&L summary; `--bars-from-database` never fetches bars from the provider; `--fill-at-close` fills orders placed on a bar's close at that close; `--fill-timeframe` fills on finer bars (e.g. `1m`) than the strategy's; `--fill-delay` holds the orders placed on a close for that fixed timeframe (e.g. `4h`, a whole number of `--fill-timeframe` bars and shorter than the strategy's; not with `--fill-at-close` or daily bars on a closing market) before they fill; `--equity-csv` also writes the equity curve, sampled every `--equity-interval` (default `1m`; use `1h` or `1d` for a backtest of years); without it only the curve's ends are kept |
 | `trades --from <date> --to <date> [--store]` | the venue's public trades per symbol, a day at a time (Binance.US); `--store` saves them for `backtest --quotes-from-trades` |
 | `run <strategy>` | trades a strategy on live data, through the paper or live venue; with a Discord webhook configured, posts its error lines and a notice when it starts and stops (see [configuration.md](configuration.md#alerts)) |
 | `alert [message]` | posts a test message to the Discord webhook, to check it before a run |
@@ -129,7 +129,8 @@ refresh token had expired or been refused); there is no need to restart them.
   orders at the close instead, the optimistic model of earlier versions.
   Orders placed elsewhere (in session hooks, on quotes, after a fill inside a
   bar) trade at once, as do immediate-or-cancel and fill-or-kill orders, which
-  are always decided against the quote they are placed on.
+  are decided against the quote they are placed on unless delayed by
+  `[paper] order_latency_ms` or `--fill-delay`.
   Which extreme of a bar came first is a guess (the nearer one), so a bar
   that reaches both an entry and its stop is decided by it.
   `--fill-timeframe 1m` walks 1-minute bars for the venue instead, so the
@@ -138,6 +139,29 @@ refresh token had expired or been refused); there is no need to restart them.
   (before the provider's 1-minute history, or a gap) is walked whole, and
   the report counts those. Not for a strategy that takes quotes, which
   fills on them.
+  The bars of all the symbols that close at the same time are walked side
+  by side: every open, then each third of the bar in turn (a symbol
+  falling back to a coarser bar steps at that bar's own thirds alongside
+  the others), before the strategy sees any of them. So no price is
+  replayed after a later one, and an order placed when one symbol's order
+  fills (a rebalance's buys, once its sells are in) meets the other
+  symbols at that time. Bars of several timeframes that close together
+  reach the strategy finer first.
+  `--fill-delay 4h` (with `--fill-timeframe` and not `--fill-at-close`; a
+  fixed timeframe such as `1h`, `4h` or `12h` that is a whole number of
+  `--fill-timeframe` bars and shorter than the strategy's timeframe) holds
+  the orders placed on a strategy bar's close for that long, then fills
+  them at the first price walked at or after the close plus the delay,
+  still sized from the close. Orders placed after them, such as a buy
+  placed on a held sell's fill, are not held again, so the whole rebalance
+  trades at the one time. An immediate-or-cancel or fill-or-kill order
+  placed on the close is held too, and decided against that price. On a
+  market that closes, the delay counts open-market time on intraday bars
+  (one ending at or after the session's close fills at the next open),
+  and `--fill-delay` is refused when the strategy's bars are daily or
+  longer, since those close while the market is shut and place their
+  orders at the next open. `[paper] order_latency_ms` instead delays every
+  order, each in turn, and adds on top of `--fill-delay`.
 - **The backtest summary** values every balance in the quote asset after
   each quote (at its mid, or the last trade when a side is missing) or, for
   a strategy without quotes, each bar close:

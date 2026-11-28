@@ -893,7 +893,7 @@ single-stock test.
   funds had about 985 of 1,081 bars, QQQ 958, IWM 651, EFA 334 and TLT
   106; EEM and GLD started with none when they listed.
 
-### Trend ensemble: Kraken's bars, and its sensitivity (planned Nov 27 2026)
+### Trend ensemble: Kraken's bars, and its sensitivity (planned and run Nov 27 2026)
 
 `trend_ensemble` is the one strategy here that has passed, so before it is
 written about, two checks: that the Binance.US result is not an artefact
@@ -933,9 +933,35 @@ run on bars from another venue.
 thing changed at a time, every other setting as before:
 - **Timing,** on Binance.US 2022–2026 only (the one data set with stored
   1-hour bars for the fills): the rebalance's orders filled 1, 4 and 12
-  hours after the daily close, with `order_latency_ms` set to that delay
-  and `--fill-timeframe 1h`. The 12-hour delay stands in for trading at
-  midday instead of at the close.
+  hours after the daily close, with `--fill-delay` set to that delay and
+  `--fill-timeframe 1h`, sized from the close as now. The 12-hour delay
+  stands in for trading at midday instead of at the close. A run with
+  1-hour fills and no delay is reported beside them, so the delay is the
+  only difference.
+
+  *Amended Nov 27 2026, before any timing run.* The plan as first written
+  set `order_latency_ms` to the delay. Two problems turned up in that
+  method before it was run, and it would not have measured these delays:
+  - **The latency applies to every order, so some buys were delayed
+    twice.** `trend_ensemble` places a rebalance's buys only once its
+    sells have filled. Each buy then waited the latency again, so with
+    12 hours a buy filled about 24 hours after the close. On Binance.US
+    in Jan–Feb 2022 that happened to 5 of 55 buys, and it put off 4 of
+    the next days' rebalances. (Gemini's review caught this.)
+  - **The backtest walked each symbol's hour on its own,** so the clock
+    was already at the end of the hour when the next symbol's open was
+    replayed. An order due exactly on the hour therefore filled at the
+    open an hour earlier: 1, 4 and 12 hours tested 0, 3 and 11. A buy
+    placed when another symbol's sell filled could also meet its own
+    symbol later in that symbol's bar.
+
+  Both are fixed in the backtest. All symbols' bars that close together
+  are now walked side by side. `--fill-delay` holds only the orders placed
+  on the close, so a rebalance's sells and buys trade at the same time.
+  The walk change also moves a few fills in daily runs without a delay
+  (about 3% of them on Binance.US in Q1 2022, which had filled later in
+  their own symbol's day). So check 1 and the settings runs are rerun on
+  the fixed build, and both sets of numbers are reported.
 - **Settings,** on the Kraken test's A8 (2015–2017, 8 pairs) and B
   (2018–2021, 11 pairs) at 10 bps, and on Binance.US 2022–2026:
   `target_vol` at 0.125 and 0.5 (default 0.25), `rebalance_threshold` at
@@ -952,6 +978,127 @@ not, the post says where it broke, and the default is not changed to a
 variant that did better: with nine variants and three data sets, one
 doing better is expected by chance.
 
+**Results (run Nov 27 2026, on the fixed build).** Both checks stand up.
+On Kraken's bars, in both periods, and in every one of the 9 variants (6
+settings, 3 delays) in every period it was judged on, the Sharpe is above
+BTC and cash at the same volatility.
+
+Each cell gives the Sharpe (×√365, daily), total return, volatility, worst
+fall (the largest percentage fall of the daily equity curve; `backtest`
+prints the largest dollar fall, and intraday when `--fill-timeframe` is
+set), then the number of fills. BTC and cash is BTC mixed with cash to the
+run's volatility and rebalanced daily, so its Sharpe is BTC's own.
+
+**1. Kraken's bars.**
+
+| Default | 2022–2024 | 2025 – Sep 30 2026 |
+|---|---|---|
+| Kraken's bars | **1.18**, +29.3%, 7.5%, −6.7%, 1,777 | **0.65**, +7.3%, 6.5%, −5.5%, 877 |
+| Kraken's BTC and cash, same vol | 0.68, +15.7% | 0.06, +0.3% |
+| Binance.US bars | **1.21**, +31.8%, 7.9%, −7.2%, 3,139 | **0.66**, +7.8%, 6.8%, −5.8%, 2,007 |
+| Binance.US BTC and cash, same vol | 0.68, +16.4% | 0.05, +0.2% |
+
+- **The two venues give nearly the same run:** a daily correlation of
+  0.98 in both periods, and Sharpes within 0.03 of each other.
+- **2022–2024's profit is spread out on both.** On Kraken: XRP 18%, SOL
+  18%, BTC 16%, DOGE 15%, ADA 14%, NEAR 11%, ETH 7%, LINK 3%, ZEC and BNB
+  0%, LTC −3%. On Binance.US: XRP 17%, BTC, SOL and ADA 14% each, DOGE
+  12%, NEAR 11%, BNB 10%, ETH 6%, LINK 4%, ZEC 0%, LTC −3%. BNB has no
+  Kraken bars before Apr 22 2025.
+- **2025–2026's profit comes from ZEC on both:** 95% of it on Kraken and
+  84% on Binance.US, with NEAR 36% and 26%. ADA, DOGE, BTC and SOL lost
+  on both. This is the ZEC lesson again: the holdout's lead over BTC and
+  cash is one coin's rally, on either venue's bars.
+
+**2a. Settings** (A8 and B at 10 bps a side, Kraken; Binance.US at its
+own costs):
+
+| Variant | A8 2015–2017 | B 2018–2021 | Binance.US 2022–2024 | Binance.US 2025 – Nov 14 2026 |
+|---|---|---|---|---|
+| Default | **3.01**, +74.2%, 6.2%, −4.2%, 1,176 | **1.05**, +40.2%, 8.4%, −7.5%, 4,328 | **1.21**, +31.8%, 7.9%, −7.2%, 3,139 | **0.30**, +3.4%, 6.8%, −5.8%, 2,139 |
+| `target_vol` 0.125 | **2.99**, +31.9%, 3.1%, −2.1%, 1,170 | **1.05**, +18.9%, 4.2%, −3.8%, 4,309 | **1.19**, +14.9%, 3.9%, −3.6%, 2,746 | **0.33**, +2.0%, 3.4%, −2.9%, 1,832 |
+| `target_vol` 0.5 | **2.94**, +183.1%, 12.1%, −8.3%, 1,171 | **1.04**, +90.1%, 16.8%, −14.6%, 4,331 | **1.17**, +64.8%, 15.2%, −13.5%, 3,200 | **0.29**, +5.5%, 12.8%, −10.1%, 2,177 |
+| `rebalance_threshold` 0.1 | **3.00**, +72.7%, 6.1%, −4.3%, 1,303 | **1.04**, +39.3%, 8.3%, −7.4%, 4,582 | **1.20**, +31.4%, 7.8%, −7.3%, 3,230 | **0.29**, +3.3%, 6.8%, −5.8%, 2,185 |
+| `rebalance_threshold` 0.4 | **3.01**, +77.5%, 6.4%, −4.3%, 1,129 | **1.02**, +39.7%, 8.5%, −7.5%, 4,251 | **1.23**, +33.0%, 8.0%, −7.1%, 3,109 | **0.33**, +3.9%, 6.9%, −5.5%, 2,118 |
+| `vol_bars` 45 | **3.03**, +80.9%, 6.6%, −4.9%, 1,303 | **1.19**, +48.4%, 8.6%, −6.2%, 4,416 | **1.25**, +32.3%, 7.7%, −6.8%, 3,189 | **0.30**, +3.5%, 6.9%, −6.2%, 2,130 |
+| `vol_bars` 180 | **2.89**, +64.6%, 5.8%, −3.4%, 998 | **1.05**, +39.6%, 8.2%, −6.5%, 4,239 | **1.23**, +32.9%, 8.0%, −7.2%, 3,051 | **0.22**, +2.3%, 6.6%, −5.6%, 2,134 |
+| BTC and cash, at the default's vol | 2.04, +45.4% | 0.79, +28.7% | 0.68, +16.4% | −0.26, −3.7% |
+
+- **No setting changes the verdict.** The narrowest margin among them is
+  `vol_bars = 180` in the Binance.US holdout: 0.22 against −0.26.
+- **`target_vol` scales the run and nothing else:** return, volatility
+  and fall double or halve with it, and the Sharpe stays within 0.07 of
+  the default's in each period.
+- **`rebalance_threshold` changes the number of fills by up to 11%, and
+  the Sharpe by at most 0.03.** `vol_bars = 45` is the best in three of
+  the four periods (B by 0.14). Per the plan, that does not make it the
+  default.
+
+**2b. Timing** (Binance.US, 1-hour fill bars, `--fill-delay`):
+
+| Fills, 1-hour bars | 2022–2024 | 2025 – Nov 14 2026 |
+|---|---|---|
+| No delay (the reference) | **1.21**, +31.9%, 7.9%, −7.2%, 3,140 | **0.29**, +3.4%, 6.8%, −5.8%, 2,137 |
+| 1 hour after the close | **1.22**, +32.3%, 7.9%, −7.3%, 3,138 | **0.28**, +3.2%, 6.8%, −5.6%, 2,136 |
+| 4 hours | **1.17**, +30.8%, 7.9%, −7.3%, 3,134 | **0.30**, +3.4%, 6.8%, −5.6%, 2,138 |
+| 12 hours (midday) | **1.16**, +30.7%, 7.9%, −7.5%, 3,130 | **0.19**, +2.0%, 6.8%, −6.4%, 2,136 |
+| BTC and cash, at the reference's vol | 0.70, +16.8% | −0.26, −3.7% |
+
+- **No delay changes the verdict.** Trading at midday instead of at the
+  close cost 0.05 of Sharpe in 2022–2024 and 0.10 in the holdout
+  (+30.7% against +31.9%, +2.0% against +3.4%). The 12-hour holdout run,
+  0.19 against −0.26, is the narrowest margin of the test. One and four
+  hours moved the Sharpe by at most 0.04.
+- **The reference run with 1-hour fills matches the daily-bar run**
+  (1.21, +31.9% against 1.21, +31.8% in 2022–2024), so 1-hour fills alone
+  change nothing. Its BTC-and-cash Sharpe is 0.70, not 0.68, because the
+  marks come from the 1-hour bars.
+
+**Found while running (Nov 27 2026):**
+- **The backtest bugs in the plan's amendment** (above) are fixed, and
+  tests cover them. One more effect of the fix showed up: in the old walk,
+  a rebalance that came due before every symbol's bar had been seen could
+  fill against the later symbols' bars of the same day. Those are prices
+  from before the decision. It happened at the start of a run, where the
+  warm-up completes two periods at once, and after a missing bar. Now the
+  second rebalance waits for the first's orders, as the strategy intends.
+- **Numbers on the fixed build differ slightly from the old one:**
+  - The defaults' Sharpes: A8 3.01 (was 3.02), B 1.05 (1.07),
+    Binance.US 2022–2024 1.21 (1.23), and the 2025 – Nov 14 2026 holdout
+    (`--to 2026-11-15`, 683 daily bars) 0.30, +3.4% against 0.23, +2.5%
+    on the old build. The earlier sections' holdout figures (0.26, +2.8%
+    in [Trend ensemble in Kestrel](#trend-ensemble-in-kestrel), and 0.20,
+    +2.1% in the [Turtle breakout screen](#turtle-breakout-screen)) are
+    not explained by their end dates: the old build gives 0.23 (+2.51% and
+    +2.48%) run to Nov 13 and to Nov 18 alike, so they come from builds or
+    data before it.
+  - Check 1's Kraken run: 1.18 (1.16) in 2022–2024 and 0.65 (0.65) after.
+  - No verdict changed. The earlier sections' `trend_ensemble` numbers
+    were made on the old walk and are left as published.
+- **Data checks on the six imported Kraken series** (11,993 daily bars,
+  by the rules of [Bad prints in the stored
+  bars](#bad-prints-in-the-stored-bars-planned-nov-25-2026)): no shape
+  failures and no missing days. Four bars fail at `f = 2`, all wicks:
+  DOGE/USD on Oct 10 2025 in the holdout (a low of 0.091, venue-only
+  against Binance.US's 0.174–0.254) and on its Dec 19 2019 listing day
+  (a high of 0.037 against 0.0021–0.0025, venue-only, warm-up), and
+  Kraken's Feb 22 2021 flash-crash lows on ADA/USD (0.156, venue-only,
+  warm-up) and LINK/USD (13.1, no stored second source, warm-up).
+  Twenty-eight bars in 2022–2026 are suspect at `f = 1.25` (26
+  venue-only, including BNB/USD highs on May 6 2025 and Jan 19 2026 and
+  NEAR/USD's second-day open on Jun 17 2022 before its 90-bar volatility
+  warmed up). None of the flags is a close, and no fill fell on or read
+  a bad bar, so Check 1 is unaffected.
+- **The warm-ups in Jan 2022:**
+  - Binance.US has about 830 of the 1,081 bars asked for (SOL 470, XRP
+    479; LINK, NEAR and ZEC none).
+  - Kraken has the full 1,081 for ADA, BTC, ETH, LTC, XRP and ZEC, with
+    LINK at 829, DOGE 744, SOL 198, and NEAR and BNB none.
+  - In Jan 2025 Kraken's NEAR has 930 and its BNB still none.
+- **The by-coin shares** value each day's holdings at the daily close.
+  What they leave out (fees, and fill prices against those closes) is
+  +23 USD of Kraken's 2022–2024 equity change of +293 USD.
+
 ## Summary
 
 | Strategy | Market | Verdict |
@@ -960,7 +1107,7 @@ doing better is expected by chance.
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.11% a trade, +0.10% without ZEC, and 2025 lost without ZEC: thin; falls of 50–90% of a trade's size are normal; paper-trading now |
 | `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade (+0.82% with the hold fix), 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
 | `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
-| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. As one account it fails at 35 bps in 2018–2021 (Sharpe 0.46 against 0.78), and leads at 10 bps and on Binance.US (1.13 against 0.46) `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
+| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. As one account it fails at 35 bps in 2018–2021 (Sharpe 0.46 against 0.78), and leads at 10 bps and on Binance.US (1.13 against 0.46). `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
 | `breakout` inverse head-and-shoulders | 33 stocks daily; crypto 1h | +1.35% a trade on daily stocks, positive in both periods, but rare (62 trades in ten years); too rare on crypto 1h |
@@ -974,6 +1121,7 @@ doing better is expected by chance.
 | `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
 | `trend_ensemble` on 18 single stocks (pre-registered) | Schwab daily, Aug 2019 – Nov 2026 | Fails: ahead of the same stocks held equally at its volatility in 2019–2022 (Sharpe 1.09 against 0.59, p = 0.10), behind in 2023–2026 (0.87 against 1.27). `[20, 55]` no better |
 | `trend_ensemble` on 13 ETFs, 2003–2014 (pre-registered) | Schwab daily, Jan 2003 – Dec 2014 | Fails: ahead of SPY and cash in 2003–2008 (Sharpe 0.42 against 0.10, p = 0.18; −8.7% against −15.9% in the 2007–2008 fall), behind in 2009–2014 (0.45 against 0.82). `[20, 55]` no better; with 2019–2026, closed on ETFs |
+| `trend_ensemble`: Kraken's bars, settings and timing (pre-registered) | 11 coins, Kraken and Binance.US; Kraken A8 and B | Stands up: Sharpe 1.18 and 0.65 on Kraken's bars against 0.68 and 0.06 for BTC and cash (Binance.US 1.21 and 0.66, correlation 0.98). All 6 settings and 3 fill delays (1, 4 and 12 hours) keep the verdict in every period; midday fills cost 0.05–0.10 of Sharpe. The 2025–2026 lead is ZEC's on both venues |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9); its entry beats random entries in an uptrend with the same exit (95th percentile +0.05%), but not in either half once they keep its same-day clusters |

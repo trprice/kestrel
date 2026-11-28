@@ -254,22 +254,19 @@ Sections in priority order: safety first, then what is in use.
       35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
       of the 10-day breakout on Binance.US (the plan's next step for a
       pass).
-- [ ] Run the pre-registered checks of `trend_ensemble` (docs/strategy-tests.md,
-      "Trend ensemble: Kraken's bars, and its sensitivity"): the Binance.US
-      run on Kraken's bars (import ADA, BNB, DOGE, LINK, NEAR and SOL from
-      the archive), and the timing and settings variants.
 - [ ] Schwab `pricehistory` refuses a start before a symbol's listing
       (HTTP 400, "StartDate must be miliseconds from epoch"), so `bars`
       with a large count fails for a younger symbol instead of returning
       its bars from the listing. Clip the start, or retry from a later
       one.
 - [ ] Bad prints (docs/strategy-tests.md, "Bad prints in the stored
-      bars"): remove or mark the bad bars the Nov 25 2026 scan found
-      (BTC/USDT Jun 21 2023, ZEC/USDT, ADA/USD Sep 18 2026, Kraken LTC 2015
-      and Jan 13 2018, Schwab Jun 5 2023 and others), and add an outlier
-      check at import or in `backtest`. Rerun the Binance.US breakout once
-      they are gone: a bad high blocks entries for ten days, which dropping
-      the trade does not undo.
+      bars" and the Nov 27 Kraken import check): remove or mark the bad bars
+      the scans found (BTC/USDT Jun 21 2023, ZEC/USDT, ADA/USD Sep 18 2026,
+      Kraken LTC 2015 and Jan 13 2018, plus Kraken DOGE/USD Dec 19 2019 and
+      Oct 10 2025, and ADA/USD and LINK/USD Feb 22 2021, Schwab Jun 5 2023
+      and others), and add an outlier check at import or in `backtest`.
+      Rerun the Binance.US breakout once they are gone: a bad high blocks
+      entries for ten days, which dropping the trade does not undo.
 - [ ] Check the backtest against more live runs. Only run 12 (Oct 29,
       30 min) has stored quotes for its window (see Known limitations under
       Backtesting for the result); runs 7 to 11 have only public trades, which
@@ -495,9 +492,12 @@ the header of the code concerned.
   takes only bars; those quotes get no stale-feed warning and no
   `max_quote_age` check. A backtest of a bar strategy still feeds the gate
   bar closes only: the prices the venue walks inside a bar do not reach it,
-  so a limit acts up to a bar late there. Feeding it the walked prices
-  would need the walk to stop at the limit's own price, as it does for a
-  resting order, or the close would be taken at the bar's extreme.
+  so a limit acts up to a bar late there. With `--fill-delay`, a follow-up
+  order placed when a held order fills is checked against that last
+  strategy bar close, so `[risk] max_price_age_ms` shorter than
+  `--fill-delay` refuses it. Feeding the gate the walked prices would need
+  the walk to stop at the limit's own price, as it does for a resting
+  order, or the close would be taken at the bar's extreme.
 - A close cancels the symbol's orders and sells at market straight away, so
   a cancel still on its way (venue latency) can let the strategy's stop sell
   too; on a spot venue the second sale is refused for want of the coin.
@@ -956,6 +956,16 @@ the header of the code concerned.
       the paper venue walks finer bars than the strategy takes, so the path
       within a strategy bar is the recorded one rather than the open,
       nearer extreme, other extreme, close guess.
+- [x] `backtest --fill-delay` (`BacktestOptions::fill_delay`,
+      `PaperOptions::deferred_fill_delay`), time-ordered bar walks and
+      finer-first timeframe order: every walked bar's open, inner points
+      and close are each replayed at their own time, merged across symbols,
+      before the strategy sees the bars closing then; bars of several
+      timeframes closing together reach the strategy finer first;
+      and `--fill-delay` holds the orders placed on a strategy bar's close
+      (IOC and FOK included) without holding follow-up orders placed when
+      they fill; on closing markets it counts open-market time on intraday
+      bars and refuses daily or longer strategy bars (Nov 27 2026).
 - [x] CLI subcommands `run <strategy>` and `backtest <strategy> --from --to`
       (one class per command in `app/commands/`); SIGINT/SIGTERM stop the
       runner through a watch thread
@@ -1384,6 +1394,14 @@ the header of the code concerned.
       load; the shipped examples are loaded by a test
 
 ### Backtesting and research
+- [x] Pre-registered checks of `trend_ensemble` (docs/strategy-tests.md,
+      "Trend ensemble: Kraken's bars, and its sensitivity"): imported
+      11,993 Kraken daily bars (ADA, BNB, DOGE, LINK, NEAR and SOL) and
+      checked the 2022–2026 run on Kraken's bars (Sharpe 1.18 and 0.65 vs
+      0.68 and 0.06 for BTC and cash; daily correlation 0.98 with
+      Binance.US) and across 6 parameter settings and 3 fill delays (1h,
+      4h, 12h); all keep the verdict, with 2025–2026 gains driven by ZEC
+      on both venues (Nov 27 2026)
 - [x] Load backtest bars from the database (`BarStore`) instead of building
       `ReplayDataSource` by hand
 - [x] The aggressor side of trades: `market_trades.taker_side` for the trade
