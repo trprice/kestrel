@@ -1137,6 +1137,294 @@ TEST(PaperLatency, ADeferredOrderWaitsForTheQuoteAfterItArrives) {
     EXPECT_EQ((*fills)[0].price, D("50225.1"));  // 50200 * 1.0005, rounded up
 }
 
+// deferred_fill_delay holds an order placed while matching is deferred, on
+// top of its latency; an order sent after it with only the latency is not
+// stuck behind it, and neither is a cancel.
+TEST(PaperLatency, AHeldOrderWaitsItsDelayAndHoldsUpNothingSentAfter) {
+    Latent f;
+    f.options.deferred_fill_delay = std::chrono::seconds(10);
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto held =
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.01"));
+    ASSERT_OK(held);
+    auto cancelled =
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.01"));
+    ASSERT_OK(cancelled);
+    venue->SetDeferMatching(false);
+    auto prompt =
+        venue->PlaceOrder(Order(Side::kBuy, OrderType::kMarket, "0.02"));
+    ASSERT_OK(prompt);
+    ASSERT_OK(venue->CancelOrder(cancelled->order_id));
+
+    f.Advance(2);  // the prompt order and the cancel are due
+    venue->OnQuote(Q("50090.0", "50100.0"));
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 1u);
+    EXPECT_EQ((*fills)[0].order_id, prompt->order_id);
+    // Cancelled at 2 s, freeing its reserve before its 12 s hold is up.
+    EXPECT_EQ(venue->GetOrder(cancelled->order_id)->state,
+              OrderState::kCancelled);
+    EXPECT_LT(Bal(*venue, "USD").locked, D("510"));
+
+    f.Advance(9);  // 11 s: not yet the held order's 12
+    venue->OnQuote(Q("50190.0", "50200.0"));
+    EXPECT_EQ(venue->GetFills(types::FromEpochSeconds(0))->size(), 1u);
+
+    f.Advance(1);
+    venue->OnQuote(Q("50290.0", "50300.0"));
+    fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_OK(fills);
+    ASSERT_EQ(fills->size(), 2u);
+    EXPECT_EQ((*fills)[1].order_id, held->order_id);
+    EXPECT_EQ((*fills)[1].price, D("50325.2"));  // 50300 * 1.0005, rounded up
+}
+
+// A held fill-or-kill limit is decided at the quote that finds it due: one
+// it cannot fill in full there expires, though the book it arrived at would
+// have filled it.
+TEST(PaperLatency, AHeldFillOrKillIsDecidedAtTheQuoteThatFindsItDue) {
+    Latent f;
+    f.options.order_latency = std::chrono::milliseconds(0);
+    f.options.deferred_fill_delay = std::chrono::seconds(10);
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto order = Order(Side::kBuy, OrderType::kLimit, "0.01", "50100.0");
+    order.time_in_force = types::TimeInForce::kFok;
+    auto ack = venue->PlaceOrder(order);
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+    EXPECT_EQ(ack->state, OrderState::kNew);  // not decided at placement
+
+    f.Advance(10);
+    venue->OnQuote(Q("50190.0", "50200.0"));  // due now: above the limit
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+    auto status = venue->GetOrder(ack->order_id);
+    ASSERT_OK(status);
+    EXPECT_EQ(status->state, OrderState::kExpired);
+}
+
+// Held orders keep submission order, share the touch's displayed size, stay
+// out of RestingPrices until OnQuote, and queue ahead of a same-due cancel.
+TEST(PaperLatency, EqualDueTimesKeepSubmissionOrderAndShareQuoteSize) {
+    Latent f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    f.options.deferred_fill_delay = std::chrono::seconds(10);
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0", "1", "1"));
+    venue->SetDeferMatching(true);
+    auto limit = Order(Side::kBuy, OrderType::kLimit, "0.06", "50200");
+    auto first = venue->PlaceOrder(limit);
+    ASSERT_OK(first);
+    auto fok_req = limit;
+    fok_req.time_in_force = TimeInForce::kFok;
+    auto fok = venue->PlaceOrder(fok_req);
+    ASSERT_OK(fok);
+    auto third = venue->PlaceOrder(limit);
+    ASSERT_OK(third);
+    auto cancelled =
+        venue->PlaceOrder(Order(Side::kSell, OrderType::kMarket, "0.1"));
+    ASSERT_OK(cancelled);
+    venue->SetDeferMatching(false);
+    EXPECT_TRUE(venue->RestingPrices("BTC/USD").empty());
+
+    f.Advance(10);  // cancel placed at 10 s is also due at 12 s, after arrival
+    ASSERT_OK(venue->CancelOrder(cancelled->order_id));
+
+    f.Advance(2);
+    // Even once due, held orders have not entered the book before OnQuote.
+    (void)venue->GetOpenOrders();
+    EXPECT_TRUE(venue->RestingPrices("BTC/USD").empty());
+    EXPECT_EQ(venue->GetOrder(cancelled->order_id)->state,
+              OrderState::kCancelled);
+
+    venue->OnQuote(Q("50190.0", "50200.0", "1", "0.1"));
+    EXPECT_EQ(venue->GetOrder(first->order_id)->filled_quantity, D("0.06"));
+    // Only 0.04 left on the ask: the FOK expires, and `third` takes the 0.04.
+    EXPECT_EQ(venue->GetOrder(fok->order_id)->state, OrderState::kExpired);
+    EXPECT_EQ(venue->GetOrder(third->order_id)->filled_quantity, D("0.04"));
+    EXPECT_EQ(venue->GetOrder(third->order_id)->state,
+              OrderState::kPartiallyFilled);
+    EXPECT_EQ(venue->RestingPrices("BTC/USD"),
+              std::vector<types::Decimal>{D("50200.0")});
+}
+
+TEST(PaperLatency, AHeldImmediateOrCancelFillsPartAndExpiresTheRest) {
+    Latent f;
+    f.options.cap_limit_fills_at_quote_size = true;
+    f.options.order_latency = std::chrono::milliseconds(0);
+    f.options.deferred_fill_delay = std::chrono::seconds(10);
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0", "1", "1"));
+    venue->SetDeferMatching(true);
+    auto ioc = Order(Side::kBuy, OrderType::kLimit, "0.1", "50200.0");
+    ioc.time_in_force = TimeInForce::kIoc;
+    auto ack = venue->PlaceOrder(ioc);
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+
+    f.Advance(10);
+    venue->OnQuote(Q("50090.0", "50100.0", "1", "0.04"));
+    auto status = venue->GetOrder(ack->order_id);
+    ASSERT_OK(status);
+    EXPECT_EQ(status->state, OrderState::kExpired);
+    EXPECT_EQ(status->filled_quantity, D("0.04"));
+    EXPECT_EQ(Bal(*venue, "USD").locked, D("0"));
+}
+
+TEST(PaperLatency, AHeldOcoPairsLegsWaitTogetherAndRejectTogether) {
+    Latent f;
+    f.options.order_latency = std::chrono::milliseconds(0);
+    f.options.deferred_fill_delay = std::chrono::seconds(10);
+    auto venue = f.Make();
+    venue->OnQuote(Q("50000.0", "50010.0"));
+    venue->SetDeferMatching(true);
+    types::OcoRequest pair;
+    pair.symbol = "BTC/USD";
+    pair.side = Side::kSell;
+    pair.quantity = D("1");
+    pair.limit_price = D("51000");
+    pair.stop_price = D("49000");
+    auto ack = venue->PlaceOco(pair);
+    ASSERT_OK(ack);
+    venue->SetDeferMatching(false);
+
+    f.Advance(5);
+    venue->OnQuote(Q("51000.0", "51010.0"));  // still held
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state, OrderState::kNew);
+
+    f.Advance(5);
+    venue->OnQuote(Q("51000.0", "51010.0"));  // limit would take: both reject
+    EXPECT_EQ(venue->GetOrder(ack->limit.order_id)->state,
+              OrderState::kRejected);
+    EXPECT_EQ(venue->GetOrder(ack->stop.order_id)->state,
+              OrderState::kRejected);
+    EXPECT_EQ(Bal(*venue, "BTC").locked, D("0"));
+}
+
+// On a market that closes, deferred_fill_delay counts open-market time, and
+// quotes arriving while shut neither expire held IOC/FOK orders nor turn a
+// deferred marketable limit into a resting maker order.
+TEST(PaperLatency, DeferredAndHeldOrdersWaitOutAClosedMarket) {
+    Latent f;
+    f.data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), false);
+    f.options.initial_balances["USD"] = D("50000");
+    f.options.deferred_fill_delay = std::chrono::hours(2);
+    // 2023-11-15 20:00 UTC (15:00 ET, 1 h before the 21:00 UTC close).
+    f.clock_seconds = 1'700'078'400;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto fok_req = Order(Side::kBuy, OrderType::kLimit, "0.05", "50100.0");
+    fok_req.time_in_force = TimeInForce::kFok;
+    auto fok = venue->PlaceOrder(fok_req);
+    ASSERT_OK(fok);
+    auto mkt_lim = venue->PlaceOrder(
+        Order(Side::kBuy, OrderType::kLimit, "0.05", "50500.0"));
+    ASSERT_OK(mkt_lim);
+    auto post_req = Order(Side::kBuy, OrderType::kLimit, "0.05", "49995.0");
+    post_req.post_only = true;
+    auto post = venue->PlaceOrder(post_req);
+    ASSERT_OK(post);
+    venue->SetDeferMatching(false);
+
+    // At the 21:00 UTC close and overnight, quotes touch nothing.
+    f.clock_seconds = 1'700'082'000;  // 21:00 UTC (shut)
+    venue->OnQuote(Q("49980.0", "49990.0"));
+    EXPECT_EQ(venue->GetOrder(fok->order_id)->state, OrderState::kNew);
+    EXPECT_EQ(venue->GetOrder(post->order_id)->state, OrderState::kNew);
+
+    // Next morning 14:30 UTC (09:30 ET open): only 1 h of open time so far.
+    f.clock_seconds = 1'700'145'000;
+    venue->OnQuote(Q("50040.0", "50050.0"));
+    EXPECT_TRUE(venue->GetFills(types::FromEpochSeconds(0))->empty());
+
+    // 15:30:02 UTC (10:30:02 ET): 2 h of open market + 2 s latency.
+    f.clock_seconds = 1'700'148'602;
+    venue->OnQuote(Q("50040.0", "50050.0"));
+    EXPECT_EQ(venue->GetOrder(fok->order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(venue->GetOrder(mkt_lim->order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(venue->GetOrder(post->order_id)->state, OrderState::kNew);
+    auto fills = venue->GetFills(types::FromEpochSeconds(0));
+    ASSERT_EQ(fills->size(), 2u);
+    // Marketable limit still takes the open's touch (50050) as a taker.
+    EXPECT_EQ((*fills)[1].price, D("50050.0"));
+    EXPECT_EQ((*fills)[1].liquidity, types::Liquidity::kTaker);
+}
+
+// A delay that uses up the exact remaining session lands on the next open, and
+// a held DAY order starts its day expiry when it enters rather than expiring
+// overnight while held.
+TEST(PaperLatency, ExactSessionEndDelayAndHeldDayOrdersCarryToNextOpen) {
+    Latent f;
+    f.data->hours = std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), false);
+    f.options.initial_balances["USD"] = D("50000");
+    f.options.order_latency = std::chrono::milliseconds(0);
+    f.options.deferred_fill_delay = std::chrono::hours(1);
+    // 2023-11-15 20:00 UTC (15:00 ET, exact 1 h left until 16:00 ET close).
+    f.clock_seconds = 1'700'078'400;
+    auto venue = f.Make();
+    venue->OnQuote(Q("49990.0", "50000.0"));
+    venue->SetDeferMatching(true);
+    auto day_mkt = Order(Side::kBuy, OrderType::kMarket, "0.05");
+    day_mkt.time_in_force = TimeInForce::kDay;
+    auto mkt = venue->PlaceOrder(day_mkt);
+    ASSERT_OK(mkt);
+    auto day_rest = Order(Side::kBuy, OrderType::kLimit, "0.05", "49000.0");
+    day_rest.time_in_force = TimeInForce::kDay;
+    auto rest = venue->PlaceOrder(day_rest);
+    ASSERT_OK(rest);
+    venue->SetDeferMatching(false);
+
+    // Neither fills at the 21:00 UTC close, nor expires past 00:00 UTC Nov 16.
+    f.clock_seconds = 1'700'082'000;  // 21:00 UTC (16:00 ET, shut)
+    venue->OnQuote(Q("49980.0", "49990.0"));
+    f.clock_seconds = 1'700'096'400;  // 01:00 UTC Nov 16 (overnight)
+    venue->OnQuote(Q("49980.0", "49990.0"));
+    EXPECT_EQ(venue->GetOpenOrders()->size(), 2u);
+    EXPECT_EQ(venue->GetOrder(mkt->order_id)->state, OrderState::kNew);
+    EXPECT_EQ(venue->GetOrder(rest->order_id)->state, OrderState::kNew);
+
+    // 14:30 UTC Nov 16 (09:30 ET open): mkt fills; rest enters and rests.
+    f.clock_seconds = 1'700'145'000;
+    venue->OnQuote(Q("50040.0", "50050.0"));
+    EXPECT_EQ(venue->GetOrder(mkt->order_id)->state, OrderState::kFilled);
+    EXPECT_EQ(venue->GetOrder(rest->order_id)->state, OrderState::kNew);
+    EXPECT_EQ(venue->RestingPrices("BTC/USD"),
+              std::vector<types::Decimal>{D("49000.0")});
+
+    // Expires at 00:00 UTC Nov 17 (end of the UTC day it actually entered).
+    f.clock_seconds = 1'700'179'200;
+    EXPECT_EQ(venue->GetOrder(rest->order_id)->state, OrderState::kExpired);
+
+    // Arrival pushed past the close by order_latency (30m delay + 2h latency
+    // from 15:00 ET -> 22:30 UTC), with ProcessPending run at 23:00 UTC before
+    // midnight: still fills at the 09:30 ET open rather than expiring first.
+    Latent f2;
+    f2.data->hours = f.data->hours;
+    f2.options.initial_balances["USD"] = D("50000");
+    f2.options.order_latency = std::chrono::hours(2);
+    f2.options.deferred_fill_delay = std::chrono::minutes(30);
+    f2.clock_seconds = 1'700'078'400;  // 20:00 UTC Nov 15 (15:00 ET)
+    auto v2 = f2.Make();
+    v2->OnQuote(Q("49990.0", "50000.0"));
+    v2->SetDeferMatching(true);
+    auto late = v2->PlaceOrder(day_mkt);
+    ASSERT_OK(late);
+    v2->SetDeferMatching(false);
+
+    f2.clock_seconds = 1'700'089'200;  // 23:00 UTC: arrives while shut
+    EXPECT_EQ(v2->GetOpenOrders()->size(), 1u);
+    f2.clock_seconds = 1'700'145'000;  // 14:30 UTC Nov 16 (09:30 ET open)
+    v2->OnQuote(Q("50040.0", "50050.0"));
+    EXPECT_EQ(v2->GetOrder(late->order_id)->state, OrderState::kFilled);
+}
+
 TEST(PaperLatency, AMarketableOrderTakesTheBookItArrivesAt) {
     Latent f;
     auto venue = f.Make();

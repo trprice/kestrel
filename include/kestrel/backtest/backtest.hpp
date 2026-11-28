@@ -32,8 +32,9 @@ struct BacktestOptions {
     // An order placed on a bar's close trades at the next price replayed,
     // normally the next bar's open (PaperTradingVenue::SetDeferMatching), so
     // a signal computed from a close is not filled at it (immediate-or-cancel
-    // and fill-or-kill orders excepted). True fills it at that close instead,
-    // the optimistic model before this option.
+    // and fill-or-kill orders excepted, unless held by fill_delay or
+    // paper.order_latency). True fills it at that close instead, the
+    // optimistic model before this option.
     bool fill_at_close = false;
     // Bars of this (finer) timeframe drive the paper venue instead of the
     // strategy's own, so the path within a strategy bar is the recorded one
@@ -45,6 +46,20 @@ struct BacktestOptions {
     // that takes quotes, and no coarser than the strategy's finest
     // timeframe.
     std::optional<types::Timeframe> fill_timeframe;
+    // Orders placed on a strategy bar's close (those deferred, as above) are
+    // held this long before they can fill: at the first open-market price
+    // walked at or after the close plus fill_delay, as if sent then, but
+    // sized from the close. Orders placed later (a buy placed when a held
+    // sell fills) are not held again, so a whole rebalance trades at the one
+    // time; an immediate-or-cancel or fill-or-kill order placed on the close
+    // is held too, and decided against that price. Needs fill_timeframe, a
+    // whole number of its bars, and a delay shorter than the strategy's
+    // finest timeframe; zero, the default, holds none. On a market that
+    // closes, counts open-market time on intraday bars, and is refused when
+    // all of the strategy's bars are daily or longer (which close while shut
+    // and place their orders at the next open). paper.order_latency still
+    // adds to every order. Not with fill_at_close.
+    std::chrono::milliseconds fill_delay{0};
 };
 
 struct BacktestResult {
@@ -142,6 +157,16 @@ types::Result<void> CheckFillTimeframe(
     const strategy::Requirements& needs,
     std::optional<types::Timeframe> fill_timeframe);
 
+// Checks `fill_timeframe`, `fill_delay` and `fill_at_close` together, and,
+// when `hours` is given, against the market's hours (refusing a fill_delay on
+// daily or longer bars when the market closes). RunBacktest calls it too;
+// call it before loading data to fail fast on invalid options.
+types::Result<void> CheckFillOptions(
+    const strategy::Requirements& needs,
+    std::optional<types::Timeframe> fill_timeframe,
+    std::chrono::milliseconds fill_delay, bool fill_at_close,
+    const types::MarketHours* hours = nullptr);
+
 // Runs a strategy over the bars in `data`, using the same Runner as live
 // trading and a PaperTradingVenue for execution, on one thread and a simulated
 // clock, so a run is repeatable. The bars of all of the strategy's series are
@@ -152,7 +177,12 @@ types::Result<void> CheckFillTimeframe(
 // before the strategy sees it, as quotes (bid = ask = last): the open, the
 // extreme nearer the open, the other extreme and the close, a third of the
 // bar apart, and on each leg every resting order's price it passes. The
-// strategy runs at each point. So:
+// strategy runs at each point. Walk steps across all symbols are merged in
+// time order: bars sharing a window step side by side (every open, then each
+// third in turn), and a symbol falling back to a coarser bar steps at that
+// bar's own thirds alongside the others, before the strategy sees any bar
+// closing at that instant, so no price is replayed after a later one and an
+// order placed on one symbol's fill meets the others at that time. So:
 //   - orders a strategy places on a bar's close fill at the next price walked
 //     (unless options.fill_at_close), plus the paper venue's slippage and
 //     fees;
@@ -178,13 +208,17 @@ types::Result<void> CheckFillTimeframe(
 // recorded trade prints through it, or trades at the limit clear the queue
 // ahead of the order (see LimitFillModel). Trades are visible only in stored
 // quotes that carry last/last_size (Binance.US does; Kraken sends no size).
-// Order and cancel latency are paper.order_latency / report_latency.
+// Order and cancel latency are paper.order_latency / report_latency; a delay
+// for the orders placed on a close alone is options.fill_delay.
 // The summary values the balances after every bar or quote replayed, at the
 // quote's mid (the last trade when a side is missing) or, for a strategy
 // without quotes, the bar's close.
 // A calendar-length timeframe (1M) fails with kUnsupported; an end that is
 // not after the start, or a fill_timeframe with a strategy that takes quotes
-// or coarser than the strategy's finest timeframe, with kInvalidArgument.
+// or coarser than the strategy's finest timeframe, or a fill_delay without a
+// fill_timeframe, not a whole number of its bars, not shorter than the
+// strategy's finest timeframe, with fill_at_close, or on daily or longer bars
+// of a market that closes, with kInvalidArgument.
 // `data` needs bars (and quotes if asked for) and SetSymbolInfo for every
 // symbol the strategy trades.
 types::Result<BacktestResult> RunBacktest(

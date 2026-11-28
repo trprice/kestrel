@@ -174,6 +174,7 @@ if(KESTREL_BUILD_APP)
   if(KESTREL_BUILD_TESTS)
     enable_testing()
     set(_good ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_backtest.toml)
+    set(_mm ${CMAKE_CURRENT_SOURCE_DIR}/config/binanceus-zec-marketmaker.example.toml)
     set(_live ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_live_no_risk.toml)
     set(_databento ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cli_databento.toml)
     # name | config | exit code | message | arguments (comma-separated)
@@ -198,6 +199,12 @@ if(KESTREL_BUILD_APP)
       "backtest_equity_csv_unwritable|${_good}|2|cannot write|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/nonexistent/equity.csv"
       "backtest_equity_interval_calendar|${_good}|105|no fixed length|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-csv,/tmp/x.csv,--equity-interval,1M"
       "backtest_equity_interval_needs_csv|${_good}|107|requires --equity-csv|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--equity-interval,1h"
+      "backtest_fill_delay_needs_timeframe|${_good}|107|requires --fill-timeframe|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--fill-delay,15m"
+      "backtest_fill_delay_calendar|${_good}|105|no fixed length|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--fill-timeframe,15m,--fill-delay,1M"
+      "backtest_fill_delay_at_close|${_good}|2|contradict each other|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--fill-timeframe,15m,--fill-delay,30m,--fill-at-close"
+      "backtest_fill_delay_non_multiple|${_good}|2|whole number of 3m bars|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--fill-timeframe,3m,--fill-delay,5m"
+      "backtest_fill_delay_not_shorter|${_good}|2|shorter than the strategy|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--fill-timeframe,30m,--fill-delay,1h"
+      "backtest_fill_timeframe_quotes|${_mm}|2|strategy that takes quotes|backtest,market_maker,--from,2026-01-01,--to,2026-02-01,--fill-timeframe,1m"
       "backtest_bars_from_database_needs_one|${_good}|1|--bars-from-database: no database|backtest,ma_crossover,--from,2026-01-01,--to,2026-02-01,--bars-from-database"
       "run_live_without_risk|${_live}|1|live mode needs a [risk]|run,ma_crossover"
       "databento_wrong_provider|${_good}|2|provider = \"databento\"|databento,--schema,ohlcv-1m,--file,/tmp/x.csv"

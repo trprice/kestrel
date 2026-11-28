@@ -254,6 +254,30 @@ TEST(BacktestSummaryTest, MarksOutEachFillAgainstTheMidAfterIt) {
     }
 }
 
+TEST(BacktestSummaryTest, SimultaneousMarksValueTheBalancesTogether) {
+    auto b = SummaryBuilder::Create({kBtc, kZec}, "USD",
+                                    {{"USDT", D("30000")}}, At(0),
+                                    std::chrono::minutes(1));
+    ASSERT_OK(b);
+    const std::pair<types::Symbol, types::Decimal> start[] = {
+        {kBtc, D("50000")}, {kZec, D("3000")}};
+    b->Observe(At(10), start, {{"USDT", D("30000"), D("30000"), D("0")}});
+
+    // ZEC halved to 1500 and 16 ZEC were bought at 1500 (24,000 USDT spent):
+    // equity stayed 30,000 throughout, whereas updating BTC's mark alone
+    // first would value the 16 ZEC at the old 3000 (54,000 -> 30,000).
+    const std::pair<types::Symbol, types::Decimal> after[] = {
+        {kBtc, D("50000")}, {kZec, D("1500")}};
+    b->Observe(At(20), after,
+               {{"USDT", D("6000"), D("6000"), D("0")},
+                {"ZEC", D("16"), D("16"), D("0")}});
+    auto s = b->Finish(At(30), {});
+    ASSERT_OK(s);
+    EXPECT_EQ(s->start_equity, D("30000"));
+    EXPECT_EQ(s->end_equity, D("30000"));
+    EXPECT_EQ(s->max_drawdown, D("0"));
+}
+
 TEST(BacktestSummaryTest, MarksAtTheMidOrTheLastTrade) {
     types::Quote q;
     q.bid = D("99");

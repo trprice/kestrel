@@ -50,6 +50,43 @@ std::optional<Decimal> TouchSize(const types::Quote& q, Side side) {
     return side == Side::kBuy ? q.ask_size : q.bid_size;
 }
 
+types::Timestamp NextDayEnd(types::Timestamp t) {
+    return std::chrono::floor<std::chrono::days>(t) + std::chrono::days(1);
+}
+
+// Advances `from` across `delay` of open market time (`from + delay` on a
+// market that never closes). A delay that uses up the rest of a session lands
+// at the next session's open rather than the closed boundary.
+types::Timestamp AddOpenDuration(const types::MarketHours& hours,
+                                 types::Timestamp from,
+                                 std::chrono::milliseconds delay) {
+    if (delay <= std::chrono::milliseconds::zero()) {
+        return from;
+    }
+    if (hours.IsAlwaysOpen()) {
+        return from + delay;
+    }
+    auto remaining = types::Timestamp::duration{delay};
+    auto t = from;
+    for (;;) {
+        const auto session = hours.CurrentOrNext(t);
+        if (!session) {
+            return t + remaining;
+        }
+        const auto start = std::max(t, session->start);
+        const auto open_left = session->end - start;
+        if (open_left <= types::Timestamp::duration::zero()) {
+            t = std::max(t, session->end) + types::Timestamp::duration{1};
+            continue;
+        }
+        if (remaining < open_left) {
+            return start + remaining;
+        }
+        remaining -= open_left;
+        t = session->end;
+    }
+}
+
 }  // namespace
 
 struct PaperTradingVenue::Order {
@@ -84,6 +121,11 @@ struct PaperTradingVenue::Order {
     // SetDeferMatching: placed while set, the order enters the book (is
     // checked and matched as it would be on placement) at the next quote.
     bool deferred = false;
+    // Placed while matching is deferred with a deferred_fill_delay: held
+    // until it is up, whatever its time in force (an immediate-or-cancel or
+    // fill-or-kill order is then decided at the first quote at or after its
+    // due time, like a deferred one).
+    bool held = false;
 
     Decimal Remaining() const {
         return status.quantity - status.filled_quantity;
@@ -537,8 +579,8 @@ void PaperTradingVenue::TryMatch(Order& order, types::Quote& quote,
 void PaperTradingVenue::ExpireDayOrders() {
     const auto now = mClock();
     std::erase_if(mActive, [&](Order* order) {
-        if (types::IsActive(order->status.state) && order->expires &&
-            now >= *order->expires) {
+        if (types::IsActive(order->status.state) && !order->held &&
+            order->expires && now >= *order->expires) {
             Close(*order, OrderState::kExpired,
                   "day order expired at end of UTC day");
         }
@@ -579,6 +621,10 @@ void PaperTradingVenue::ProcessPending() {
 
 void PaperTradingVenue::Arrive(Order& order) {
     order.arrived = true;
+    // A held order (deferred_fill_delay) of any time in force is decided at
+    // the quote that finds it due, like a deferred one, not against the book
+    // before that quote.
+    order.deferred = order.deferred || order.held;
     if (order.deferred) {
         return;  // checked and entered at the next quote, in OnQuote
     }
@@ -603,21 +649,24 @@ void PaperTradingVenue::Arrive(Order& order) {
     Enter(order);
 }
 
-void PaperTradingVenue::Enter(Order& order) {
-    const auto quote_it = mQuotes.find(order.status.symbol);
+void PaperTradingVenue::Enter(Order& order, types::Quote* book) {
     if (order.deferred) {
-        return;  // OnQuote enters it at the next quote
+        return;  // OnQuote enters it at the next open quote
     }
-    if (quote_it != mQuotes.end()) {
+    const auto quote_it = mQuotes.find(order.status.symbol);
+    std::optional<types::Quote> copy;  // as in OnQuote
+    if (!book && quote_it != mQuotes.end()) {
+        book = mOptions.cap_limit_fills_at_quote_size
+                   ? &copy.emplace(quote_it->second)
+                   : &quote_it->second;
+    }
+    if (book) {
         std::optional<Trade> no_trade;
-        std::optional<types::Quote> copy;  // as in OnQuote
-        types::Quote& book = mOptions.cap_limit_fills_at_quote_size
-                                 ? copy.emplace(quote_it->second)
-                                 : quote_it->second;
-        TryMatch(order, book, /*placing=*/true, no_trade);
+        TryMatch(order, *book, /*placing=*/true, no_trade);
         if (types::IsActive(order.status.state) &&
             order.status.type == OrderType::kLimit &&
-            mOptions.limit_fill_model == LimitFillModel::kConservative) {
+            mOptions.limit_fill_model == LimitFillModel::kConservative &&
+            quote_it != mQuotes.end()) {
             UpdateQueue(order,
                         quote_it->second);  // joins the back of the queue
         }
@@ -661,23 +710,42 @@ void PaperTradingVenue::OnQuote(const types::Quote& quote) {
     std::optional<types::Quote> copy;
     types::Quote& book =
         mOptions.cap_limit_fills_at_quote_size ? copy.emplace(latest) : latest;
+    const bool market_open = mHours->IsOpen(mClock());
     for (Order* order : mActive) {
         if (order->status.symbol != quote.symbol || !order->arrived ||
             !types::IsActive(order->status.state)) {
             continue;
         }
         if (order->deferred) {
-            // Its first quote: checked and matched as on placement, so a
+            if (!market_open) {
+                continue;  // waits for a quote while the market is open
+            }
+            // Its first open quote: checked and matched as on placement, so a
             // marketable limit takes the touch, and a post-only order that
             // would take is refused.
+            if (order->held &&
+                order->status.time_in_force == types::TimeInForce::kDay) {
+                order->expires = NextDayEnd(mClock());
+            }
             order->deferred = false;
+            order->held = false;
             if (WouldTake(*order, &latest)) {
                 Close(*order, OrderState::kRejected,
                       "post-only order would take liquidity at " +
                           order->status.limit_price->ToString());
                 continue;
             }
-            Enter(*order);
+            if (order->status.time_in_force == types::TimeInForce::kFok) {
+                // Only a held one gets here (others are decided on
+                // placement or arrival).
+                const auto c = Evaluate(*order, book, /*placing=*/true);
+                if (!c || c->quantity < order->Remaining()) {
+                    Close(*order, OrderState::kExpired,
+                          "fill-or-kill order could not be filled in full");
+                    continue;
+                }
+            }
+            Enter(*order, &book);
             continue;
         }
         TryMatch(*order, book, /*placing=*/false, trade);
@@ -716,7 +784,7 @@ std::vector<Decimal> PaperTradingVenue::RestingPrices(
                 }
             }
         }
-        if (!arrived || cancelled) {
+        if (!arrived || cancelled || order->deferred || order->held) {
             continue;
         }
         if (order->status.type == OrderType::kLimit) {
@@ -776,6 +844,7 @@ Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
     order.deferred = mDeferMatching &&
                      request.time_in_force != types::TimeInForce::kIoc &&
                      request.time_in_force != types::TimeInForce::kFok;
+    order.held = mDeferMatching && mOptions.deferred_fill_delay.count() > 0;
     order.info = prepared.info;
     order.base_asset = prepared.base_asset;
     order.quote_asset = prepared.quote_asset;
@@ -788,9 +857,8 @@ Result<PaperTradingVenue::Order> PaperTradingVenue::Build(
     order.status.stop_price = request.stop_price;
     order.status.client_order_id = request.client_order_id;
     order.status.created_time = order.status.updated_time = now;
-    if (request.time_in_force == types::TimeInForce::kDay) {
-        order.expires =
-            std::chrono::floor<std::chrono::days>(now) + std::chrono::days(1);
+    if (!order.held && request.time_in_force == types::TimeInForce::kDay) {
+        order.expires = NextDayEnd(now);
     }
 
     const Decimal one(1, 0);
@@ -928,12 +996,23 @@ PaperTradingVenue::Order& PaperTradingVenue::Book(Order order) {
     const auto [it, _] = mOrders.emplace(std::move(id), std::move(order));
     Order& placed = it->second;
     mActive.push_back(&placed);
-    if (mOptions.order_latency.count() > 0) {
+    const bool held = placed.held;
+    if (mOptions.order_latency.count() > 0 || held) {
         placed.arrived = false;
-        mInFlight.push_back(
-            {mClock() + mOptions.order_latency, placed.status.order_id});
+        const types::Timestamp base =
+            held ? AddOpenDuration(*mHours, mClock(),
+                                   mOptions.deferred_fill_delay)
+                 : mClock();
+        Schedule({base + mOptions.order_latency, placed.status.order_id});
     }
     return placed;
+}
+
+void PaperTradingVenue::Schedule(InFlight action) {
+    const auto at = std::upper_bound(
+        mInFlight.begin(), mInFlight.end(), action.due,
+        [](types::Timestamp due, const InFlight& a) { return due < a.due; });
+    mInFlight.insert(at, std::move(action));
 }
 
 Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
@@ -948,7 +1027,9 @@ Result<types::OrderAcknowledgement> PaperTradingVenue::PlaceOrder(
     ProcessPending();
     ExpireDayOrders();
     const auto now = mClock();
-    const bool delayed = mOptions.order_latency.count() > 0;
+    const bool delayed = mOptions.order_latency.count() > 0 ||
+                         (mDeferMatching &&
+                          mOptions.deferred_fill_delay.count() > 0);
     const auto quote_it = mQuotes.find(prepared->request.symbol);
     const types::Quote* quote =
         quote_it == mQuotes.end() ? nullptr : &quote_it->second;
@@ -1040,7 +1121,9 @@ Result<types::OcoAcknowledgement> PaperTradingVenue::PlaceOco(
     ProcessPending();
     ExpireDayOrders();
     const auto now = mClock();
-    const bool delayed = mOptions.order_latency.count() > 0;
+    const bool delayed = mOptions.order_latency.count() > 0 ||
+                         (mDeferMatching &&
+                          mOptions.deferred_fill_delay.count() > 0);
     const auto quote_it = mQuotes.find(limit_prepared->request.symbol);
     const types::Quote* quote =
         quote_it == mQuotes.end() ? nullptr : &quote_it->second;
@@ -1118,7 +1201,7 @@ void PaperTradingVenue::Cancel(Order& order) {
         Close(order, OrderState::kCancelled, "cancelled by user");
     } else if (!order.cancelling) {
         order.cancelling = true;
-        mInFlight.push_back(
+        Schedule(
             {mClock() + mOptions.order_latency, order.status.order_id, true});
     }
 }

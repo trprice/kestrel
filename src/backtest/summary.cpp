@@ -140,6 +140,19 @@ EquityPoint SummaryBuilder::Point(types::Timestamp time) const {
 void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
                              std::optional<Decimal> mark,
                              const std::vector<types::Balance>& balances) {
+    if (mark) {
+        const std::pair<types::Symbol, Decimal> one{symbol, *mark};
+        Observe(time, std::span(&one, 1), balances);
+        return;
+    }
+    Observe(time, std::span<const std::pair<types::Symbol, Decimal>>{},
+            balances);
+}
+
+void SummaryBuilder::Observe(
+    types::Timestamp time,
+    std::span<const std::pair<types::Symbol, Decimal>> marks,
+    const std::vector<types::Balance>& balances) {
     if (mValued && mInterval.count() > 0) {
         while (mNextSample < time) {
             mSummary.curve.push_back(Point(mNextSample));
@@ -147,14 +160,18 @@ void SummaryBuilder::Observe(types::Timestamp time, const types::Symbol& symbol,
         }
     }
 
-    for (std::size_t i = 0; i < mSummary.symbols.size(); ++i) {
-        SymbolSummary& s = mSummary.symbols[i];
-        if (mark && s.symbol == symbol) {
-            if (!mMarks[i]) {
-                s.first_mark = Round(*mark);
+    for (const auto& [symbol, mark] : marks) {
+        for (std::size_t i = 0; i < mSummary.symbols.size(); ++i) {
+            SymbolSummary& s = mSummary.symbols[i];
+            if (s.symbol == symbol) {
+                const Decimal rounded = Round(mark);
+                if (!mMarks[i]) {
+                    s.first_mark = rounded;
+                }
+                mMarks[i] = rounded;
+                mMarkHistory[i].emplace_back(time, rounded);
+                break;
             }
-            mMarks[i] = Round(*mark);
-            mMarkHistory[i].emplace_back(time, *mMarks[i]);
         }
     }
     mBalances.clear();

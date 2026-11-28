@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 #include <vector>
 
 #include "kestrel/strategy/runner.hpp"
@@ -373,6 +374,65 @@ types::Result<void> CheckFillTimeframe(
     return {};
 }
 
+types::Result<void> CheckFillOptions(
+    const strategy::Requirements& needs,
+    std::optional<types::Timeframe> fill_timeframe,
+    std::chrono::milliseconds fill_delay, bool fill_at_close,
+    const types::MarketHours* hours) {
+    if (auto checked = CheckFillTimeframe(needs, fill_timeframe); !checked) {
+        return checked;
+    }
+    if (fill_delay.count() < 0) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "a fill delay cannot be negative");
+    }
+    if (fill_delay.count() == 0) {
+        return {};
+    }
+    if (!fill_timeframe) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "a fill delay needs a fill timeframe");
+    }
+    if (fill_at_close) {
+        return MakeError(ErrorCategory::kInvalidArgument,
+                         "a fill delay and filling at the close "
+                         "contradict each other");
+    }
+    const auto length = *types::FixedDuration(*fill_timeframe);
+    if (fill_delay % length != std::chrono::milliseconds::zero()) {
+        return MakeError(
+            ErrorCategory::kInvalidArgument,
+            "a fill delay must be a whole number of " +
+                std::string(types::ToString(*fill_timeframe)) + " bars");
+    }
+    for (types::Timeframe timeframe : needs.bar_timeframes) {
+        const auto own = types::FixedDuration(timeframe);
+        if (!own) {
+            return MakeError(ErrorCategory::kUnsupported,
+                             "backtests cannot replay calendar timeframe " +
+                                 std::string(types::ToString(timeframe)));
+        }
+        if (fill_delay >= *own) {
+            return MakeError(
+                ErrorCategory::kInvalidArgument,
+                "a fill delay must be shorter than the strategy's " +
+                    std::string(types::ToString(timeframe)) + " bars");
+        }
+    }
+    if (hours && !hours->IsAlwaysOpen() && !needs.bar_timeframes.empty() &&
+        std::ranges::all_of(needs.bar_timeframes, [](types::Timeframe tf) {
+            const auto own = types::FixedDuration(tf);
+            return own && *own >= std::chrono::hours(24);
+        })) {
+        return MakeError(
+            ErrorCategory::kInvalidArgument,
+            "a fill delay has no effect when the strategy's bars are daily "
+            "or longer on a market that closes (orders are placed at the "
+            "next open)");
+    }
+    return {};
+}
+
 types::Result<BacktestResult> RunBacktest(
     const std::shared_ptr<ReplayDataSource>& data,
     std::unique_ptr<strategy::Strategy> strategy,
@@ -382,15 +442,19 @@ types::Result<BacktestResult> RunBacktest(
                          "the end of a backtest must be after its start");
     }
     const strategy::Requirements needs = strategy->Needs();
-    if (auto checked = CheckFillTimeframe(needs, options.fill_timeframe);
+    if (auto checked = CheckFillOptions(
+            needs, options.fill_timeframe, options.fill_delay,
+            options.fill_at_close, data->Hours().get());
         !checked) {
         return std::unexpected(checked.error());
     }
 
     // Every bar and quote to replay, ordered by when it closes / arrived; ties
     // put quotes first, then fill-timeframe bars (so the venue has walked up
-    // to a strategy bar's close before the strategy sees it), then keep the
-    // order of the strategy's symbols and timeframes.
+    // to a strategy bar's close before the strategy sees it), then the
+    // strategy's bars, finer timeframes first (the finest is the one walked,
+    // so a coarser bar is seen once the venue has walked up to its close),
+    // each timeframe's in the order of the strategy's symbols.
     std::vector<Replayed> timeline;
     for (types::Timeframe timeframe : needs.bar_timeframes) {
         const auto step = types::FixedDuration(timeframe);
@@ -458,15 +522,26 @@ types::Result<BacktestResult> RunBacktest(
                          const auto rank = [](const Replayed& r) {
                              return r.is_quote ? 0 : r.fill_only ? 1 : 2;
                          };
-                         return a.time != b.time ? a.time < b.time
-                                                 : rank(a) < rank(b);
+                         if (a.time != b.time) {
+                             return a.time < b.time;
+                         }
+                         if (rank(a) != rank(b)) {
+                             return rank(a) < rank(b);
+                         }
+                         // Strategy bars closing together: the finer
+                         // timeframe first, as it is the one walked.
+                         return rank(a) == 2 &&
+                                *types::FixedDuration(a.timeframe) <
+                                    *types::FixedDuration(b.timeframe);
                      });
 
     types::Timestamp now = options.start;
     data->SetTime(now);
     auto clock = [&now] { return now; };
-    auto venue = std::make_shared<trading::PaperTradingVenue>(
-        data, options.paper, clock);
+    trading::PaperOptions paper = options.paper;
+    paper.deferred_fill_delay = options.fill_delay;
+    auto venue =
+        std::make_shared<trading::PaperTradingVenue>(data, paper, clock);
 
     strategy::RunnerOptions runner_options;
     runner_options.risk = options.risk;
@@ -488,7 +563,22 @@ types::Result<BacktestResult> RunBacktest(
     auto summary = SummaryBuilder::Create(
         needs.symbols, options.paper.default_quote_asset,
         options.paper.initial_balances, options.start, options.equity_interval);
-    // Called after each event, once the strategy and the venue have seen it.
+    struct Fed {
+        std::optional<Decimal> price;
+        bool fresh = false;
+    };
+    std::vector<Fed> fed(needs.symbols.size());
+    const auto symbol_index =
+        [&](const types::Symbol& symbol) -> std::optional<std::size_t> {
+        for (std::size_t k = 0; k < needs.symbols.size(); ++k) {
+            if (needs.symbols[k] == symbol) {
+                return k;
+            }
+        }
+        return std::nullopt;
+    };
+    // Called after each event or simultaneous bar-close batch, once the
+    // strategy and the venue have seen it.
     auto observe = [&](const types::Symbol& symbol,
                        std::optional<Decimal> mark) {
         if (!summary) {
@@ -498,6 +588,31 @@ types::Result<BacktestResult> RunBacktest(
             summary->Observe(now, symbol, mark, *balances);
         }
     };
+    auto observe_batch =
+        [&](std::vector<std::pair<types::Symbol, Decimal>>& marks) {
+            if (!summary) {
+                return;
+            }
+            for (const auto& [symbol, mark] : marks) {
+                if (const auto idx = symbol_index(symbol)) {
+                    fed[*idx] = {mark, false};
+                }
+            }
+            // A symbol walking a coarser bar may have traded mid-bar with no
+            // bar closing here; include the latest price fed to it so a new
+            // balance is not valued against a stale mark.
+            if (!needs.quotes) {
+                for (std::size_t k = 0; k < needs.symbols.size(); ++k) {
+                    if (fed[k].fresh && fed[k].price) {
+                        marks.emplace_back(needs.symbols[k], *fed[k].price);
+                        fed[k].fresh = false;
+                    }
+                }
+            }
+            if (auto balances = venue->GetBalances()) {
+                summary->Observe(now, marks, *balances);
+            }
+        };
 
     // Session hooks and timer ticks due before `until` run at their own
     // times.
@@ -530,34 +645,57 @@ types::Result<BacktestResult> RunBacktest(
             finest = item.timeframe;
         }
     }
-    // A quote at `price` for the venue at `t`, then the strategy runs.
-    const auto quote_at = [&](const types::Symbol& symbol, const Decimal& price,
-                              types::Timestamp t) {
+    // A quote at `price` for the venue at `t`; the strategy has not run yet.
+    const auto feed = [&](const types::Symbol& symbol, const Decimal& price,
+                          types::Timestamp t) {
         run_sessions(t);
         now = std::max(now, t);
         data->SetTime(now);
+        if (const auto idx = symbol_index(symbol)) {
+            fed[*idx] = {price, true};
+        }
         types::Quote quote;
         quote.symbol = symbol;
         quote.venue = std::string(data->Name());
         quote.received_time = now;
         quote.bid = quote.ask = quote.last = price;
         venue->OnQuote(quote);
+    };
+    // The same, then the strategy runs.
+    const auto quote_at = [&](const types::Symbol& symbol, const Decimal& price,
+                              types::Timestamp t) {
+        feed(symbol, price, t);
         runner.Drain();
     };
-    // Walks a bar for the venue: open, the extreme nearer the open, the other
-    // extreme, close, a third of the bar apart, and on each leg the price of
-    // every resting order it passes, so a stop or limit inside the bar trades
-    // at its own price (and one the open gaps through, at the open). The
-    // strategy runs at each point, so an order it places after a fill there
-    // takes part in the rest of the bar.
+    // Walks each driving or fill-timeframe bar for the venue: open, the
+    // extreme nearer the open, the other extreme, close, a third of the bar
+    // apart, and on each leg the price of every resting order it passes, so a
+    // stop or limit inside the bar trades at its own price (and one the open
+    // gaps through, at the open). Every step is scheduled at its own time and
+    // merged across symbols, so symbols sharing a timeframe walk side by side
+    // and a symbol falling back to a coarser bar still walks at its real open
+    // and thirds instead of waiting until its close.
     // On a market that closes, only the part of the bar in its first session
     // is walked (a daily bar trades between the open and the close, not
-    // across the whole day), and session hooks due at its start run just
-    // after its open: an order placed there trades against the open (a
-    // buy-stop it gapped through fills at it, as does a market order).
+    // across the whole day), and session hooks due at its start run inside
+    // Drain() right after its open: an order placed there trades against the
+    // open (a buy-stop it gapped through fills at it, as does a market order).
     const auto hours = data->Hours();
-    const auto walk = [&](const types::Symbol& symbol, const types::Bar& bar,
-                          types::Timestamp close) {
+    struct Walk {
+        const types::Symbol* symbol = nullptr;
+        std::array<Decimal, 4> points;
+    };
+    struct Step {
+        types::Timestamp time;
+        std::size_t walk = 0;
+        // 0: open + leg 0; 1: point 1 + leg 1; 2: point 2 + leg 2;
+        // 3: close; 4: close alone (points[3], no leg).
+        int stage = 0;
+    };
+    std::vector<Walk> all_walks;
+    std::vector<Step> steps;
+    const auto add_walk = [&](const types::Symbol& symbol,
+                              const types::Bar& bar, types::Timestamp close) {
         types::Timestamp open = bar.open_time;
         if (hours && !hours->IsAlwaysOpen()) {
             if (const auto session = hours->CurrentOrNext(open);
@@ -567,41 +705,26 @@ types::Result<BacktestResult> RunBacktest(
             }
         }
         const bool high_first = bar.high - bar.open <= bar.open - bar.low;
-        const std::array<Decimal, 4> points = {
-            bar.open, high_first ? bar.high : bar.low,
-            high_first ? bar.low : bar.high, bar.close};
-        const auto leg_length = (close - open) / 3;
-        quote_at(symbol, points[0], open);
-        if (hours && !hours->IsAlwaysOpen()) {
-            run_sessions(open + types::Timestamp::duration{1});
-        }
-        for (std::size_t leg = 0; leg < 3; ++leg) {
-            const Decimal& from = points[leg];
-            const Decimal& to = points[leg + 1];
-            const bool up = from < to;
-            const types::Timestamp leg_start =
-                open + leg_length * static_cast<std::int64_t>(leg);
-            // Each resting price strictly between, in the leg's direction,
-            // at the leg's start time; asked again after each, since the
-            // strategy may have placed or cancelled orders there.
-            for (Decimal at = from;;) {
-                std::optional<Decimal> next;
-                for (const Decimal& price : venue->RestingPrices(symbol)) {
-                    const bool ahead = up ? at < price && price < to
-                                          : to < price && price < at;
-                    if (ahead &&
-                        (!next || (up ? price < *next : *next < price))) {
-                        next = price;
-                    }
-                }
-                if (!next) {
-                    break;
-                }
-                at = *next;
-                quote_at(symbol, at, leg_start);
-            }
-            quote_at(symbol, to, leg == 2 ? close : leg_start + leg_length);
-        }
+        const std::size_t id = all_walks.size();
+        all_walks.push_back(
+            Walk{&symbol,
+                 {bar.open, high_first ? bar.high : bar.low,
+                  high_first ? bar.low : bar.high, bar.close}});
+        const auto leg = (close - open) / 3;
+        const auto t1 =
+            leg > types::Timestamp::duration::zero() ? open + leg : close;
+        const auto t2 =
+            leg > types::Timestamp::duration::zero() ? open + leg * 2 : close;
+        steps.push_back({open, id, 0});
+        steps.push_back({t1, id, 1});
+        steps.push_back({t2, id, 2});
+        steps.push_back({close, id, 3});
+    };
+    const auto add_close = [&](const types::Symbol& symbol,
+                               const Decimal& price, types::Timestamp close) {
+        const std::size_t id = all_walks.size();
+        all_walks.push_back(Walk{&symbol, {price, price, price, price}});
+        steps.push_back({close, id, 4});
     };
     // With fill-timeframe bars, the open of the last one walked for each
     // symbol: a strategy bar none of them opened inside is walked itself.
@@ -610,48 +733,181 @@ types::Result<BacktestResult> RunBacktest(
     std::vector<std::optional<types::Timestamp>> last_fill_end(
         needs.symbols.size());
     std::size_t walked_without = 0;
+    const auto index_of = [&](const Replayed& item) {
+        return static_cast<std::size_t>(item.symbol - needs.symbols.data());
+    };
     for (const Replayed& item : timeline) {
-        const auto index =
-            static_cast<std::size_t>(item.symbol - needs.symbols.data());
+        if (item.is_quote) {
+            continue;
+        }
+        const auto index = index_of(item);
         if (item.fill_only) {
-            walk(*item.symbol, item.bar, item.time);
+            add_walk(*item.symbol, item.bar, item.time);
             last_fill[index] = item.bar.open_time;
             last_fill_end[index] = item.time;
-        } else if (!item.is_quote && !needs.quotes &&
-                   item.timeframe == driving[index]) {
+        } else if (!needs.quotes && item.timeframe == driving[index]) {
             if (!fill_bars) {
-                walk(*item.symbol, item.bar, item.time);  // ends at item.time
+                add_walk(*item.symbol, item.bar, item.time);
             } else if (!last_fill[index] ||
                        *last_fill[index] < item.bar.open_time) {
-                walk(*item.symbol, item.bar, item.time);
+                add_walk(*item.symbol, item.bar, item.time);
                 ++walked_without;
             } else if (!last_fill_end[index] ||
                        *last_fill_end[index] < item.time) {
-                quote_at(*item.symbol, item.bar.close, item.time);
+                add_close(*item.symbol, item.bar.close, item.time);
             }
         }
-        run_sessions(item.time);
-        now = std::max(now, item.time);
-        data->SetTime(now);
-        if (item.fill_only) {
-            observe(*item.symbol, item.bar.close);
-            continue;
+    }
+    std::stable_sort(steps.begin(), steps.end(),
+                     [](const Step& a, const Step& b) {
+                         if (a.time != b.time) {
+                             return a.time < b.time;
+                         }
+                         // Steps inside or ending an open bar (1..4) run
+                         // before a new bar opens at the same instant (0),
+                         // with strategy closes delivered in between; a
+                         // zero-length bar orders stages 1, 2, 3 across walks.
+                         const auto rank = [](int stage) {
+                             return stage == 0 ? 4 : std::min(stage, 3);
+                         };
+                         return rank(a.stage) < rank(b.stage);
+                     });
+    std::vector<Decimal> leg_at;
+    const auto run_steps = [&](std::size_t from, std::size_t until,
+                               types::Timestamp t) {
+        if (from == until) {
+            return;
         }
-
-        if (item.is_quote) {
+        for (std::size_t k = from; k < until; ++k) {
+            const Step& step = steps[k];
+            const Walk& w = all_walks[step.walk];
+            const int point = step.stage == 4 ? 3 : step.stage;
+            feed(*w.symbol, w.points[static_cast<std::size_t>(point)], t);
+        }
+        runner.Drain();
+        leg_at.resize(until - from);
+        for (std::size_t k = from; k < until; ++k) {
+            if (steps[k].stage < 3) {
+                leg_at[k - from] =
+                    all_walks[steps[k].walk]
+                        .points[static_cast<std::size_t>(steps[k].stage)];
+            }
+        }
+        // Re-scan every leg in the group after each resting fill so an order
+        // placed on an earlier walk by a later walk's fill triggers on the
+        // same leg too.
+        for (bool progressed = true; progressed;) {
+            progressed = false;
+            for (std::size_t k = from; k < until; ++k) {
+                const Step& step = steps[k];
+                if (step.stage >= 3) {
+                    continue;
+                }
+                const Walk& w = all_walks[step.walk];
+                const Decimal& start =
+                    w.points[static_cast<std::size_t>(step.stage)];
+                const Decimal& goal =
+                    w.points[static_cast<std::size_t>(step.stage + 1)];
+                const bool up = start < goal;
+                Decimal& at = leg_at[k - from];
+                std::optional<Decimal> next;
+                for (const Decimal& price : venue->RestingPrices(*w.symbol)) {
+                    const bool ahead = up ? at < price && price < goal
+                                          : goal < price && price < at;
+                    if (ahead &&
+                        (!next || (up ? price < *next : *next < price))) {
+                        next = price;
+                    }
+                }
+                if (next) {
+                    at = *next;
+                    quote_at(*w.symbol, at, t);
+                    progressed = true;
+                }
+            }
+        }
+    };
+    std::vector<std::size_t> walk_group(all_walks.size(), 0);
+    std::size_t next_group = 0;
+    const auto next_step_batch = [&](std::size_t from, types::Timestamp t,
+                                     bool opening) {
+        const std::size_t stamp = ++next_group;
+        std::size_t end = from;
+        while (end < steps.size() && steps[end].time == t &&
+               (steps[end].stage == 0) == opening &&
+               walk_group[steps[end].walk] != stamp) {
+            walk_group[steps[end].walk] = stamp;
+            ++end;
+        }
+        return end;
+    };
+    std::vector<std::pair<types::Symbol, Decimal>> batch_marks;
+    for (std::size_t s = 0, i = 0; s < steps.size() || i < timeline.size();) {
+        types::Timestamp t = s < steps.size() ? steps[s].time
+                                              : timeline[i].time;
+        if (i < timeline.size() && timeline[i].time < t) {
+            t = timeline[i].time;
+        }
+        while (i < timeline.size() && timeline[i].time == t &&
+               timeline[i].is_quote) {
+            const Replayed& item = timeline[i++];
+            run_sessions(item.time);
+            now = std::max(now, item.time);
+            data->SetTime(now);
             data->EmitQuote(*item.quote);
             runner.Drain();
             observe(*item.symbol, SummaryBuilder::MarkOf(*item.quote));
-            continue;
         }
-        // What the close calls for trades at the next price, not this one.
-        venue->SetDeferMatching(!options.fill_at_close);
-        data->Emit(*item.symbol, item.timeframe, item.bar);
-        runner.Drain();
-        venue->SetDeferMatching(false);
-        // With quotes the venue trades on them, so they alone set the marks.
-        observe(*item.symbol,
-                needs.quotes ? std::nullopt : std::optional(item.bar.close));
+        // Stop before repeating a walk so zero-length bars step stage by stage.
+        while (s < steps.size() && steps[s].time == t && steps[s].stage > 0) {
+            const std::size_t s_end = next_step_batch(s, t, /*opening=*/false);
+            run_steps(s, s_end, t);
+            s = s_end;
+        }
+        while (i < timeline.size() && timeline[i].time == t) {
+            const Replayed& first = timeline[i];
+            std::size_t end = i + 1;
+            while (end < timeline.size() && !timeline[end].is_quote &&
+                   timeline[end].time == t &&
+                   timeline[end].fill_only == first.fill_only &&
+                   timeline[end].timeframe == first.timeframe) {
+                ++end;
+            }
+            run_sessions(t);
+            now = std::max(now, t);
+            data->SetTime(now);
+            batch_marks.clear();
+            if (first.fill_only) {
+                for (std::size_t k = i; k < end; ++k) {
+                    batch_marks.emplace_back(*timeline[k].symbol,
+                                             timeline[k].bar.close);
+                }
+                observe_batch(batch_marks);
+                i = end;
+                continue;
+            }
+            for (std::size_t k = i; k < end; ++k) {
+                const Replayed& item = timeline[k];
+                // What the close calls for trades at the next price, not this
+                // one.
+                venue->SetDeferMatching(!options.fill_at_close);
+                data->Emit(*item.symbol, item.timeframe, item.bar);
+                runner.Drain();
+                venue->SetDeferMatching(false);
+                // With quotes the venue trades on them, so they alone set the
+                // marks.
+                if (!needs.quotes) {
+                    batch_marks.emplace_back(*item.symbol, item.bar.close);
+                }
+            }
+            observe_batch(batch_marks);
+            i = end;
+        }
+        while (s < steps.size() && steps[s].time == t && steps[s].stage == 0) {
+            const std::size_t s_end = next_step_batch(s, t, /*opening=*/true);
+            run_steps(s, s_end, t);
+            s = s_end;
+        }
     }
     // And those after the last event, up to the end.
     run_sessions(options.end);

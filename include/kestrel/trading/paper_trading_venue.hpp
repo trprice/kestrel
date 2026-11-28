@@ -84,6 +84,16 @@ struct PaperOptions {
     // StreamExecutions. Queries (GetOrder, GetFills, GetOpenOrders,
     // GetBalances) answer with the venue's state at once.
     std::chrono::milliseconds report_latency{0};
+    // How long after placement an order placed while matching is deferred
+    // (SetDeferMatching: a backtest's bar close) is held before it can fill,
+    // on top of order_latency; it then fills at the first open-market quote at
+    // or after that time. On a market that closes (DataSource::Hours), the
+    // delay counts open-market time, with order_latency added after it. Only
+    // those orders: one placed later, such as a buy placed when a held sell
+    // fills, is not held again. Immediate-or-cancel and fill-or-kill orders
+    // are held too, and decided at that quote. Zero, the default, holds none.
+    // A backtest sets it from BacktestOptions::fill_delay.
+    std::chrono::milliseconds deferred_fill_delay{0};
     // How much history a long run keeps: the newest max_fills fills (for
     // GetFills) and max_closed_orders closed orders (for GetOrder); older
     // ones are forgotten, so GetFills from before them returns what is kept
@@ -160,9 +170,10 @@ class PaperTradingVenue : public TradingVenue {
     void OnQuote(const types::Quote& quote);
 
     // The prices at which `symbol`'s resting orders would trade: each active
-    // limit order's limit and each untriggered stop's stop price, in no order.
-    // For a backtest walking a bar's path: a quote at each of them on the way
-    // fills an order inside the bar at its own price. Thread-safe.
+    // limit order's limit and each untriggered stop's stop price, in no order,
+    // once the order has entered the book. For a backtest walking a bar's
+    // path: a quote at each of them on the way fills an order inside the bar
+    // at its own price. Thread-safe.
     std::vector<types::Decimal> RestingPrices(
         const types::Symbol& symbol) const;
 
@@ -177,7 +188,8 @@ class PaperTradingVenue : public TradingVenue {
     // on. A buy is still reserved at the placing quote's price, so one that
     // costs more than the account has free at its fill (a gap up) is
     // cancelled then. Fill-or-kill and immediate-or-cancel orders are not
-    // deferred: they are decided at once, against the quote placed on.
+    // deferred: they are decided at once, against the quote placed on,
+    // unless held by PaperOptions::deferred_fill_delay.
     // Thread-safe.
     void SetDeferMatching(bool defer);
 
@@ -271,9 +283,10 @@ class PaperTradingVenue : public TradingVenue {
     void Arrive(Order& order);
     // Cancels now, or sends the cancel on its way (order_latency).
     void Cancel(Order& order);
-    // Matches an order that has reached the book against it, joins the queue,
-    // and closes an immediate-or-cancel remainder.
-    void Enter(Order& order);
+    // Matches an order that has reached the book against it (`book`, or a
+    // fresh view of `mQuotes` when null), joins the queue, and closes an
+    // immediate-or-cancel remainder.
+    void Enter(Order& order, types::Quote* book = nullptr);
     std::optional<Candidate> Evaluate(const Order& order,
                                       const types::Quote& quote,
                                       bool placing) const;
@@ -333,6 +346,10 @@ class PaperTradingVenue : public TradingVenue {
         bool cancel = false;
     };
     std::deque<InFlight> mInFlight;
+    // Adds `action` to mInFlight, kept in order of `due` (ties in the order
+    // sent), as a held order (deferred_fill_delay) is due later than one sent
+    // after it.
+    void Schedule(InFlight action);
     const std::shared_ptr<Listeners> mListeners = std::make_shared<Listeners>();
 
     std::unique_ptr<data::Subscription> mSubscription;  // last: destroyed first

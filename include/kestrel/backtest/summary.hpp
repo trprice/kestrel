@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "kestrel/types/decimal.hpp"
@@ -129,11 +131,17 @@ class SummaryBuilder {
         types::Timestamp start, std::chrono::milliseconds sample_interval);
 
     // `mark` is the price `symbol` is valued at from now on (none: keep the
-    // last one); `balances` are the venue's after the event. A curve point
-    // due before `time` is taken from the state before this call.
+    // last one); `balances` are the venue's after the event. For bars closing
+    // together, pass all of their marks at once so equity and drawdown are not
+    // measured on half-updated prices. A curve point due before `time` is
+    // taken from the state before this call.
     void Observe(types::Timestamp time, const types::Symbol& symbol,
                  std::optional<types::Decimal> mark,
                  const std::vector<types::Balance>& balances);
+    void Observe(
+        types::Timestamp time,
+        std::span<const std::pair<types::Symbol, types::Decimal>> marks,
+        const std::vector<types::Balance>& balances);
 
     // kNotFound if no moment had a price for every balance held.
     types::Result<BacktestSummary> Finish(

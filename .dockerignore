@@ -8,3 +8,5 @@ config/secrets.toml
 secrets.toml
 *_tokens.json
 *_tokens.json.tmp.*
+kraken_data/
+*.dump

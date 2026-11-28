@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <tuple>
 
 #include "kestrel/strategy/ma_crossover.hpp"
 #include "kestrel/types/market_hours.hpp"
@@ -831,6 +832,577 @@ TEST(BacktestTest, RejectsACoarserFillTimeframeOrOneWithQuotes) {
         RunBacktest(Data(kCloses), std::make_unique<QuoteStrategy>(), options);
     ASSERT_FALSE(quotes);
     EXPECT_EQ(quotes.error().category, ErrorCategory::kInvalidArgument);
+}
+
+constexpr const char* kOther = "ETH/USD";
+
+types::Bar Ohlc(types::Timestamp open_time, std::array<const char*, 4> p) {
+    types::Bar bar;
+    bar.open_time = open_time;
+    bar.open = D(p[0]);
+    bar.high = D(p[1]);
+    bar.low = D(p[2]);
+    bar.close = D(p[3]);
+    return bar;
+}
+
+types::Bar ValidOhlc(types::Timestamp open_time, const char* o, const char* c,
+                     const char* extra = nullptr) {
+    types::Bar bar;
+    bar.open_time = open_time;
+    bar.open = D(o);
+    bar.close = D(c);
+    bar.high = std::max(bar.open, bar.close);
+    bar.low = std::min(bar.open, bar.close);
+    if (extra && *extra != '\0') {
+        const auto p = D(extra);
+        bar.high = std::max(bar.high, p);
+        bar.low = std::min(bar.low, p);
+    }
+    return bar;
+}
+
+// BTC/USD and ETH/USD hourly, hours 0-6: flat at 10 and 100 but for hour 5,
+// whose bars are `btc5` and `eth5`. With `quarters`, 15-minute bars for hours
+// 5 and 6 too: the first two quarters of hour 5 end at `btc_at_0515` / `14`
+// and `eth_at_0515` / `95`, and the third quarter opens at `17` / `92` so an
+// order filling at 05:30's close (`14` / `95`) is distinct from 05:30's next
+// open (`17` / `92`).
+std::shared_ptr<ReplayDataSource> PairData(std::array<const char*, 4> btc5,
+                                           std::array<const char*, 4> eth5,
+                                           bool quarters = false,
+                                           const char* btc_at_0515 = "12",
+                                           const char* eth_at_0515 = "97",
+                                           const char* btc_spike_0515 = "") {
+    auto data = std::make_shared<ReplayDataSource>();
+    for (const auto& [symbol, flat, bar5, q1, q2_end, q3_open] :
+         {std::tuple{kSymbol, "10", btc5, btc_at_0515, "14", "17"},
+          std::tuple{kOther, "100", eth5, eth_at_0515, "95", "92"}}) {
+        std::vector<types::Bar> hours;
+        for (int h = 0; h <= 6; ++h) {
+            hours.push_back(h == 5 ? Ohlc(Hour(5), bar5)
+                                   : Ohlc(Hour(h), {flat, flat, flat, flat}));
+        }
+        data->AddBars(symbol, Timeframe::kH1, std::move(hours));
+        if (quarters) {
+            const auto q = std::chrono::minutes(15);
+            const char* spike = symbol == kSymbol ? btc_spike_0515 : "";
+            data->AddBars(
+                symbol, Timeframe::kM15,
+                {ValidOhlc(Hour(5), bar5[0], q1),
+                 ValidOhlc(Hour(5) + q, q1, q2_end, spike),
+                 ValidOhlc(Hour(5) + q * 2, q3_open, bar5[3]),
+                 ValidOhlc(Hour(5) + q * 3, bar5[3], bar5[3]),
+                 ValidOhlc(Hour(6), bar5[3], bar5[3]),
+                 ValidOhlc(Hour(6) + q, bar5[3], bar5[3]),
+                 ValidOhlc(Hour(6) + q * 2, bar5[3], bar5[3]),
+                 ValidOhlc(Hour(6) + q * 3, bar5[3], bar5[3])});
+        }
+        data->SetSymbolInfo(
+            {symbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    }
+    return data;
+}
+
+// Trades both symbols: on the first close it sees for both (hour 4's, at
+// 05:00), places `first`; when a sell fills, `then`; records any order updates.
+class PairOrders : public strategy::Strategy {
+   public:
+    PairOrders(std::vector<types::OrderRequest> first,
+               std::vector<types::OrderRequest> then = {},
+               std::vector<types::OrderStatus>* updates = nullptr)
+        : mFirst(std::move(first)),
+          mThen(std::move(then)),
+          mUpdates(updates) {}
+    std::string_view Name() const override { return "pair-orders"; }
+    strategy::Requirements Needs() const override {
+        strategy::Requirements r;
+        r.symbols = {kSymbol, kOther};
+        r.bar_timeframes = {Timeframe::kH1};
+        r.warmup_bars = 1;
+        return r;
+    }
+    void OnBar(strategy::Context& ctx, const types::Symbol& symbol, Timeframe,
+               const types::Bar&) override {
+        if (symbol != kOther) {
+            return;  // ETH/USD's bar comes second
+        }
+        for (const auto& order : mFirst) {
+            EXPECT_TRUE(ctx.Venue().PlaceOrder(order).has_value());
+        }
+        mFirst.clear();
+    }
+    void OnFill(strategy::Context& ctx, const types::Fill& fill) override {
+        if (fill.side != types::Side::kSell) {
+            return;
+        }
+        for (const auto& order : mThen) {
+            EXPECT_TRUE(ctx.Venue().PlaceOrder(order).has_value());
+        }
+        mThen.clear();
+    }
+    void OnOrderUpdate(strategy::Context&,
+                       const types::OrderStatus& status) override {
+        if (mUpdates) {
+            mUpdates->push_back(status);
+        }
+    }
+
+   private:
+    std::vector<types::OrderRequest> mFirst;
+    std::vector<types::OrderRequest> mThen;
+    std::vector<types::OrderStatus>* mUpdates;
+};
+
+types::OrderRequest Market(const char* symbol, types::Side side) {
+    types::OrderRequest r;
+    r.symbol = symbol;
+    r.side = side;
+    r.quantity = D("1");
+    return r;
+}
+
+BacktestOptions PairOptions() {
+    auto o = Options();
+    o.paper.initial_balances = {{"USD", D("10000")}, {"ETH", D("1")}};
+    return o;
+}
+
+const types::Fill* FillOf(const backtest::BacktestResult& result,
+                          const char* symbol) {
+    for (const auto& fill : result.fills) {
+        if (fill.symbol == symbol) {
+            return &fill;
+        }
+    }
+    return nullptr;
+}
+
+// A buy placed when another symbol's sell fills at the open meets its own
+// symbol at that open too, though that symbol comes first: the bars are
+// walked side by side, not BTC/USD's whole hour before ETH/USD's.
+TEST(BacktestTest, AnOrderPlacedOnAnotherSymbolsFillMeetsItsOwnAtThatTime) {
+    auto result = RunBacktest(
+        PairData({"11", "15", "11", "14"}, {"101", "101", "90", "95"}),
+        std::make_unique<PairOrders>(
+            std::vector{Market(kOther, types::Side::kSell)},
+            std::vector{Market(kSymbol, types::Side::kBuy)}),
+        PairOptions());
+    ASSERT_OK(result);
+    const auto* sell = FillOf(*result, kOther);
+    const auto* buy = FillOf(*result, kSymbol);
+    ASSERT_NE(sell, nullptr);
+    ASSERT_NE(buy, nullptr);
+    EXPECT_EQ(sell->price, D("101"));
+    EXPECT_EQ(buy->price, D("11"));  // hour 5's open, not its close of 14
+    EXPECT_EQ(buy->time, Hour(5));
+}
+
+// An order due on the hour meets the price on the hour (hour 5's close), not
+// the open of the hour before, for every symbol and not only the first.
+TEST(BacktestTest, AnOrderDueOnTheHourFillsAtThatHoursPrice) {
+    auto options = PairOptions();
+    options.paper.order_latency = std::chrono::hours(1);
+    auto result = RunBacktest(
+        PairData({"11", "15", "11", "14"}, {"101", "101", "90", "95"}),
+        std::make_unique<PairOrders>(
+            std::vector{Market(kSymbol, types::Side::kBuy),
+                        Market(kOther, types::Side::kBuy)}),
+        options);
+    ASSERT_OK(result);
+    const auto* btc = FillOf(*result, kSymbol);
+    const auto* eth = FillOf(*result, kOther);
+    ASSERT_NE(btc, nullptr);
+    ASSERT_NE(eth, nullptr);
+    EXPECT_EQ(btc->price, D("14"));
+    EXPECT_EQ(eth->price, D("95"));
+    EXPECT_EQ(eth->time, Hour(6));
+}
+
+// A fill delay holds the orders placed on the close (the ETH/USD sell) and
+// fills them at the price 30 min later (05:30); the buy placed on that fill
+// is neither held again to 06:00 nor deferred to the next quarter's open
+// (17): both trade immediately at 05:30's close (95 and 14).
+TEST(BacktestTest, AFillDelayHoldsTheClosesOrdersOnceAndThoseAfterNotAgain) {
+    auto options = PairOptions();
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(30);
+    auto result = RunBacktest(
+        PairData({"11", "17", "11", "14"}, {"101", "101", "90", "95"},
+                 /*quarters=*/true),
+        std::make_unique<PairOrders>(
+            std::vector{Market(kOther, types::Side::kSell)},
+            std::vector{Market(kSymbol, types::Side::kBuy)}),
+        options);
+    ASSERT_OK(result);
+    const auto* sell = FillOf(*result, kOther);
+    const auto* buy = FillOf(*result, kSymbol);
+    ASSERT_NE(sell, nullptr);
+    ASSERT_NE(buy, nullptr);
+    EXPECT_EQ(sell->price, D("95"));
+    EXPECT_EQ(sell->time, Hour(5) + std::chrono::minutes(30));
+    EXPECT_EQ(buy->price, D("14"));
+    EXPECT_EQ(buy->time, Hour(5) + std::chrono::minutes(30));
+}
+
+// One quarter-hour of 15-minute bars: the price at 05:15.
+TEST(BacktestTest, AQuarterHourFillDelayFillsAtTheFirstQuartersClose) {
+    auto options = PairOptions();
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(15);
+    auto result = RunBacktest(
+        PairData({"11", "17", "11", "14"}, {"101", "101", "90", "95"},
+                 /*quarters=*/true, "12", "97"),
+        std::make_unique<PairOrders>(
+            std::vector{Market(kSymbol, types::Side::kBuy)}),
+        options);
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("12"));
+    EXPECT_EQ(result->fills[0].time, Hour(5) + std::chrono::minutes(15));
+}
+
+// An immediate-or-cancel or fill-or-kill order placed on the close is held
+// too, and decided against the price when the delay is up (05:30, 14): not
+// the close it was placed on, nor the price before 05:30 (16); one whose
+// limit is not met there expires and pushes OnOrderUpdate(kExpired).
+TEST(BacktestTest, AFillDelayHoldsAnImmediateOrCancelOrder) {
+    auto options = PairOptions();
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(30);
+    for (const auto tif :
+         {types::TimeInForce::kIoc, types::TimeInForce::kFok}) {
+        auto mkt = Market(kSymbol, types::Side::kBuy);
+        mkt.time_in_force = tif;
+        auto filled = RunBacktest(
+            PairData({"11", "17", "11", "14"}, {"101", "101", "90", "95"},
+                     /*quarters=*/true, "12", "97", "16"),
+            std::make_unique<PairOrders>(std::vector{mkt}), options);
+        ASSERT_OK(filled);
+        ASSERT_EQ(filled->fills.size(), 1u);
+        EXPECT_EQ(filled->fills[0].price, D("14"));
+        EXPECT_EQ(filled->fills[0].time, Hour(5) + std::chrono::minutes(30));
+
+        auto lim = LimitBuy("13");  // fillable at 05:00/05:15, not at 14
+        lim.time_in_force = tif;
+        std::vector<types::OrderStatus> updates;
+        auto expired = RunBacktest(
+            PairData({"11", "17", "11", "14"}, {"101", "101", "90", "95"},
+                     /*quarters=*/true, "12", "97"),
+            std::make_unique<PairOrders>(std::vector{lim},
+                                         std::vector<types::OrderRequest>{},
+                                         &updates),
+            options);
+        ASSERT_OK(expired);
+        EXPECT_TRUE(expired->fills.empty());
+        ASSERT_EQ(updates.size(), 1u);
+        EXPECT_EQ(updates[0].state, types::OrderState::kExpired);
+        EXPECT_EQ(updates[0].updated_time, Hour(5) + std::chrono::minutes(30));
+    }
+}
+
+// Bars of two timeframes closing together reach the strategy finer first,
+// whatever order it asks for them in, so an order placed on the coarser
+// bar's 06:00 close fills at hour 6's open (12), not inside hour 5 (10).
+TEST(BacktestTest, AtACommonCloseTheFinerTimeframesBarComesFirst) {
+    class CoarserBuyer : public strategy::Strategy {
+       public:
+        explicit CoarserBuyer(std::vector<Timeframe>& out) : seen(out) {}
+        std::string_view Name() const override { return "coarser-buyer"; }
+        strategy::Requirements Needs() const override {
+            strategy::Requirements r;
+            r.symbols = {kSymbol};
+            r.bar_timeframes = {Timeframe::kH2, Timeframe::kH1};
+            r.warmup_bars = 1;
+            return r;
+        }
+        void OnBar(strategy::Context& ctx, const types::Symbol&,
+                   Timeframe tf, const types::Bar&) override {
+            seen.push_back(tf);
+            if (tf == Timeframe::kH2 && !bought) {
+                bought = true;
+                EXPECT_TRUE(ctx.Venue()
+                                .PlaceOrder(Market(kSymbol, types::Side::kBuy))
+                                .has_value());
+            }
+        }
+        std::vector<Timeframe>& seen;
+        bool bought = false;
+    };
+
+    auto data = OhlcData(WithBar5({"10", "20", "9", "12"}));
+    data->AddBars(kSymbol, Timeframe::kH2,
+                  {Ohlc(Hour(2), {"10", "10", "10", "10"}),
+                   Ohlc(Hour(4), {"10", "20", "9", "12"}),
+                   Ohlc(Hour(6), {"12", "12", "12", "12"})});
+    std::vector<Timeframe> seen;
+    auto result =
+        RunBacktest(data, std::make_unique<CoarserBuyer>(seen), Options());
+    ASSERT_OK(result);
+    // Hour 4 (05:00); hour 5, then hours 4-5 (06:00); hour 6 (07:00); hours
+    // 6-7 (08:00).
+    EXPECT_EQ(seen, (std::vector{Timeframe::kH1, Timeframe::kH1, Timeframe::kH2,
+                                 Timeframe::kH1, Timeframe::kH2}));
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("12"));
+    EXPECT_EQ(result->fills[0].time, Hour(6));
+}
+
+TEST(BacktestTest, RejectsInvalidFillDelayOptions) {
+    const auto run = [](BacktestOptions options,
+                        std::shared_ptr<ReplayDataSource> d = nullptr) {
+        if (!d) {
+            d = PairData({"11", "15", "11", "14"}, {"101", "101", "90", "95"});
+        }
+        return RunBacktest(
+            d, std::make_unique<PairOrders>(std::vector<types::OrderRequest>{}),
+            options);
+    };
+    const auto expect_invalid = [&](const BacktestOptions& o) {
+        auto r = run(o);
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().category, ErrorCategory::kInvalidArgument);
+    };
+    auto options = PairOptions();
+    options.fill_delay = std::chrono::minutes(-15);
+    expect_invalid(options);
+
+    options.fill_delay = std::chrono::minutes(30);
+    expect_invalid(options);  // no fill timeframe
+
+    options.fill_timeframe = Timeframe::kM30;
+    options.fill_delay = std::chrono::minutes(45);
+    expect_invalid(options);
+
+    options.fill_delay = std::chrono::hours(1);  // not shorter than 1h
+    expect_invalid(options);
+
+    options.fill_delay = std::chrono::minutes(30);
+    options.fill_at_close = true;
+    expect_invalid(options);
+
+    // Daily strategy on a market that closes: orders wait for OnSessionOpen,
+    // so a fill delay is refused rather than silently ignored.
+    class DailyStrategy : public strategy::Strategy {
+       public:
+        std::string_view Name() const override { return "daily"; }
+        strategy::Requirements Needs() const override {
+            strategy::Requirements r;
+            r.symbols = {kSymbol};
+            r.bar_timeframes = {Timeframe::kD1};
+            return r;
+        }
+    };
+    auto equity = Data(kCloses);
+    equity->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<types::UsEquityCalendar>(), false));
+    BacktestOptions daily_opts = Options();
+    daily_opts.fill_timeframe = Timeframe::kH1;
+    daily_opts.fill_delay = std::chrono::hours(1);
+    auto daily =
+        RunBacktest(equity, std::make_unique<DailyStrategy>(), daily_opts);
+    ASSERT_FALSE(daily);
+    EXPECT_EQ(daily.error().category, ErrorCategory::kInvalidArgument);
+}
+
+// Buying a second symbol during the walk after its price halved must not
+// value the new balance at its old mark before its bar's mark is observed.
+TEST(BacktestTest, SimultaneousFillsDoNotCreateAPhantomSummaryDrawdown) {
+    auto options = PairOptions();
+    options.end = Hour(6);
+    options.paper.initial_balances = {{"USD", D("10000")}};
+    auto buy_eth = Market(kOther, types::Side::kBuy);
+    buy_eth.quantity = D("80");  // 80 * 50 = 4,000 USD; at old 100 -> +4,000!
+    auto result = RunBacktest(
+        PairData({"10", "10", "10", "10"}, {"50", "50", "50", "50"}),
+        std::make_unique<PairOrders>(std::vector{buy_eth}), options);
+    ASSERT_OK(result);
+    ASSERT_OK(result->summary);
+    EXPECT_EQ(result->summary->start_equity, D("10000"));
+    EXPECT_EQ(result->summary->end_equity, D("10000"));
+    EXPECT_EQ(result->summary->max_drawdown, D("0"));
+}
+
+// When one symbol lacks fill-timeframe bars (or ends them early), its
+// fallback walk runs at its real intra-bar timestamps alongside the other
+// symbol, and simultaneous close-only fallbacks drain side by side.
+TEST(BacktestTest, ASymbolWithoutFillBarsWalksInStepWithTheOthers) {
+    auto data = PairData({"11", "17", "11", "14"}, {"101", "105", "90", "95"},
+                         /*quarters=*/true);
+    // Drop ETH/USD's 15m bars so Hour 5 falls back to walking its 1h bar:
+    // 101 (05:00) -> 105 (05:20) -> 90 (05:40) -> 95 (06:00).
+    data->AddBars(kOther, Timeframe::kM15, {});
+    auto options = PairOptions();
+    options.end = Hour(6);
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(30);
+    auto result = RunBacktest(
+        data,
+        std::make_unique<PairOrders>(
+            std::vector{Market(kOther, types::Side::kSell)},
+            std::vector{Market(kSymbol, types::Side::kBuy)}),
+        options);
+    ASSERT_OK(result);
+    // Both symbols in hour 4 plus ETH/USD in hour 5 lack 15m bars.
+    EXPECT_EQ(result->bars_walked_without_fill_bars, 3u);
+    const auto* sell = FillOf(*result, kOther);
+    const auto* buy = FillOf(*result, kSymbol);
+    ASSERT_NE(sell, nullptr);
+    ASSERT_NE(buy, nullptr);
+    // First ETH/USD point at or after 05:30 is 90 at 05:40 (not 101 at 06:00).
+    EXPECT_EQ(sell->price, D("90"));
+    EXPECT_EQ(sell->time, Hour(5) + std::chrono::minutes(40));
+    EXPECT_EQ(buy->time, Hour(5) + std::chrono::minutes(40));
+
+    // Close-only fallback: both symbols have only the first quarter [05:00,
+    // 05:15), so a 45m delay meets both symbols' 06:00 closes side by side.
+    auto partial = PairData({"11", "17", "11", "14"},
+                            {"101", "105", "90", "95"});
+    partial->AddBars(kSymbol, Timeframe::kM15,
+                     {ValidOhlc(Hour(5), "11", "12")});
+    partial->AddBars(kOther, Timeframe::kM15,
+                     {ValidOhlc(Hour(5), "101", "97")});
+    options.fill_delay = std::chrono::minutes(45);
+    auto closed = RunBacktest(
+        partial,
+        std::make_unique<PairOrders>(
+            std::vector{Market(kOther, types::Side::kSell)},
+            std::vector{Market(kSymbol, types::Side::kBuy)}),
+        options);
+    ASSERT_OK(closed);
+    EXPECT_EQ(closed->bars_walked_without_fill_bars, 2u);
+    ASSERT_NE(FillOf(*closed, kOther), nullptr);
+    ASSERT_NE(FillOf(*closed, kSymbol), nullptr);
+    EXPECT_EQ(FillOf(*closed, kOther)->price, D("95"));
+    EXPECT_EQ(FillOf(*closed, kSymbol)->price, D("14"));
+}
+
+// A symbol falling back to walking its coarser bar must update its mark in
+// intermediate fill-bar batches so a mid-bar fill is not valued at its old
+// bar's close.
+TEST(BacktestTest, FallbackWalkDoesNotCreateAPhantomSummaryDrawdown) {
+    auto data = PairData({"10", "10", "10", "10"}, {"100", "100", "50", "60"},
+                         /*quarters=*/true);
+    data->AddBars(kOther, Timeframe::kM15, {});
+    auto options = PairOptions();
+    options.end = Hour(6);
+    options.paper.initial_balances = {{"USD", D("10000")}};
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(30);
+    auto buy_eth = Market(kOther, types::Side::kBuy);
+    buy_eth.quantity = D("80");  // fills at 05:40 at 50; 05:45 must not see 100
+    auto result = RunBacktest(
+        data, std::make_unique<PairOrders>(std::vector{buy_eth}), options);
+    ASSERT_OK(result);
+    ASSERT_OK(result->summary);
+    EXPECT_GT(result->bars_walked_without_fill_bars, 0u);
+    EXPECT_EQ(result->summary->start_equity, D("10000"));
+    EXPECT_EQ(result->summary->end_equity, D("10800"));
+    EXPECT_EQ(result->summary->max_drawdown, D("0"));
+}
+
+// A mid-leg fill on a later symbol that places a resting stop on an earlier
+// symbol still triggers on the earlier symbol's same leg at its stop price.
+TEST(BacktestTest, MidLegFillOnLaterSymbolTriggersStopOnEarlierSymbol) {
+    types::OrderRequest eth_stop;
+    eth_stop.symbol = kOther;
+    eth_stop.side = types::Side::kSell;
+    eth_stop.type = types::OrderType::kStop;
+    eth_stop.quantity = D("1");
+    eth_stop.stop_price = D("95");
+
+    types::OrderRequest btc_stop;
+    btc_stop.symbol = kSymbol;
+    btc_stop.side = types::Side::kBuy;
+    btc_stop.type = types::OrderType::kStop;
+    btc_stop.quantity = D("1");
+    btc_stop.stop_price = D("14");
+
+    // Leg 0 at 05:00: BTC/USD walks 11 -> 17 (high nearer than low 4);
+    // ETH/USD walks 101 -> 90 (low nearer than high 120).
+    auto result = RunBacktest(
+        PairData({"11", "17", "4", "14"}, {"101", "120", "90", "95"}),
+        std::make_unique<PairOrders>(std::vector{eth_stop},
+                                     std::vector{btc_stop}),
+        PairOptions());
+    ASSERT_OK(result);
+    const auto* sell = FillOf(*result, kOther);
+    const auto* buy = FillOf(*result, kSymbol);
+    ASSERT_NE(sell, nullptr);
+    ASSERT_NE(buy, nullptr);
+    EXPECT_EQ(sell->price, D("95"));
+    EXPECT_EQ(buy->price, D("14"));  // stop price on leg 0, not 17 at 05:20
+    EXPECT_EQ(buy->time, Hour(5));
+}
+
+// On a market that closes, an intraday --fill-delay counts open-market time
+// across sessions rather than wall-clock time while shut.
+TEST(BacktestTest, IntradayFillDelayCountsOpenMarketHours) {
+    class TwoDayCalendar : public types::TradingCalendar {
+       public:
+        std::optional<types::TradingDay> On(
+            std::chrono::year_month_day date) const override {
+            const std::chrono::sys_days d{date};
+            if (d != std::chrono::sys_days{} &&
+                d != std::chrono::sys_days{} + std::chrono::days(1)) {
+                return std::nullopt;
+            }
+            const auto base = types::Timestamp{d};
+            const auto open = base + std::chrono::hours(4) +
+                              std::chrono::minutes(30);
+            const auto close = base + std::chrono::hours(6) +
+                               std::chrono::minutes(30);
+            return types::TradingDay{open, open, close, close};
+        }
+        std::chrono::year_month_day DateAt(types::Timestamp t) const override {
+            return std::chrono::year_month_day{
+                std::chrono::floor<std::chrono::days>(t)};
+        }
+    };
+    class SixClockBuyer : public strategy::Strategy {
+       public:
+        std::string_view Name() const override { return "six-buyer"; }
+        strategy::Requirements Needs() const override {
+            strategy::Requirements r;
+            r.symbols = {kSymbol};
+            r.bar_timeframes = {Timeframe::kH1};
+            r.warmup_bars = 1;
+            return r;
+        }
+        void OnBar(strategy::Context& ctx, const types::Symbol&, Timeframe,
+                   const types::Bar& bar) override {
+            if (bar.open_time == Hour(5)) {  // closes at 06:00 (30m left)
+                auto ioc = Market(kSymbol, types::Side::kBuy);
+                ioc.time_in_force = types::TimeInForce::kIoc;
+                EXPECT_TRUE(ctx.Venue().PlaceOrder(ioc).has_value());
+            }
+        }
+    };
+
+    auto data = std::make_shared<ReplayDataSource>();
+    data->SetHours(std::make_shared<types::MarketHours>(
+        std::make_shared<TwoDayCalendar>(), false));
+    data->SetSymbolInfo({kSymbol, D("0.01"), D("0.00000001"), D("0.0001"), {}});
+    data->AddBars(kSymbol, Timeframe::kH1,
+                  {BarAt(4, "10"), BarAt(5, "10"), BarAt(28, "20"),
+                   BarAt(29, "20")});
+    const auto q = std::chrono::minutes(15);
+    data->AddBars(kSymbol, Timeframe::kM15,
+                  {ValidOhlc(Hour(5) + q * 2, "10", "11"),
+                   ValidOhlc(Hour(5) + q * 3, "11", "12"),
+                   ValidOhlc(Hour(28) + q * 2, "20", "25"),
+                   ValidOhlc(Hour(28) + q * 3, "25", "30")});
+    auto options = Options();
+    options.start = Hour(4);
+    options.end = Hour(30);
+    options.fill_timeframe = Timeframe::kM15;
+    options.fill_delay = std::chrono::minutes(45);  // 30m Day 0 + 15m Day 1
+    auto result =
+        RunBacktest(data, std::make_unique<SixClockBuyer>(), options);
+    ASSERT_OK(result);
+    ASSERT_EQ(result->fills.size(), 1u);
+    EXPECT_EQ(result->fills[0].price, D("25"));
+    EXPECT_EQ(result->fills[0].time, Hour(28) + std::chrono::minutes(45));
 }
 
 TEST(BacktestTest, ARestingLimitFillsWhenTheBarReachesIt) {

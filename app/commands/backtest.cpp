@@ -20,6 +20,7 @@ class BacktestCommand : public Command {
                     types::Timestamp to, bool quotes_from_trades,
                     bool bars_from_database, bool fill_at_close,
                     std::optional<types::Timeframe> fill_timeframe,
+                    std::chrono::milliseconds fill_delay,
                     std::string equity_csv,
                     std::chrono::milliseconds equity_interval)
         : mName(std::move(strategy_name)),
@@ -29,6 +30,7 @@ class BacktestCommand : public Command {
           mBarsFromDatabase(bars_from_database),
           mFillAtClose(fill_at_close),
           mFillTimeframe(fill_timeframe),
+          mFillDelay(fill_delay),
           mEquityCsv(std::move(equity_csv)),
           mEquityInterval(equity_interval) {}
 
@@ -51,6 +53,18 @@ class BacktestCommand : public Command {
         if (!strategy) {
             spdlog::error("strategy: {}", strategy.error().ToString());
             return 1;
+        }
+        // Checked before opening the database or the provider, so bad fill
+        // options fail at once without touching the network.
+        strategy::Requirements needs = (*strategy)->Needs();
+        if (auto checked = backtest::CheckFillTimeframe(needs, mFillTimeframe);
+            !checked) {
+            return Fail("--fill-timeframe", checked.error());
+        }
+        if (auto checked = backtest::CheckFillOptions(
+                needs, mFillTimeframe, mFillDelay, mFillAtClose);
+            !checked) {
+            return Fail("--fill-delay", checked.error());
         }
         // The database is optional: without a [database] section, or if it
         // cannot be reached, everything comes from the venue.
@@ -84,12 +98,13 @@ class BacktestCommand : public Command {
             spdlog::error("startup: {}", source.error().ToString());
             return 1;
         }
-        // The fill timeframe's bars are loaded with the strategy's own.
-        strategy::Requirements needs = (*strategy)->Needs();
-        if (auto checked = backtest::CheckFillTimeframe(needs, mFillTimeframe);
+        if (auto checked = backtest::CheckFillOptions(
+                needs, mFillTimeframe, mFillDelay, mFillAtClose,
+                (*source)->Hours().get());
             !checked) {
-            return Fail("--fill-timeframe", checked.error());
+            return Fail("--fill-delay", checked.error());
         }
+        // The fill timeframe's bars are loaded with the strategy's own.
         if (mFillTimeframe &&
             std::ranges::find(needs.bar_timeframes, *mFillTimeframe) ==
                 needs.bar_timeframes.end()) {
@@ -108,6 +123,7 @@ class BacktestCommand : public Command {
         options.end = mTo;
         options.fill_at_close = mFillAtClose;
         options.fill_timeframe = mFillTimeframe;
+        options.fill_delay = mFillDelay;
         // The curve is only written out: without a CSV, keep its first and
         // last points, not one a minute (millions over a few years).
         options.equity_interval = mEquityCsv.empty()
@@ -268,6 +284,7 @@ class BacktestCommand : public Command {
     bool mBarsFromDatabase;
     bool mFillAtClose;
     std::optional<types::Timeframe> mFillTimeframe;
+    std::chrono::milliseconds mFillDelay;
     std::string mEquityCsv;
     std::chrono::milliseconds mEquityInterval;
 };
@@ -280,6 +297,7 @@ struct Args {
     bool bars_from_database = false;
     bool fill_at_close = false;
     std::string fill_timeframe;
+    std::string fill_delay;
     std::string equity_csv;
     std::string equity_interval = "1m";
 };
@@ -317,11 +335,20 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
                   "Fill an order placed on a bar's close at that close, not "
                   "at the next price replayed (the next bar's open); "
                   "optimistic");
-    sub->add_option("--fill-timeframe", args->fill_timeframe,
-                    "Fill orders on bars of this finer timeframe (e.g. 1m), "
-                    "walked in place of the strategy's own, so the path within "
-                    "a bar is the recorded one")
+    auto* fill_timeframe =
+        sub->add_option("--fill-timeframe", args->fill_timeframe,
+                        "Fill orders on bars of this finer timeframe (e.g. "
+                        "1m), walked in place of the strategy's own, so the "
+                        "path within a bar is the recorded one")
+            ->check(TimeframeValidator(true))
+            ->type_name("TIMEFRAME");
+    sub->add_option("--fill-delay", args->fill_delay,
+                    "Hold the orders placed on a strategy bar's close this "
+                    "long (e.g. 4h, a whole number of --fill-timeframe bars) "
+                    "before they can fill, sized from the close; orders "
+                    "placed after (a buy on a sell's fill) are not held again")
         ->check(TimeframeValidator(true))
+        ->needs(fill_timeframe)
         ->type_name("TIMEFRAME");
     auto* csv = sub->add_option("--equity-csv", args->equity_csv,
                                 "Also write the equity curve, sampled every "
@@ -341,6 +368,11 @@ void AddBacktestCommand(CLI::App& app, CommandSlot& slot) {
             args->fill_timeframe.empty()
                 ? std::nullopt
                 : std::optional(*types::ParseTimeframe(args->fill_timeframe)),
+            args->fill_delay.empty()
+                ? std::chrono::milliseconds::zero()
+                : std::chrono::duration_cast<std::chrono::milliseconds>(
+                      *types::FixedDuration(
+                          *types::ParseTimeframe(args->fill_delay))),
             args->equity_csv,
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 *types::FixedDuration(
