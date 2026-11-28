@@ -249,39 +249,59 @@ held cash.
 
 | Run | A8 | B | A8 at 35 bps | B at 35 bps | Vol A8 / B | Max DD A8 / B |
 |---|---|---|---|---|---|---|
-| `trend_ensemble`, default | **3.02**, +73.3% | **1.07**, +40.6% | 2.94, +70.9% | 0.97, +36.1% | 6.1% / 8.3% | −4.2% / −7.4% |
-| BTC and cash, same vol | 2.04, +44.9% | 0.79, +28.4% | | | | |
-| `trend_ensemble`, `[20, 55]` | 3.02, +86.0% | 1.15, +55.3% | 2.96, +83.7% | 1.09, +51.5% | 6.9% / 10.0% | −4.6% / −7.3% |
-| BTC and cash, same vol | 2.04, +51.8% | 0.79, +34.4% | | | | |
-| `momentum_rotation` | **3.10**, +2,398% | **0.38**, −17.1% | 3.04, +2,221% | 0.30, −36.8% | 92% / 87% | −50.0% / −87.8% |
-| BTC and cash, same vol | 3.32, +3,136% | 0.79, +234% | | | | |
+| `trend_ensemble`, default | **3.01**, +74.2% | **1.05**, +40.2% | 2.94, +71.8% | 0.95, +35.7% | 6.2% / 8.4% | −4.2% / −7.5% |
+| BTC and cash, same vol | 2.04, +45.4% | 0.79, +28.7% | | | | |
+| `trend_ensemble`, `[20, 55]` | 3.02, +87.3% | 1.15, +55.8% | 2.97, +85.0% | 1.09, +51.9% | 7.0% / 10.1% | −4.6% / −7.3% |
+| BTC and cash, same vol | 2.04, +52.5% | 0.79, +34.9% | | | | |
+| `momentum_rotation` | **2.99**, +2,085% | **0.32**, −34.3% | 2.92, +1,927% | 0.25, −49.7% | 92% / 89% | −49.1% / −89.9% |
+| BTC and cash, same vol | 3.32, +3,153% | 0.79, +231% | | | | |
 | Coins listed, held equally | 2.00 (3.58 from Sep 3 2016) | 0.56 | | | | |
 
 - **`trend_ensemble`, default: passes.** It is ahead of BTC and cash in
   both periods at both costs, and ahead of the coins held equally too.
-  On the eleven pairs, A is 2.67 (+54.8%), still ahead of 2.04. It stays
+  On the eleven pairs, A is 2.71 (+56.3%), still ahead of 2.04. It stays
   in paper trading (run 49).
   - **Its gains are spread over the coins, not one** (the plan's per-pair
     report for period A). Shares of the profit, fees included:
-    - A8, +73,264 USD: BTC 27%, ETH 23%, LTC 12%, ETC 10%, XMR 9%, ZEC
+    - A8, +74,183 USD: BTC 27%, ETH 23%, LTC 12%, ETC 10%, XMR 9%, ZEC
       7%, XRP 7%, DASH 6%.
-    - B, +40,642 USD: ETH 22%, BTC 20%, ETC 14%, XRP 9%, XMR 8%, LTC 8%,
+    - B, +40,156 USD: ETH 22%, BTC 20%, ETC 14%, XRP 9%, XMR 8%, LTC 8%,
       XLM 6%, DASH 5%, ZEC 5%, EOS 2%, REP 2%. Every coin is positive.
 - **`[20, 55]`: passes on its own, but does not replace the default.** Its
-  Sharpe over the default's is +0.00 in A8 (p = 0.48) and +0.09 in B
-  (p = 0.26); at 35 bps, +0.02 (p = 0.43) and +0.12 (p = 0.18). On the
-  eleven pairs, A is +0.36 (p = 0.10). Run 51 goes on as the forward test.
+  Sharpe over the default's is +0.01 in A8 (p = 0.48) and +0.10 in B
+  (p = 0.26); at 35 bps, +0.03 (p = 0.43) and +0.14 (p = 0.18). On the
+  eleven pairs, A is +0.33 (p = 0.10). Run 51 goes on as the forward test.
 - **`momentum_rotation`: fails.** It is behind BTC and cash in both
-  periods: 3.10 against 3.32 in A8, and far behind in B, where it lost
-  87.8% at its worst and ended down. Without its top coin it is further
-  behind: A8 without XRP 3.00, B without ETC 0.36.
+  periods: 2.99 against 3.32 in A8, and far behind in B, where it lost
+  89.9% at its worst and ended down 34%. Without its top coin: A8 without
+  XRP 2.91, B without ETC 0.38, still behind.
   - The first version of this table measured its A8 from Jan 2015,
     20 months of cash included: 2.05 against 2.04, at 61% volatility.
     Gemini's review caught it.
   - On the eleven pairs, from its first trade on Dec 2 2016, it is ahead:
     3.64 against 3.45. That run is not the one judged.
   - BTC and cash at its volatility needs more than all BTC: 1.11 times
-    in A8 and in B (1.39 on the eleven pairs), rebalanced daily.
+    in A8, 1.14 in B (1.39 on the eleven pairs), rebalanced daily.
+- **Rerun on the fixed build (Nov 27 2026).** These portfolio runs were
+  made with the backtest's old bar walk, which walked each coin's day in
+  full before the next (see [Trend ensemble: Kraken's bars, and its
+  sensitivity](#trend-ensemble-krakens-bars-and-its-sensitivity-planned-and-run-nov-27-2026)).
+  The table above is from the fixed build. The old build reproduces every
+  figure first published here, so the differences are the fix alone.
+  - `trend_ensemble` moved by at most 0.02 of Sharpe and about a point of
+    return (A8 3.02 → 3.01, B 1.07 → 1.05), and `[20, 55]` by at most
+    0.01.
+  - `momentum_rotation` moved most, as it sells and buys whole positions
+    on one day: A8 3.10 → 2.99 (+2,398% → +2,085%) and B 0.38 → 0.32
+    (−17.1% → −34.3%; at 35 bps −36.8% → −49.7%). In the old walk, its
+    buys were often filled later in their own coin's day than its sells.
+  - No verdict changed. The p-values are the ones first published: the
+    bootstrap script is gone, and a re-implementation gives 0.52, 0.22,
+    0.45 and 0.16 on the fixed build (0.42 on the eleven pairs), none
+    below 0.05 either. The shares of profit above are as first
+    published (measured the same way on both builds, no coin's share
+    moved by more than 0.4 points); the coins held equally do not depend
+    on the walk.
 
 The 10-day breakout. Each figure is the average over drift a trade, and
 the trades are pooled over the eleven pairs, which is the bar to pass.
@@ -715,25 +735,25 @@ block resamples, that the strategy's Sharpe is not above the benchmark's.
 
 | The 18, 5 bps a side | A: Aug 12 2019 – Dec 2022 | B: Jan 2023 – Nov 5 2026 |
 |---|---|---|
-| Default | **1.09**, +21.8% | **0.87**, +16.6% |
-| Same stocks held equally, same vol | 0.59, +11.0% (p = 0.10) | 1.27, +25.3% (p = 0.95) |
-| SPY and cash, same vol | 0.47, +8.6% (p = 0.08) | 1.21, +24.0% (p = 0.88) |
-| `[20, 55]` | 1.09, +21.6% | 0.80, +15.8% |
-| Default at 15 bps | 0.97, +19.0% | 0.74, +13.8% |
-| Default without its best stock (TSLA in A, NVDA in B), against the same stocks held equally | 0.83 against 0.44 (p = 0.15) | 0.70 against 1.13 (p = 0.96) |
+| Default | **1.00**, +20.3% | **0.80**, +15.3% |
+| Same stocks held equally, same vol | 0.59, +11.3% (p = 0.16) | 1.27, +25.9% (p = 0.97) |
+| SPY and cash, same vol | 0.47, +8.7% (p = 0.11) | 1.21, +24.4% (p = 0.93) |
+| `[20, 55]` | 0.97, +19.4% | 0.70, +13.8% |
+| Default at 15 bps | 0.89, +17.6% | 0.66, +12.5% |
+| Default without its best stock (TSLA in A, NVDA in B), against the same stocks held equally | 0.75 against 0.44 (p = 0.22) | 0.63 against 1.13 (p = 0.98) |
 | Hold SPY | +32.8%, 34.1% fall | +92.5%, 19.0% fall |
 | Hold the 18 equally, full weight | +51.6%, Sharpe 0.59, 38.6% fall | +129.4%, Sharpe 1.27, 21.0% fall |
 
 - **The default fails on period B.** It is ahead of the equal-weight
-  stocks in A at both costs (+0.50 and +0.38 in Sharpe, p = 0.10 and
-  0.17, so not significant), and behind them in B at both costs (−0.40
-  and −0.53). It is the ETF result again: in a steady rise, being half
+  stocks in A at both costs (+0.41 and +0.30 in Sharpe, p = 0.16 and
+  0.24, so not significant), and behind them in B at both costs (−0.47
+  and −0.61). It is the ETF result again: in a steady rise, being half
   out of the market costs more than the trend timing saves.
-- **`[20, 55]` does not replace it:** level in A (1.09 and 1.09) and
-  behind in B (0.80 against 0.87), at a quarter of the fills (957 and
-  1,175 against 4,273 and 4,733).
-- **It runs quietly:** 4.7–5.5% volatility, 29% invested on average, and
-  a worst fall of 7.0% in A and 4.5% in B, against 8.8% and 5.8% for the
+- **`[20, 55]` does not replace it:** a little behind in A (0.97 against
+  1.00) and behind in B (0.70 against 0.80), at a quarter of the fills
+  (959 and 1,173 against 4,271 and 4,721).
+- **It runs quietly:** 4.8–5.6% volatility, 29% invested on average, and
+  a worst fall of 7.1% in A and 4.7% in B, against 9.0% and 5.9% for the
   equal-weight stocks at the same volatility. It traded about 2.6 and 3.0
   million USD on its 100,000, mostly small resizes.
 - **Its profit came from the same names as holding's:**
@@ -741,13 +761,15 @@ block resamples, that the strategy's Sharpe is not above the benchmark's.
     VZ, INTC, MMM and T lost 2–5% each.
   - B: NVDA 27%, AMD 24%, META 21%, GOOGL 20%, INTC 15%, AAPL 11%; PFE,
     NKE, KHC, VZ, BA and F lost 5–10% each.
-- **The 21 (reported, not judged)** tell the same story. A: 1.01 against
-  0.52 for the 21 held equally. B: 0.97 against 1.16 (p = 0.78). PLTR was
+- **The 21 (reported, not judged)** tell the same story. A: 0.94 against
+  0.52 for the 21 held equally. B: 0.90 against 1.16 (p = 0.86). PLTR was
   19% of B's profit, and DKI about 0%.
 - **Against SPY and cash** too it is ahead in A and behind in B.
-- **Bad bars:** one fill, NKE bought on Jun 5 2023 at 107.84 (5 shares;
+- **Bad bars:** one fill, NKE bought on Jun 5 2023 at 107.94 (5 shares;
   the bar opens 0.3% above its own high), worth about 1.6 USD. No fill on
-  DKI's Oct 7 2026.
+  DKI's Oct 7 2026, but in the 21 one share was bought at the next open
+  (68.54) on that day's close and sold the day after at 30.98, as DKI
+  fell 95% in a week: about −38 USD.
 
 **Found while running (Nov 27 2026):**
 - **Period A starts Aug 12 2019,** the first bar after the 1,081-bar
@@ -758,6 +780,23 @@ block resamples, that the strategy's Sharpe is not above the benchmark's.
   benchmarks carry no costs.
 - A Schwab backtest reads the Schwab token file even with
   `--bars-from-database`, so the runs were made one at a time.
+- **Rerun Nov 27 2026 on the fixed build** (see [Trend ensemble: Kraken's
+  bars, and its
+  sensitivity](#trend-ensemble-krakens-bars-and-its-sensitivity-planned-and-run-nov-27-2026));
+  the table and figures above are from it. The build before the fix
+  reproduces what was first published here (Sharpe 1.09 and 0.87, 4,273
+  and 4,733 fills), so the differences are the fix. They are larger than
+  on crypto because the old walk filled about three quarters of these
+  orders at the decision day's close, stamped at the next open, not at
+  the next open as planned. The fixed build fills them at the open.
+  Every Sharpe fell by 0.07–0.12 (the default 1.09 →
+  1.00 and 0.87 → 0.80), and the verdict is the same: it fails on period
+  B. A run on SPY alone is the same on both builds, so single-symbol
+  stock tests are not affected. The benchmark returns and p-values are
+  from a rebuilt script (the first was not kept), which reproduces the
+  first ones on the old build to within 0.3 points and 0.03; the
+  benchmarks' own Sharpes and the shares of profit are as first
+  published (the shares moved by at most a point).
 
 ### ETFs, 2003–2014 (planned and run Nov 27 2026)
 
@@ -837,30 +876,37 @@ single-stock test.
 
 | The 13, 5 bps a side | A: Jan 2003 – Dec 2008 | B: Jan 2009 – Dec 2014 |
 |---|---|---|
-| Default | **0.42**, +13.2% | **0.45**, +14.9% |
-| SPY and cash, same vol | 0.10, +2.2% (p = 0.18) | 0.82, +29.9% (p = 0.93) |
-| The 13 held equally, same vol | 0.36, +11.3% (p = 0.48) | 0.78, +28.3% (p = 0.91) |
-| `[20, 55]` | 0.56, +18.9% | 0.38, +13.2% |
-| Default at 15 bps | 0.24, +6.9% | 0.27, +8.3% |
+| Default | **0.44**, +14.2% | **0.48**, +16.1% |
+| SPY and cash, same vol | 0.10, +2.2% (p = 0.15) | 0.82, +30.2% (p = 0.94) |
+| The 13 held equally, same vol | 0.36, +11.7% (p = 0.43) | 0.78, +28.9% (p = 0.94) |
+| `[20, 55]` | 0.60, +20.4% | 0.41, +14.6% |
+| Default at 15 bps | 0.26, +7.9% | 0.30, +9.4% |
 | Hold SPY | −0.9%, 51.8% fall | +121.1%, 27.1% fall |
 | Hold the 13 equally, full weight | +34.8%, 46.5% fall | +95.4%, 23.6% fall |
 
 - **The default fails on period B.** It is ahead of SPY and cash in A at
-  both costs (+0.32 and +0.14 in Sharpe, not significant), and behind in B
-  at both (−0.37 and −0.55).
+  both costs (+0.34 and +0.16 in Sharpe, not significant), and behind in B
+  at both (−0.34 and −0.52).
 - **2003–2008 is the case for trend following, and it shows:** in SPY's
-  fall from Oct 9 2007 to Nov 20 2008 (−51.8% over 283 days) it lost 8.7%
-  against 15.9% for SPY and cash at its volatility, and its worst fall
-  over the period was 10.0% against 15.9%. It was also ahead because SPY
+  fall from Oct 9 2007 to Nov 20 2008 (−51.8% over 283 days) it lost 8.0%
+  against 16.0% for SPY and cash at its volatility, and its worst fall
+  over the period was 9.1% against 16.0%. It was also ahead because SPY
   went nowhere in those six years while emerging markets, gold and energy
   rose: EEM, GLD, XLE and EFA made 99% of its profit. Against the 13
-  held equally, which owned those too, it was only level (0.42 against
-  0.36, p = 0.48).
+  held equally, which owned those too, it was only level (0.44 against
+  0.36, p = 0.43).
 - **2009–2014 is the ETF result of 2019–2026 again:** a 42-day fall to
-  Mar 2009, in which it lost 1.5% against 8.9%, then a long rise, in which
+  Mar 2009, in which it lost 1.5% against 9.0%, then a long rise, in which
   being half in cash cost more than the fall saved.
-- **`[20, 55]` does not replace it:** ahead in A (0.56 against 0.42) and
-  behind in B (0.38 against 0.45), at a fifth of the fills.
+- **`[20, 55]` does not replace it:** ahead in A (0.60 against 0.44) and
+  behind in B (0.41 against 0.48), at a fifth of the fills.
+- **Rerun Nov 27 2026 on the fixed build**, as for the single stocks
+  (above); the figures here are from it. The build before the fix
+  reproduces those first published (0.42 and 0.45; −8.7% against −15.9%
+  in the 2007–2008 fall). It too filled about 70% of these orders at the
+  decision day's close; at the next open, as planned, the ETFs' small
+  overnight moves change little, and every Sharpe rose by 0.02–0.04. The
+  verdict is the same.
 - **Turnover:** about 6.5 million USD traded in each six-year period, so
   15 bps a side took about 6 points off each.
 
@@ -877,7 +923,8 @@ single-stock test.
   old rows were fetched at different times, so only those before May 25
   2018 had it, which left a 0.57% step on that day. The new series is kept
   as the consistent one. The 2019–2026 ETF run, rerun on it, gives the
-  same result (+27.6%, Sharpe 0.68).
+  same result (+27.6%, Sharpe 0.68; +26.8% and 0.65 on the build with the
+  walk fix, see [On 13 ETFs](#on-13-etfs-schwab-daily-bars-20192026)).
 - **Data checks on 1999–2015:** 19 bars a few cents outside their own
   range (mostly Jan 2007 and mid-2008), and 2 bad lows on EFA (Sep 29
   2008 and Aug 3 2009), left in. One fill fell on a flagged day: EFA sold
@@ -1073,8 +1120,11 @@ own costs):
     +2.48%) run to Nov 13 and to Nov 18 alike, so they come from builds or
     data before it.
   - Check 1's Kraken run: 1.18 (1.16) in 2022–2024 and 0.65 (0.65) after.
-  - No verdict changed. The earlier sections' `trend_ensemble` numbers
-    were made on the old walk and are left as published.
+  - No verdict changed. The earlier crypto sections were rerun on the
+    fixed build the same day and updated, each with a note, and so were
+    the Schwab stock and ETF sections. The single stocks moved most: the
+    old walk filled most of those orders at the decision day's close
+    rather than the next open.
 - **Data checks on the six imported Kraken series** (11,993 daily bars,
   by the rules of [Bad prints in the stored
   bars](#bad-prints-in-the-stored-bars-planned-nov-25-2026)): no shape
@@ -1106,8 +1156,8 @@ own costs):
 | `market_maker` | ZEC/USDT and 6 more crypto pairs, quotes | Doesn't beat holding once latency is modelled, on any pair |
 | `breakout` range 1h, `trend_sma = 1000` | 7 crypto pairs, 2022–2026 | +0.11% a trade, +0.10% without ZEC, and 2025 lost without ZEC: thin; falls of 50–90% of a trade's size are normal; paper-trading now |
 | `breakout` 10-day high, hold 1 day | 7 crypto pairs, daily, 2022–2026 | +0.80% a trade (+0.82% with the hold fix), 7/7 pairs up: the strongest single-symbol result; beats holding on 5 of 7 pairs, not on ZEC or HYPE |
-| `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +973% (+128% without ZEC) against +63% for BTC; deep drawdowns |
-| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.02 and 1.07 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. As one account it fails at 35 bps in 2018–2021 (Sharpe 0.46 against 0.78), and leads at 10 bps and on Binance.US (1.13 against 0.46). `momentum_rotation` fails: behind in both periods, −17% and an 88% drawdown in 2018–2021 |
+| `momentum_rotation` | 11 USDT pairs, daily, 2022–2026 | +609% (+51% without ZEC) against +66% for BTC; deep drawdowns |
+| Pre-registered test: `trend_ensemble`, the 10-day breakout, `momentum_rotation` | 11 Kraken USD pairs, daily, 2015–2017 and 2018–2021 | `trend_ensemble` passes (Sharpe 3.01 and 1.05 against 2.04 and 0.79 for BTC and cash at its volatility); `[20, 55]` is no better. The breakout passes: +1.99% and +0.67% a trade over drift, above random entries, with two bad prints left out. As one account it fails at 35 bps in 2018–2021 (Sharpe 0.46 against 0.78), and leads at 10 bps and on Binance.US (1.13 against 0.46). `momentum_rotation` fails: behind in both periods, −34% and a 90% drawdown in 2018–2021 |
 | Other `breakout` setups (nr, inside, rectangle, pipe, throwback) | crypto, 1h and 15m | Lose, or profit only from the ZEC rally |
 | `breakout` double bottom | stocks daily; crypto 1h | Modest edge on daily stocks; none on crypto over the long history |
 | `breakout` inverse head-and-shoulders | 33 stocks daily; crypto 1h | +1.35% a trade on daily stocks, positive in both periods, but rare (62 trades in ten years); too rare on crypto 1h |
@@ -1118,9 +1168,9 @@ own costs):
 | Short-bar stock patterns, opening range | 33 stocks, 1m to 15m | Lose after costs |
 | Intraday momentum | crypto 30m; SPY and QQQ | Too small for crypto costs; not significant on 181 days of stocks |
 | Fair value gaps (FVG), limit entries and `breakout` `fvg` | 11 crypto pairs 1h/4h/1d; 35 stocks 1d and 30m | Lose on crypto and 30m stocks. On daily stocks the gains are the stocks' drift: none beats holding them. The gap neither fills nor bounces differently from an ordinary 3-bar move of the same size |
-| `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +8.5% and +18.9% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.90 against 1.30, p = 0.12). `[20, 55]` no better |
-| `trend_ensemble` on 18 single stocks (pre-registered) | Schwab daily, Aug 2019 – Nov 2026 | Fails: ahead of the same stocks held equally at its volatility in 2019–2022 (Sharpe 1.09 against 0.59, p = 0.10), behind in 2023–2026 (0.87 against 1.27). `[20, 55]` no better |
-| `trend_ensemble` on 13 ETFs, 2003–2014 (pre-registered) | Schwab daily, Jan 2003 – Dec 2014 | Fails: ahead of SPY and cash in 2003–2008 (Sharpe 0.42 against 0.10, p = 0.18; −8.7% against −15.9% in the 2007–2008 fall), behind in 2009–2014 (0.45 against 0.82). `[20, 55]` no better; with 2019–2026, closed on ETFs |
+| `trend_ensemble` on 13 ETFs (`days_per_year = 252`) | Schwab daily, Sep 2019 – Nov 2026 | +7.9% and +16.8% at 5% volatility; level with SPY and cash at the same risk in 2019–2022, behind it in the holdout (Sharpe 0.79 against 1.21). `[20, 55]` no better |
+| `trend_ensemble` on 18 single stocks (pre-registered) | Schwab daily, Aug 2019 – Nov 2026 | Fails: ahead of the same stocks held equally at its volatility in 2019–2022 (Sharpe 1.00 against 0.59, p = 0.16), behind in 2023–2026 (0.80 against 1.27). `[20, 55]` no better |
+| `trend_ensemble` on 13 ETFs, 2003–2014 (pre-registered) | Schwab daily, Jan 2003 – Dec 2014 | Fails: ahead of SPY and cash in 2003–2008 (Sharpe 0.44 against 0.10, p = 0.15; −8.0% against −16.0% in the 2007–2008 fall), behind in 2009–2014 (0.48 against 0.82). `[20, 55]` no better; with 2019–2026, closed on ETFs |
 | `trend_ensemble`: Kraken's bars, settings and timing (pre-registered) | 11 coins, Kraken and Binance.US; Kraken A8 and B | Stands up: Sharpe 1.18 and 0.65 on Kraken's bars against 0.68 and 0.06 for BTC and cash (Binance.US 1.21 and 0.66, correlation 0.98). All 6 settings and 3 fill delays (1, 4 and 12 hours) keep the verdict in every period; midday fills cost 0.05–0.10 of Sharpe. The 2025–2026 lead is ZEC's on both venues |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
 | `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
@@ -1339,18 +1389,28 @@ The default is to rebalance weekly into the top 3 by 28-day return.
 
 | Lookback, holdings | Return | Drawdown | Without ZEC | Drawdown |
 |---|---|---|---|---|
-| 28 days, top 3 | +973% | 68% | +128% | 56% |
-| 28 days, top 5 | +440% | 65% | +120% | 49% |
-| 14 days, top 3 | +404% | 54% | +81% | 64% |
-| 7 days, top 1 | +2,277% | 59% | −24% | 85% |
-| Hold BTC | +63% | 67% | | |
+| 28 days, top 3 | +609% | 68% | +51% | 71% |
+| 28 days, top 5 | +299% | 62% | +60% | 59% |
+| 14 days, top 3 | +437% | 71% | +85% | 71% |
+| 7 days, top 1 | +1,212% | 81% | −51% | 84% |
+| Hold BTC | +66% | 67% | | |
 
-It beats holding BTC with or without ZEC, but ZEC made about 76k of the
-default's 97k USDT profit. Short lookbacks with one holding were erratic.
+It beats holding BTC with ZEC, but without it only the 14-day lookback
+does (+85% against +66%); ZEC made about 54k of the default's 61k USDT
+profit. Short lookbacks with one holding were erratic.
+
+*Rerun Nov 27 2026* on the fixed build (10,000 USDT, 2 bps taker fee and
+5 bps slippage, Jan 1 2022 to Nov 1 2026). The table first published here
+(+973% for the default, +128% without ZEC, +63% for BTC) does not
+reproduce on the build before the fix either, which gives +612% (+52%
+without ZEC), so it came from an earlier build or earlier bars; the fix
+itself moved these runs by at most 5 points of return (+38 on the 7-day,
+top-1 run). The verdict that ZEC made most of it stands, and the claim
+that it beat BTC without ZEC no longer does, except at 14 days.
 
 On Kraken's 2015–2021 bars the default failed the pre-registered test:
-behind BTC and cash in 2015–2017 (Sharpe 3.10 against 3.32 from its
-first trade), and −17% with an 88% drawdown in 2018–2021 (see
+behind BTC and cash in 2015–2017 (Sharpe 2.99 against 3.32 from its
+first trade), and −34% with a 90% drawdown in 2018–2021 (see
 [Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)).
 
 ## Intraday momentum
@@ -1693,16 +1753,22 @@ about 850 daily bars before Jan 2022 for most of these pairs, so the
 models start with that much history, not the 1,081 bars a live run asks
 for:
 
-| 1,000 USDT | Jan 2022 – Dec 2024 | Holdout, Jan 2025 – Nov 2026 |
+| 1,000 USDT | Jan 2022 – Dec 2024 | Holdout, Jan 2025 – Nov 14 2026 |
 |---|---|---|
-| `trend_ensemble` | +32.7%, 6.9% fall, Sharpe 1.26 | +2.8%, 5.9% fall, Sharpe 0.26 |
-| ... without ZEC | +36.4%, 7.6% fall, Sharpe 1.33 | −1.6%, 8.0% fall |
+| `trend_ensemble` | +31.8%, 7.2% fall, Sharpe 1.21 | +3.4%, 5.8% fall, Sharpe 0.30 |
+| ... without ZEC | +35.4%, 7.6% fall, Sharpe 1.28 | −1.6%, 8.1% fall |
 | The same rules in the daily screen | +35% | +4%; −2% without ZEC |
 | 20% BTC, 80% cash (the same risk) | +26%, 15% fall | −6%, 13% fall |
 | Hold BTC | +130%, 67% fall | −28%, 53% fall |
 
-- **The backtest matches the screen** within 2.5 points in each period,
+- **The backtest matches the screen** within 3.2 points in each period,
   so the strategy does what the screen did.
+- **Rerun Nov 27 2026** on the fixed build (see [Trend ensemble: Kraken's
+  bars, and its sensitivity](#trend-ensemble-krakens-bars-and-its-sensitivity-planned-and-run-nov-27-2026)),
+  with the holdout to Nov 14 2026. First published: +32.7% (Sharpe 1.26)
+  and +2.8% (0.26), and +36.4% (1.33) and −1.6% without ZEC. The build
+  before the fix gives +32.2% (1.23) and +2.5% (0.23), so part of that
+  gap is from earlier builds; the fix moved it to the figures above.
 - **A first run of it was wrong in 2022–2023:** with XRP/USDT delisted
   (no bars from Jan 2021 to Jul 2023), every day waited for XRP's bar and
   completed only on the next day's first bar, ADA's, so ADA was never
@@ -1717,10 +1783,10 @@ for:
   fall. That is the first holdout in this file to beat a benchmark of the
   same risk without ZEC, though only by about 4 points over two years of
   falling prices.
-- **It made about 10% a year in 2022–2024 and 1.5% a year since,**
+- **It made about 10% a year in 2022–2024 and 1.8% a year since,**
   against the paper's 18% over 2015–2025. Its weight per coin is small at
   25% volatility: on average 10% of equity was in coins, at most 40%.
-- **Turnover was about five times equity a year:** 5,251 fills in under five
+- **Turnover was about five times equity a year:** 5,278 fills in under five
   years, most of them a few USDT as one model of nine changed, which is
   why the account needs to be large enough for Binance.US's 1 USDT minimum.
 - Paper-trading on 1,000 USDT from Nov 19 2026 (run 45; see Paper runs).
@@ -1738,21 +1804,31 @@ strategy, which was about half in cash.
 
 | 100,000 USD | Sep 2019 – Dec 2022 | Holdout, Jan 2023 – Nov 5 2026 |
 |---|---|---|
-| Default 9 lookbacks | +8.5%, 5.2% vol, Sharpe 0.50, 6.3% fall; 41% invested | +18.9%, 5.2% vol, Sharpe 0.90, 5.2% fall; 48% invested |
-| `lookbacks = [20, 55]` | +9.1%, Sharpe 0.51, 5.5% fall | +12.8%, Sharpe 0.65, 6.8% fall |
-| SPY and cash at the default's volatility (22%; 35% in the holdout) | +7.9%, Sharpe 0.46, 8.2% fall | +28.9%, Sharpe 1.30, 7.0% fall |
-| Hold SPY | +31.5%, Sharpe 0.46, 34.1% fall | +101.4%, Sharpe 1.30, 19.0% fall |
-| Hold the 13, equal weight | +24.3%, Sharpe 0.43, 30.3% fall | +75.4%, Sharpe 1.22, 14.9% fall |
+| Default 9 lookbacks | +7.9%, 5.3% vol, Sharpe 0.46, 5.9% fall; 41% invested | +16.8%, 5.3% vol, Sharpe 0.79, 5.5% fall; 48% invested |
+| `lookbacks = [20, 55]` | +9.4%, Sharpe 0.51, 5.0% fall | +12.1%, Sharpe 0.60, 7.1% fall |
+| SPY and cash at the default's volatility (22%; 35% in the holdout) | +8.0%, Sharpe 0.46, 8.3% fall | +27.4%, Sharpe 1.21, 7.1% fall |
+| Hold SPY | +31.5%, Sharpe 0.46, 34.1% fall | +92.5%, Sharpe 1.21, 19.0% fall |
+| Hold the 13, equal weight | +27.0%, Sharpe 0.46, 30.5% fall | +67.0%, Sharpe 1.18, 14.0% fall |
 
-- **No edge over SPY at the same risk.** Level in 2019–2022 (ΔSharpe +0.03,
-  95% CI [−0.74, +0.71]), behind in the holdout (−0.41, [−1.01, +0.10],
-  p = 0.12; paired 20-day block bootstrap, correlation 0.6–0.7). Its worst
-  fall was smaller than the SPY mix's in both periods (6.3% against 8.2%,
-  and 5.2% against 7.0%), not enough to make up the return. This agrees
-  with the Turtle screen's ETF result (no timing edge over holding).
-- **`[20, 55]` did no better here**: level in 2019–2022 and 6 points behind
-  the default in the holdout, at a quarter of the fills (728 and 877
-  against 3,261 and 3,698).
+- **No edge over SPY at the same risk.** Level in 2019–2022 (0.46 against
+  0.46), behind in the holdout (0.79 against 1.21; ahead in 5% of paired
+  20-day block resamples). Its worst fall was smaller than the SPY mix's
+  in both periods (5.9% against 8.3%, and 5.5% against 7.1%), not enough
+  to make up the return. This agrees with the Turtle screen's ETF result
+  (no timing edge over holding).
+- **`[20, 55]` did no better here**: a little ahead in 2019–2022 and 5
+  points behind the default in the holdout, at a quarter of the fills
+  (728 and 881 against 3,262 and 3,705).
+- **Rerun Nov 27 2026 on the fixed build** (see the single-stock test's
+  note); the table is from it. First published: 0.50 (+8.5%) and 0.90
+  (+18.9%). The build before the fix gives 0.50 and 0.81 (+17.0%), so
+  the holdout's first figures came from an earlier build or earlier bars
+  (EEM's were corrected after; see [ETFs,
+  2003–2014](#etfs-20032014-planned-and-run-nov-27-2026)), and the fix
+  itself moved the default by 0.02–0.04. The benchmark rows
+  are from the stored bars as they are now, the same ones the single-stock
+  test uses for SPY over the holdout (+92.5%, Sharpe 1.21); the first
+  table's +101.4% and 1.30 for holding SPY do not match them.
 - **Turnover** was about 10 times equity a year (7.1 million USD traded in
   seven years), most of it small resizes; free at Schwab, but each fill
   pays the spread.
@@ -1771,27 +1847,34 @@ its volatility over the whole span:
 
 | Run | Benchmark | All falls: strategy / benchmark | The rest: strategy / benchmark | Whole span, Sharpe |
 |---|---|---|---|---|
-| 18 stocks, Aug 2019 – Nov 2026 | the 18 held equally | −12.8% / −16.9% (2 falls, 218 days) | +62.9% / +63.9% | 0.98 / 0.86 |
-| 13 ETFs, Aug 2019 – Nov 2026 | SPY | −9.3% / −16.2% (2 falls) | +40.7% / +57.0% | 0.68 / 0.76 |
-| Kraken A8, 2015–2017 | BTC | −9.5% / −15.7% (5 falls, 82 days) | +91.5% / +71.7% | 3.02 / 2.04 |
-| Kraken B, 2018–2021 | BTC | −8.7% / −22.7% (3 falls, 494 days) | +54.0% / +66.0% | 1.07 / 0.79 |
-| Binance.US, 2022 – Nov 2026 | BTC | −9.2% / −21.2% (2 falls, 591 days) | +49.9% / +42.1% | 0.89 / 0.35 |
+| 18 stocks, Aug 2019 – Nov 2026 | the 18 held equally | −13.2% / −17.1% (2 falls, 218 days) | +59.9% / +65.8% | 0.90 / 0.88 |
+| 13 ETFs, Aug 2019 – Nov 2026 | SPY | −9.2% / −16.5% (2 falls) | +39.6% / +58.2% | 0.65 / 0.76 |
+| Kraken A8, 2015–2017 | BTC | −9.6% / −15.8% (5 falls, 82 days) | +92.6% / +72.7% | 3.01 / 2.04 |
+| Kraken B, 2018–2021 | BTC | −8.9% / −22.9% (3 falls, 494 days) | +53.8% / +66.9% | 1.05 / 0.79 |
+| Binance.US, 2022 – Nov 18 2026 | BTC | −9.3% / −21.4% (2 falls, 591 days) | +51.0% / +43.4% | 0.90 / 0.36 |
 
 - **It loses less across the falls** in all five runs, by 4 to 14 points.
   Fall by fall it lost less in 12 of 14; the two exceptions are short
-  Kraken falls in 2017 (Jan 4–11, −3.1% against −2.7%, and Sep 1–14,
-  −4.2% against −3.1%).
+  Kraken falls in 2017 (Jan 4–11, −3.1% against −2.8%, and Sep 1–14,
+  −4.2% against −3.2%).
 - **In the rest it is mixed:** ahead in Kraken 2015–2017 and on Binance.US,
-  level on the stocks, behind on the ETFs and in Kraken 2018–2021.
+  behind on the stocks, the ETFs and in Kraken 2018–2021.
 - **Where it passed or failed follows from the mix:** on crypto the falls
   were long and deep (2018: BTC −81% over 343 days; 2022: −67% over 324
   days), so what it saved there outweighed what it gave up. On the ETFs
   the two falls were short (the Covid fall was 23 days) and the rest was
   a long rise, so it fell behind.
 - The stock curve joins the two test periods (B restarted at 100,000 and
-  is chained on). The Kraken and Binance.US runs reproduce the
-  pre-registered and earlier results (Sharpe 3.02 and 1.07; +32% in
-  2022–2024 and +2.8% after).
+  is chained on). The Kraken and Binance.US rows were rerun on Nov 27 2026
+  on the fixed build (Sharpe 3.01 and 1.05; +32% in 2022–2024 and +3.4%
+  after); first published from the old walk, they moved by at most 1.3
+  points (Binance.US's BTC in the rest, +42.1% to +43.4%). The stock and
+  ETF rows were rerun the same way: first published at 0.98 and 0.68
+  (the stocks' rest +62.9% against +63.9%, level), the fixed build's
+  open fills (see the single-stock test's note) lower them to 0.90 and
+  0.65, and the stocks now trail in the rest. Their benchmarks are from
+  the rebuilt calculation, which gives the first published ones on the
+  old build to within 0.6 points and 0.02 of Sharpe.
 
 **Crypto `trend_ensemble` beside SPY.** The Binance.US run's equity curve
 (2 bps fee and 5 bps slippage) and SPY, on SPY's trading days from Jan 3
@@ -1802,23 +1885,29 @@ day's date, a close three hours after SPY's.
 | Mix | Return | Volatility | Sharpe | Worst fall |
 |---|---|---|---|---|
 | SPY | +52.9% | 17.4% | 0.59 | −25.4% |
-| SPY 90%, trend 10% | +51.8% | 15.8% | 0.62 (p = 0.10) | −23.4% |
-| SPY 80%, trend 20% | +50.7% | 14.2% | 0.66 (p = 0.10) | −21.3% |
-| SPY 60%, trend 40% | +47.9% | 11.4% | 0.77 (p = 0.11) | −17.2% |
-| SPY 60%, cash 40% | +30.7% | 10.4% | 0.58 | −15.7% |
-| SPY 60%, trend 20%, cash 20% | +39.2% | 10.8% | 0.69 (p = 0.11) | −16.5% |
-| Trend alone | +36.1% | 7.7% | 0.86 | −7.4% |
+| SPY 90%, trend 10% | +51.9% | 15.8% | 0.62 (p = 0.09) | −23.3% |
+| SPY 80%, trend 20% | +50.9% | 14.2% | 0.67 (p = 0.10) | −21.3% |
+| SPY 60%, trend 40% | +48.3% | 11.4% | 0.77 (p = 0.11) | −17.1% |
+| SPY 60%, cash 40% | +30.9% | 10.4% | 0.59 | −15.7% |
+| SPY 60%, trend 20%, cash 20% | +39.4% | 10.8% | 0.69 (p = 0.10) | −16.4% |
+| Trend alone | +37.1% | 7.8% | 0.87 | −7.6% |
+
+*Rerun Nov 27 2026* on the fixed build's curve. The calculation was
+rebuilt (the first script was not kept) and checked on the old build's
+curve, where it gives the table first published here to within 0.2
+points (the cash mix: +30.9% against +30.7%). The fix moved the trend
+mixes by at most 1.0 point of return (trend alone, +36.1% to +37.1%).
 
 - **The daily correlation is +0.19,** so a slice of it lowers the mix's
   volatility and worst fall while giving up little return: 20% of it cut
-  the worst fall from 25.4% to 21.3% for 2.2 points of return.
+  the worst fall from 25.4% to 21.3% for 2.0 points of return.
 - **In place of cash it did better:** SPY 60%, trend 20% and cash 20% made
-  +39.2% against +30.7% for SPY 60% and cash 40%, at about the same
+  +39.4% against +30.9% for SPY 60% and cash 40%, at about the same
   volatility.
-- **None of it is significant** (p = 0.10–0.11 against SPY alone, the
+- **None of it is significant** (p = 0.09–0.11 against SPY alone, the
   same Sharpe as SPY and cash at any mix), over one span of under five
   years that held one long crypto fall, and on the crypto result that
-  only just beat its benchmark in 2025–2026 (+2.8%).
+  only just beat its benchmark in 2025–2026 (+3.4%).
 
 ### Checked against the paper: BTC on Kraken, 2015–2025
 
@@ -1938,10 +2027,18 @@ for crypto:
 
     | `trend_ensemble` in C++ | 2022–2024 (11 coins) | Holdout 2025–2026 | Holdout without ZEC | Fills, both periods |
     |---|---|---|---|---|
-    | Default 9 lookbacks | +32.0%, 7.0% fall, Sharpe 1.23 (7.8% vol) | +2.1%, 5.7% fall, Sharpe 0.20 | −2.6%, 8.1% fall, Sharpe −0.17 | 5,274 |
-    | `lookbacks = [20]` | +51.0%, 8.9% fall, Sharpe 1.44 (9.9% vol) | +8.4%, 8.4% fall, Sharpe 0.54 | +1.6%, 13.1% fall, Sharpe 0.14 | 1,000 |
-    | `lookbacks = [55]` | +37.9%, 11.0% fall, Sharpe 1.14 (9.9% vol) | +11.1%, 5.3% fall, Sharpe 0.70 | +4.1%, 8.9% fall, Sharpe 0.29 | 504 |
-    | `lookbacks = [20, 55]` | +43.4%, 9.9% fall, Sharpe 1.31 (9.5% vol) | +10.1%, 5.1% fall, Sharpe 0.67 | +3.1%, 10.8% fall, Sharpe 0.24 | 1,241 |
+    | Default 9 lookbacks | +31.8%, 7.2% fall, Sharpe 1.21 (7.9% vol) | +3.4%, 5.8% fall, Sharpe 0.30 | −1.6%, 8.1% fall, Sharpe −0.09 | 5,278 |
+    | `lookbacks = [20]` | +53.3%, 8.7% fall, Sharpe 1.48 (10.0% vol) | +10.7%, 7.9% fall, Sharpe 0.66 | +3.4%, 12.8% fall, Sharpe 0.24 | 1,001 |
+    | `lookbacks = [55]` | +38.3%, 11.0% fall, Sharpe 1.14 (9.9% vol) | +10.9%, 5.3% fall, Sharpe 0.69 | +4.5%, 8.9% fall, Sharpe 0.31 | 505 |
+    | `lookbacks = [20, 55]` | +44.9%, 9.8% fall, Sharpe 1.34 (9.6% vol) | +11.0%, 5.3% fall, Sharpe 0.71 | +4.3%, 10.7% fall, Sharpe 0.31 | 1,240 |
+
+    *Rerun Nov 27 2026* on the fixed build, holdout to Nov 14 2026. First
+    published (old walk): default 1.23, 0.20 and −0.17; `[20]` 1.44, 0.54
+    and 0.14; `[55]` 1.14, 0.70 and 0.29; `[20, 55]` 1.31, 0.67 and 0.24.
+    The build before the fix gives 1.23, 0.23 and −0.13 for the default,
+    so a little of each gap is from earlier builds. The fix raised the
+    holdout Sharpes most (default +0.07, `[20]` +0.13 on that build). The
+    conclusions above hold.
 
   - **Volatility-matched Turtle vs `trend_ensemble` (paired 20-day circular
     block bootstrap, 10,000 replicates):** calibrating Turtle's `risk_pct` on
@@ -1958,7 +2055,12 @@ for crypto:
     2022–2024 p = 0.22–0.87). The bootstrap pairs each day's returns of
     the two strategies (correlation 0.7–0.9); a first run paired each
     `trend_ensemble` day with the next day's Turtle return (the equity
-    CSV stamps a daily bar at its close) and gave p = 0.11–0.91.
+    CSV stamps a daily bar at its close) and gave p = 0.11–0.91. These
+    compare with the `trend_ensemble` curves from before the backtest's
+    walk fix; the fixed build's holdout Sharpe is 0.10 higher (0.30
+    against 0.20), which narrows each gap, so none becomes significant.
+    The Turtle simulation's daily series were not kept, so the p-values
+    are not recomputed.
   - **Parameter grid (8 lookback pairs from `10/5` to `80/40` × 3 risk
     levels = 24 cells):** without ZEC, 2022–2024 Sharpe ranged from +0.84 to
     +1.43 (median +1.17) and 2025–2026 holdout Sharpe from −0.13 to +0.43
