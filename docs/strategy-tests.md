@@ -1789,7 +1789,8 @@ for:
 - **Turnover was about five times equity a year:** 5,278 fills in under five
   years, most of them a few USDT as one model of nine changed, which is
   why the account needs to be large enough for Binance.US's 1 USDT minimum.
-- Paper-trading on 1,000 USDT from Nov 19 2026 (run 45; see Paper runs).
+- Paper-trading on 1,000 USDT, as runs 49 (default) and 51 (`[20, 55]`)
+  from Nov 23 2026; see Paper runs.
 
 ### On 13 ETFs (Schwab daily bars, 2019–2026)
 
@@ -2128,6 +2129,72 @@ first look:
 
 ## Paper runs
 
+All on Binance.US market data, in paper mode, from
+`~/.local/share/kestrel-paper`, at a 2 bps taker fee and 5 bps of slippage.
+Each records its fills and P&L to the database (`runs`, `fills`,
+`pnl_snapshots`).
+
+**Running now** (status at 14:07 UTC Nov 28 2026):
+
+| Runs | Strategy | Started | Account | Judged against |
+|---|---|---|---|---|
+| 49 | `trend_ensemble`, the paper's defaults, 11 USDT pairs | Nov 23 03:03 UTC | 1,000 USDT | 20% BTC and 80% cash |
+| 51 | `trend_ensemble`, `lookbacks = [20, 55]`, the same pairs | Nov 23 03:03 UTC | 1,000 USDT | the same, and run 49 |
+| 50 | `breakout` BTC/USDT, long-only 20/10 Turtle | Nov 23 03:03 UTC | 100 USDT | holding BTC |
+| 52–58 | `breakout` 10-day high, sold after a day: BTC/USDT, SOL/USDT, ZEC/USDT, ETH/USD, ADA/USD, XRP/USD, HYPE/USD, one process each | Nov 28 07:10 UTC | 100 USDT or USD each | holding each pair, and the seven as one account |
+
+- **`trend_ensemble` (runs 49 and 51):** they rebalance at each 00:00 UTC
+  close. In the first five days run 49 went from cash to six coins, each
+  with one or two of its nine models long (2.7% invested), and was down
+  0.28 USDT; run 51 found no trends and held cash. With BTC down about
+  2.8% since the start, both were about 5 USDT ahead of 20% BTC and 80%
+  cash, from holding cash. Run 51 is the forward test of `[20, 55]`
+  against the default: the Kraken test and the sensitivity checks left
+  the default in place, and no setting is changed on these results.
+- **The 20/10 Turtle (run 50):** `range_bars = 20`, stop entry, 2-ATR stop
+  over 20 bars, `trail_bars = 10`, `risk_per_trade` 2 USDT capped at
+  0.0015 BTC, with `max_loss_per_position` 15, `max_daily_loss` 15 and
+  `max_consecutive_losses` 3. It arms a stop at the 20-day high each day
+  (76,198 on Nov 28, 28% above BTC), so it has made no entry; run 48 (Nov
+  19–23) did the same.
+- **The 10-day breakout (runs 52–58),** the pre-registered next step of
+  its pass in the Kraken test, at that test's settings (`range_bars = 10`,
+  stop entry, `confirm = "none"`, `arm_bars = 1`, `max_hold_bars = 1`,
+  `stop_buffer_bps = 10`, no target or trend filter):
+  - One process per pair on its own 100, the separate-balances view of
+    [The 10-day breakout as one account](#the-10-day-breakout-as-one-account-planned-nov-25-2026).
+  - Each buys a fixed quantity worth about 90 at the Nov 27 close (0.0015
+    BTC, 1.256 SOL, 0.122 ZEC, 0.0541 ETH, 607 ADA, 94.9 XRP, 1.416 HYPE),
+    as the backtests sized it. It does not compound, and a coin up more
+    than about 11% may have an entry refused for want of cash; such a
+    refusal is in its log.
+  - `[risk]` is only a guard that does not bind on the tested rule
+    (orders up to 105, 4 open). Run 43's loss limits are left out:
+    `max_consecutive_losses = 3` would halt a rule that wins about half
+    its trades.
+  - On the build of 0c9e077, a copy named `kestrel_app-0c9e077`, so they
+    also post a late daily bar, a feed down for 5 minutes and the risk
+    gate's actions to Discord; runs 49–51 are on c10ad1a, which posts
+    error lines and start and stop notices only.
+  - What to expect, from the one-account test on Binance.US 2022–2026: a
+    trade on a pair every few weeks, in the market about 41% of the time
+    as seven pairs; its worst day was −6.0% and its worst 7 days −6.3%.
+    On Kraken its daily returns moved with `trend_ensemble`'s (+0.59 in
+    2015–2017, +0.68 in 2018–2021), so the two are less diversified than
+    two strategies would suggest.
+
+**Stopped:**
+- **Runs 46, 47 and 48 (Nov 19–23):** `trend_ensemble` default, `[20,
+  55]` and the 20/10 Turtle, stopped flat with no trades and restarted as
+  runs 49–51 on the build with Discord alerts (c10ad1a).
+- **Runs 42 and 43 (Nov 18–19):** `momentum_rotation` (no trades) and the
+  10-day breakout on SOL/USDT alone (no fills). Both stopped on Nov 19
+  during a database outage, which left them without an end time in
+  `runs`; so did runs 35 and 39.
+- **`trend_ensemble`, run 45 (Nov 19), and run 44 before it:** the paper's
+  defaults on 1,000 USDT, cash throughout. Run 44 (from 23:35 UTC Nov 18)
+  was restarted as run 45 at 02:06 UTC Nov 19 on the build with the
+  second Gemini review's fixes.
 - **Market maker, Binance.US:** an 8-hour paper session (traded, recorded
   and stopped cleanly) and live runs on ZEC/USDT in Oct–Nov 2026. Run 12
   is the one with stored quotes; see the live check above.
@@ -2145,10 +2212,3 @@ first look:
   - BTC/USDT has no trend filter. It is there to exercise live orders,
     fills, stops and exits now, while the market is below its averages.
     Expect a small loss: unfiltered, range 1h lost 0.05% a trade.
-- **`trend_ensemble`, the 11 USDT pairs (run 45, from Nov 19 2026):** the
-  paper's defaults on a 1,000 USDT paper account, large enough for its
-  small orders to clear Binance.US's 1 USDT minimum. Judge it against 20%
-  BTC and 80% cash over the same days, not against holding BTC; months of
-  it will mostly show whether the orders and restarts work. Run 44 (from
-  23:35 UTC Nov 18) held cash until it was restarted as run 45 at 02:06
-  UTC Nov 19 on the build with the second Gemini review's fixes.

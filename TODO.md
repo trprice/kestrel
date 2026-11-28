@@ -244,16 +244,15 @@ Sections in priority order: safety first, then what is in use.
         `RunRecorder` before PostgreSQL stops.
 
 ### Backtesting and research
-- [ ] The last step of the planned Kraken 2015–2021 test (docs/strategy-tests.md,
-      "Pre-registered and upcoming tests"). The Kraken runs were done Nov 25 2026:
-      `trend_ensemble` passes, `[20, 55]` doesn't replace the default,
-      the 10-day breakout passes and `momentum_rotation` fails; Connors
-      RSI(2)'s entry beat random entries on the 35 Schwab symbols. The
-      bad-print scan and the breakout-as-one-account test followed the same
-      day: no verdict changed, and as one account the breakout fails at
-      35 bps in 2018–2021 but leads at low costs. Still to do: a paper run
-      of the 10-day breakout on Binance.US (the plan's next step for a
-      pass).
+- [ ] Review the paper runs (docs/strategy-tests.md, "Paper runs") once each
+      has a few weeks of trades: `trend_ensemble` runs 49 and 51 against 20%
+      BTC and 80% cash and each other; the 10-day breakout runs 52–58 per
+      pair against holding it and as one account, and each fill against a
+      backtest over the same days (fills, prices and the trades taken);
+      the 20/10 Turtle, run 50, once it has entered. Restart runs 49–51 on
+      the current build for its alerts (late daily bars, feeds down, the
+      risk gate) when a restart costs least: run 49 holds coins, so it
+      would start again from cash under a new run ID.
 - [ ] Schwab `pricehistory` refuses a start before a symbol's listing
       (HTTP 400, "StartDate must be miliseconds from epoch"), so `bars`
       with a large count fails for a younger symbol instead of returning
@@ -860,6 +859,12 @@ the header of the code concerned.
 ## Done
 
 ### Overall
+- [x] The planned Kraken 2015–2021 test, all its steps (docs/strategy-tests.md,
+      "Pre-registered and upcoming tests"): run Nov 25 2026 (`trend_ensemble`
+      passes, `[20, 55]` does not replace the default, the 10-day breakout
+      passes, `momentum_rotation` fails), the bad-print scan and the
+      breakout as one account the same day, and the breakout's paper run on
+      Binance.US started Nov 28 2026 (runs 52–58, one process per pair)
 - [x] Alerts for outages and the risk gate: no quote for any symbol for 5
       minutes of open market (`run`, `stream`) and a daily bar 30 minutes
       late (`run`) log one error each; the risk gate's halts, closes,
