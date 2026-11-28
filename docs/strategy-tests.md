@@ -1173,7 +1173,7 @@ own costs):
 | `trend_ensemble` on 13 ETFs, 2003–2014 (pre-registered) | Schwab daily, Jan 2003 – Dec 2014 | Fails: ahead of SPY and cash in 2003–2008 (Sharpe 0.44 against 0.10, p = 0.15; −8.0% against −16.0% in the 2007–2008 fall), behind in 2009–2014 (0.48 against 0.82). `[20, 55]` no better; with 2019–2026, closed on ETFs |
 | `trend_ensemble`: Kraken's bars, settings and timing (pre-registered) | 11 coins, Kraken and Binance.US; Kraken A8 and B | Stands up: Sharpe 1.18 and 0.65 on Kraken's bars against 0.68 and 0.06 for BTC and cash (Binance.US 1.21 and 0.66, correlation 0.98). All 6 settings and 3 fill delays (1, 4 and 12 hours) keep the verdict in every period; midday fills cost 0.05–0.10 of Sharpe. The 2025–2026 lead is ZEC's on both venues |
 | Published ideas screened: crypto trend ensemble, volatility-adjusted rotation, turn of the month, dual momentum, GTAA, IBS | 11 crypto pairs and ETFs, daily, development and holdout periods | None worth building: each loses to holding in the holdout. The crypto ensemble halves the drawdown, but without ZEC did no better than 60% BTC and 40% cash |
-| `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +33% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
+| `trend_ensemble` (Zarattini, Pagani and Barbon's rules) | 11 USDT pairs, daily, 2022–2026 | +32% in 2022–2024 and +3% in the 2025–2026 holdout, at 7–8% volatility; beat 20% BTC with 80% cash in both, without ZEC too, by a few points. Paper-trading |
 | Daily stock setups against holding | 35 stocks, daily, 2016–2026 | None beats holding the same stock over the same bars with confidence: most of each trade is drift. Closest: Connors RSI(2) with the 200-day filter, +0.14% a trade over drift (t = 1.9); its entry beats random entries in an uptrend with the same exit (95th percentile +0.05%), but not in either half once they keep its same-day clusters |
 | Turtle breakout (20/10 and 55/20, 2 ATR stop) | 10 macro ETFs + BTC (2016–2026), and 11 USDT pairs (2022–2026) | No timing edge on ETFs (+1.90 to −1.91 bps/day against exposure-matched holding, \|t\| < 2); the published 5-asset result comes from up to 5.8× CFD leverage and BTC. Likely edge on BTC (t = 2.33, `breakout` PF 4.32). On 11 coins at the same ~7.8% volatility, Turtle led `trend_ensemble` in the holdout but not significantly (p ≥ 0.085), and `trend_ensemble` with `lookbacks = [20, 55]` covers it |
 
@@ -1184,7 +1184,7 @@ Nov 1–3, 2026. The figures are "vs hold" in USDT.
 
 - **Fixed spread, no latency:** 4–6 bps of half-spread did best on both
   days (+5.9 and +10.0 on Oct 30). At 1–2 bps it filled often and lost to
-  better-informed traders (2 bps: −10.6 on Oct 30). Most of each result
+  better-informed traders (2 bps: −10.5 on Oct 30). Most of each result
   came from how much ZEC was held, not from the spread earned.
 - **Volatility-scaled spread:** never beat a fixed spread of the same
   average width. Off by default.
@@ -2085,7 +2085,7 @@ for crypto:
     Done Nov 25 2026 (see
     [Pre-registered and upcoming tests](#pre-registered-and-upcoming-tests)):
     on 11 Kraken pairs over 2015–2021, `[20, 55]` was ahead of the default by
-    0.00 and 0.09 in Sharpe (p = 0.48 and 0.26). The default stays.
+    0.01 and 0.10 in Sharpe (p = 0.48 and 0.26). The default stays.
 
 ## Stock spreads at the open
 
